@@ -61,7 +61,18 @@ CI до последних изменений подтвердил Windows Serve
 https://github.com/DraimCiDo/Lyra/actions/runs/41029540896 — success.
 Кэш native build действительно восстановлен на обеих ОС; прогон занял около
 72 s Linux / 88 s Windows вместо пересборки C++ при каждом изменении Rust-кода.
-Финальный CI после auto threads/метаданных артефакта фиксируется ниже.
+Финальный CI после auto threads/метаданных артефакта: revision
+63be2f7967e0d7d042a842d6ce3bbbc2c1d3d306,
+https://github.com/DraimCiDo/Lyra/actions/runs/41030993163 — success на обеих ОС.
+Пройдены fmt, Clippy, обычные тесты, два native CPU smoke, release build,
+запуск собранного CLI и упаковка лицензий/приёмочной fixture.
+Windows-артефакт:
+https://github.com/DraimCiDo/Lyra/actions/runs/41030993163/artifacts/12966615453
+(CPU MSVC, 2 944 804 байта; хранится до 2026-11-13).
+Linux-артефакт: 12965333155. README внутри архивов указывает исходную ревизию,
+SHA256SUMS.txt содержит хеш бинарника. Загрузка архива в текущую облачную среду
+заблокирована ответом 403 хранилища; локальная проверка скачанного архива
+не заявляется. Нативный запуск Windows подтверждён CI, не Windows 11 ПК пользователя.
 
 ## Предварительная проверка instruction-модели: отрицательный результат
 
