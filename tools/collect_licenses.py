@@ -12,7 +12,7 @@ def main():
     parser.add_argument("--target", required=True)
     args = parser.parse_args()
     metadata = json.loads(subprocess.check_output(
-        ["cargo", "metadata", "--locked", "--format-version", "1", "--filter-platform", args.target], text=True
+        ["cargo", "metadata", "--locked", "--format-version", "1", "--filter-platform", args.target], text=True, encoding="utf-8"
     ))
     sections = [
         "Lyra dependency notices\n"
