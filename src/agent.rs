@@ -68,7 +68,7 @@ pub struct TaskArgs {
     pub context: u32,
     #[arg(long,default_value_t=512,value_parser=clap::value_parser!(u32).range(1..=8192))]
     pub max_tokens: u32,
-    #[arg(long,default_value_t=8,value_parser=clap::value_parser!(u32).range(1..=256))]
+    #[arg(long,default_value_t=inference::default_threads(),value_parser=clap::value_parser!(u32).range(1..=256))]
     pub threads: u32,
     #[arg(long,default_value_t=0,value_parser=clap::value_parser!(u32).range(0..=1024))]
     pub gpu_layers: u32,

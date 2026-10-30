@@ -30,7 +30,7 @@ pub struct GenerateArgs {
     pub context: u32,
     #[arg(long, default_value_t=256, value_parser=clap::value_parser!(u32).range(1..=8192))]
     pub max_tokens: u32,
-    #[arg(long, default_value_t=8, value_parser=clap::value_parser!(u32).range(1..=256))]
+    #[arg(long, default_value_t=default_threads(), value_parser=clap::value_parser!(u32).range(1..=256))]
     pub threads: u32,
     /// Требует сборку --features cuda; 0 означает CPU
     #[arg(long, default_value_t=0, value_parser=clap::value_parser!(u32).range(0..=1024))]
@@ -45,6 +45,13 @@ pub struct GenerateArgs {
 
 fn fail(message: impl Into<String>) -> io::Error {
     io::Error::other(message.into())
+}
+
+pub fn default_threads() -> u32 {
+    static DEFAULT: std::sync::OnceLock<u32> = std::sync::OnceLock::new();
+    *DEFAULT.get_or_init(|| {
+        std::thread::available_parallelism().map_or(1, |count| count.get().min(8) as u32)
+    })
 }
 
 pub fn validate(args: &GenerateArgs) -> io::Result<()> {
@@ -305,6 +312,14 @@ impl Session<'_> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn default_worker_threads_respect_available_parallelism() {
+        let threads = default_threads();
+        assert!((1..=8).contains(&threads));
+        if let Ok(available) = std::thread::available_parallelism() {
+            assert!(threads as usize <= available.get());
+        }
+    }
     #[test]
     fn context_reserves_the_whole_answer() {
         assert!(context_budget(100, 28, 128).is_ok());
