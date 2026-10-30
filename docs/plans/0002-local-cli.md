@@ -1,6 +1,6 @@
 # M1 — локальный Rust CLI и сборка Windows
 
-Статус: в работе. Ветка `feat/local-cli`, исходная ревизия `c5d1b52`.
+Статус: завершено в границах M1; Windows 11/CUDA/inference на ПК пользователя не проверены. Ветка `feat/local-cli`, исходная ревизия `c5d1b52`.
 
 ## Задача и изменение требований
 
@@ -30,15 +30,53 @@ Cargo-проект, закреплённый Rust, тесты и CI Linux/Window
 
 - [x] Изучить текущие документы, Git, доступное окружение и наличие профиля ПК.
 - [x] Создать безопасный CLI с локальной диагностикой и корректными кодами выхода.
-- [ ] Проверить пользовательские сценарии: help/version, JSON, неизвестные
+- [x] Проверить пользовательские сценарии: help/version, JSON, неизвестные
   аргументы, ошибки вывода и отсутствие побочных файлов/обращений к сети.
 - [x] Добавить Windows MSVC и Linux CI, закрепить toolchain и зависимости.
-- [ ] Выполнить fmt/Clippy/tests/release в Linux, Windows cross-check;
+- [x] Выполнить fmt/Clippy/tests/release в Linux, Windows cross-check;
   по возможности получить нативный результат через GitHub Actions.
 - [x] Обновить документы под локальную модель и текущее состояние реализации.
-- [ ] Зафиксировать реальные проверки/ресурсы/ограничения, commit/push рабочей ветки.
+- [x] Зафиксировать реальные проверки/ресурсы/ограничения, commit/push рабочей ветки.
 
 ## Проверки и передача состояния
 
-Результаты заполняются после выполнения. Windows-функции вне CI/без Windows
-не считать проверенными. Выбор модели и скорости не делать без профиля ПК.
+Проверенная ревизия реализации: `bbcde2f`.
+
+| Проверка | Среда | Результат |
+| --- | --- | --- |
+| `cargo fmt --all -- --check` | Linux, Rust 1.99.1 | exit 0 |
+| `cargo clippy --workspace --all-targets --locked -- -D warnings` | Linux | exit 0 |
+| `cargo test --workspace --locked` | Linux | exit 0: 3 модульных + 6 интеграционных тестов |
+| `cargo build --release --locked` | Linux | exit 0, binary 1 294 176 байт |
+| `cargo check --all-targets --locked --target x86_64-pc-windows-msvc` | Linux, Windows std target | exit 0; не заменяет линковку/запуск Windows |
+| Сбор текстов лицензий | Linux, отдельно для Linux/Windows dependency graph | exit 0 для обеих целей |
+| Markdown-ссылки и `git diff --check` | Linux | 46 локальных ссылок существуют, diff без ошибок |
+| Native Windows / Linux CI | GitHub Actions, windows-2022 / ubuntu-24.04 | success: format/Clippy/tests/release/smoke test/упаковка; 8 тестов Windows и 9 Linux |
+
+CI: [запуск 41016514025](https://github.com/DraimCiDo/Lyra/actions/runs/41016514025).
+
+Baseline Linux: Debian 13 x86_64, Intel Xeon Platinum 8573C, release Rust 1.99.1.
+Семь отдельных запусков через Python subprocess, без вывода в терминал:
+`--version` медиана 1,41 ms (1,20–1,78), `doctor --json` 1,55 ms (1,44–2,13).
+Максимальный RSS дочерних процессов по `getrusage` — 11 392 KiB; это верхняя
+оценка данного harness, включая влияние fork, не точный working set приложения.
+Это не показатели пользовательского ПК, Windows или LLM; CPU idle/VRAM не измерялись.
+
+Профиль пользователя уточнён; исходный кандидат и ограничения — в LOCAL_MODELS.md.
+Генерация, CUDA и inference на пользовательском ПК не проверялись.
+
+## Итог и артефакты
+
+Нативный EXE собран и запущен на Windows Server 2022 в CI (2m8s).
+Linux CI завершён за 48s. Оба артефакта опубликованы.
+Windows artifact: `lyra-x86_64-pc-windows-msvc`, ID `12959882336`,
+355 662 байт в архиве, срок хранения 14 дней. Содержит EXE, README,
+Cargo.lock, тексты лицензий и SHA256SUMS.txt.
+
+Локальная повторная загрузка артефакта через `gh run download` заблокирована
+HTTP 403 на хранилище GitHub; поэтому локальная проверка байтов EXE/SHA
+не выполнена. Успешные сборка/запуск/упаковка подтверждены самим CI,
+наличие артефакта — GitHub API. Это не блокирует скачивание владельцем через GitHub.
+
+Изменения отправлены в `feat/local-cli`. Merge и стабильный релиз не выполнялись.
+Следующая задача — M2, локальный runtime/GGUF и CPU/CUDA с контролем памяти.
