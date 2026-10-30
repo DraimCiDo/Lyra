@@ -14,6 +14,7 @@
 /logs/
 /tmp/
 /dist/
+/release/
 *.gguf
 *.log
 *.dmp

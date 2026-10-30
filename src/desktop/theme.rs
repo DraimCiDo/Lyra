@@ -175,6 +175,55 @@ impl Language {
             return ru;
         }
         match ru {
+            "Обновления" => "Updates",
+            "Проверять обновления каждые 5 минут" => {
+                "Check for updates every 5 minutes"
+            }
+            "Предварительные версии" => "Preview releases",
+            "Проверить обновления" => "Check for updates",
+            "Скачать обновление" => "Download update",
+            "Установить и перезапустить" => "Install and restart",
+            "Установить и перезапустить?" => "Install and restart?",
+            "GitHub Releases · скачивание и установка только по кнопке." => {
+                "GitHub Releases · download and install on request."
+            }
+            "Установка обновлений доступна в portable Windows x64 CPU. Для других сборок скачай пакет вручную." => {
+                "In-place updates require portable Windows x64 CPU. Download other builds manually."
+            }
+            "Перед установкой заверши или останови текущую операцию." => {
+                "Finish or stop the current operation before installing."
+            }
+            "Модель работает локально. Проверку обновлений можно отключить; CLI к сети не обращается." => {
+                "Inference stays local. Update checks are optional; the CLI uses no network."
+            }
+            "Текущая задача и отчёт в памяти не переносятся. Сохрани нужный отчёт перед продолжением." => {
+                "The current task and report in memory will not transfer. Save any report you need before continuing."
+            }
+            "Проекты, модели и локальные настройки сохраняются." => {
+                "Projects, models and local preferences are preserved."
+            }
+            "Обновления ещё не проверялись" => {
+                "Updates have not been checked yet"
+            }
+            "Предыдущее обновление не выполнено" => {
+                "The previous update failed"
+            }
+            "Обновление не выполнено" => "Update failed",
+            "Проверяю GitHub Releases…" => "Checking GitHub Releases…",
+            "Скачивание и проверка…" => "Downloading and verifying…",
+            "Готовлю перезапуск…" => "Preparing to restart…",
+            "Доступна новая версия" => "A new version is available",
+            "Новых опубликованных версий пока нет" => {
+                "No newer published release is available"
+            }
+            "Пакет проверен. Можно установить" => {
+                "Package verified. Ready to install"
+            }
+            "Загрузка или проверка отменена" => {
+                "Download or check cancelled"
+            }
+            "Обновление установлено" => "Update installed",
+
             "Мята" => "Mint",
             "Океан" => "Ocean",
             "Лаванда" => "Lavender",

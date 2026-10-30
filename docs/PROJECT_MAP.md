@@ -26,8 +26,8 @@ alpha добавляет task/предложения/apply и ограничен
 ## Следующий этап
 
 Текущее состояние M1 — в [плане](plans/0002-local-cli.md).
-После M1 следующее поручение — M2: выбрать Rust binding/runtime, подключить
-локальный GGUF и CPU/CUDA inference с лимитами памяти и отменой.
+M2/alpha/desktop реализованы в следующих планах ниже. Текущая задача — updater и
+перенос реализации в main; CUDA и качество 7B на пользовательском ПК ещё не проверены.
 Пользовательский профиль железа хранится в игнорируемой `.lyra/user-hardware.json`,
 если он есть в текущей рабочей среде. Он не входит в Git и не подменяет диагностику.
 
@@ -59,3 +59,8 @@ Alpha: [оркестратор](../src/agent.rs), [границы проекта
 [локальные настройки](../src/desktop/preferences.rs), [ресурсы EXE](../build.rs),
 [план](plans/0006-compact-ui.md). Конвертер значка: tools/render_icon.py и
 examples/render-icon.rs; для пользователя Python не нужен.
+
+Обновления: [controller](../src/desktop/updater/mod.rs), [HTTP/release](../src/desktop/updater/network.rs),
+[package](../src/desktop/updater/package.rs), [helper/rollback](../src/desktop/updater/install.rs),
+[сквозные тесты](../tests/updater.rs), [упаковка](../tools/package_update.py),
+[инструкция](UPDATES.md), [текущий план](plans/0007-updater.md).

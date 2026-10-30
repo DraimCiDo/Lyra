@@ -1,6 +1,9 @@
 #![cfg_attr(target_os = "windows", windows_subsystem = "windows")]
 
 fn main() -> std::process::ExitCode {
+    if std::env::args_os().nth(1).as_deref() == Some(std::ffi::OsStr::new("--update-helper")) {
+        return lyra::desktop::updater::helper_main();
+    }
     if std::env::args_os().nth(1).as_deref() == Some(std::ffi::OsStr::new("--worker")) {
         return lyra::desktop::worker_main();
     }

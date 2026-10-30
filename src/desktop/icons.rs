@@ -2,6 +2,7 @@
 use eframe::egui::{self, Color32};
 #[derive(Clone, Copy)]
 pub enum Icon {
+    Download,
     Settings,
     Back,
     Folder,
@@ -22,7 +23,8 @@ pub enum Icon {
     Moon,
 }
 impl Icon {
-    pub const ALL: [Self; 18] = [
+    pub const ALL: [Self; 19] = [
+        Self::Download,
         Self::Settings,
         Self::Back,
         Self::Folder,
@@ -52,6 +54,7 @@ impl Icon {
             };
         }
         match self {
+            Self::Download => svg!("download"),
             Self::Settings => svg!("settings"),
             Self::Back => svg!("undo-2"),
             Self::Folder => svg!("folder"),

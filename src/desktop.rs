@@ -3,6 +3,7 @@ mod icons;
 mod job;
 mod preferences;
 mod theme;
+pub mod updater;
 use crate::agent::Report;
 use eframe::egui::{self, Color32, RichText};
 use icons::Icon;
@@ -19,7 +20,7 @@ use theme::{Language, Palette};
 
 const WINDOW_SIZE: [f32; 2] = [760.0, 480.0];
 const MIN_SIZE: [f32; 2] = [640.0, 460.0];
-const SMOKE_STEPS: usize = 48;
+const SMOKE_STEPS: usize = 56;
 
 pub fn worker_main() -> ExitCode {
     use clap::Parser;
@@ -105,14 +106,16 @@ enum SettingsPage {
     Workers,
     Appearance,
     Hardware,
+    Updates,
 }
 impl SettingsPage {
-    const ALL: [Self; 5] = [
+    const ALL: [Self; 6] = [
         Self::Model,
         Self::Context,
         Self::Workers,
         Self::Appearance,
         Self::Hardware,
+        Self::Updates,
     ];
     fn title(self) -> &'static str {
         match self {
@@ -121,6 +124,7 @@ impl SettingsPage {
             Self::Workers => "Помощники",
             Self::Appearance => "Оформление",
             Self::Hardware => "Мой компьютер",
+            Self::Updates => "Обновления",
         }
     }
     fn icon(self) -> Icon {
@@ -130,6 +134,7 @@ impl SettingsPage {
             Self::Workers => Icon::Workers,
             Self::Appearance => Icon::Palette,
             Self::Hardware => Icon::Monitor,
+            Self::Updates => Icon::Download,
         }
     }
 }
@@ -147,6 +152,9 @@ enum Operation {
 }
 
 struct Desktop {
+    updates: updater::Controller,
+    update_confirm: bool,
+    real_app: bool,
     prefs: Preferences,
     last_attempted: Preferences,
     storage: Option<PathBuf>,
@@ -176,6 +184,9 @@ struct Desktop {
 impl Default for Desktop {
     fn default() -> Self {
         Self {
+            updates: updater::Controller::default(),
+            update_confirm: false,
+            real_app: false,
             prefs: Preferences::default(),
             last_attempted: Preferences::default(),
             storage: None,
@@ -211,7 +222,7 @@ impl Desktop {
     }
 
     fn start(&mut self, operation: Operation, ctx: &egui::Context) -> io::Result<()> {
-        if self.job.is_some() {
+        if self.job.is_some() || self.updates.kind() == Some(updater::Kind::Prepare) {
             return Err(io::Error::other("Дождитесь текущей операции."));
         }
         let temp = tempfile::Builder::new().prefix("lyra-desktop-").tempdir()?;
@@ -407,6 +418,36 @@ impl Desktop {
                         .clicked()
                 {
                     self.settings_open = true;
+                    self.transition = Some(Instant::now());
+                }
+                let response = icons::button(
+                    ui,
+                    Icon::Download,
+                    l.text("Обновления"),
+                    self.settings_open && self.settings_page == SettingsPage::Updates,
+                    c.accent,
+                );
+                if self.updates.available.is_some() {
+                    let elapsed = self
+                        .updates
+                        .attention
+                        .map(|t| t.elapsed())
+                        .unwrap_or(Duration::from_secs(1));
+                    let blink = self.prefs.animations && elapsed < Duration::from_millis(900);
+                    if !blink || (elapsed.as_millis() / 150).is_multiple_of(2) {
+                        ui.painter().circle_filled(
+                            response.rect.right_top() + egui::vec2(-4.0, 4.0),
+                            3.0,
+                            c.accent,
+                        );
+                    }
+                    if blink {
+                        ui.ctx().request_repaint_after(Duration::from_millis(150));
+                    }
+                }
+                if response.clicked() {
+                    self.settings_open = true;
+                    self.settings_page = SettingsPage::Updates;
                     self.transition = Some(Instant::now());
                 }
                 if icons::button(ui, Icon::Help, l.text("Как пользоваться"), false, c.muted)
@@ -617,6 +658,7 @@ impl Desktop {
             card(c).show(ui,|ui|{
                 ui.set_min_width((ui.available_width()-2.0).max(0.0));
                 match self.settings_page{
+                    SettingsPage::Updates=>ui.vertical(|ui| self.update_settings(ui)).response,
                     SettingsPage::Model=>ui.add_enabled_ui(self.job.is_none(),|ui|{
                         ui.columns(2,|columns|{
                             columns[0].horizontal(|ui|{
@@ -673,6 +715,108 @@ impl Desktop {
             });
             if let Some(error)=&self.preference_error{ui.label(RichText::new(format!("{}: {error}",l.text("Настройки не сохранены"))).small().color(c.error));}
         });
+    }
+
+    fn update_settings(&mut self, ui: &mut egui::Ui) {
+        let c = self.prefs.palette.colors();
+        let l = self.prefs.language;
+        ui.label(format!(
+            "Lyra {} · Windows x64 CPU",
+            env!("CARGO_PKG_VERSION")
+        ));
+        ui.label(
+            RichText::new(l.text("GitHub Releases · скачивание и установка только по кнопке."))
+                .small()
+                .weak(),
+        );
+        if !updater::Controller::supported() {
+            ui.label(l.text("Установка обновлений доступна в portable Windows x64 CPU. Для других сборок скачай пакет вручную."));
+            return;
+        }
+        icons::toggle(
+            ui,
+            &mut self.prefs.check_updates,
+            l.text("Проверять обновления каждые 5 минут"),
+            self.prefs.animations,
+            c.accent,
+            c.on_accent,
+        );
+        let preview_changed = ui
+            .add_enabled_ui(!self.updates.busy(), |ui| {
+                icons::toggle(
+                    ui,
+                    &mut self.prefs.preview_updates,
+                    l.text("Предварительные версии"),
+                    self.prefs.animations,
+                    c.accent,
+                    c.on_accent,
+                )
+                .changed()
+            })
+            .inner;
+        if preview_changed && !self.updates.busy() {
+            self.updates.available = None;
+            self.updates.ready = None;
+        }
+        ui.add_space(6.0);
+        ui.label(l.text(&self.updates.message));
+        if let Some(r) = &self.updates.available {
+            ui.label(format!("{} → {}", env!("CARGO_PKG_VERSION"), r.version));
+        }
+        if self.updates.kind() == Some(updater::Kind::Download) {
+            let total = self.updates.available.as_ref().map(|r| r.size).unwrap_or(1);
+            ui.add(
+                egui::ProgressBar::new(self.updates.downloaded() as f32 / total as f32)
+                    .show_percentage(),
+            );
+        }
+        ui.horizontal_wrapped(|ui| {
+            if ui
+                .add_enabled(
+                    !self.updates.busy() && self.updates.ready.is_none(),
+                    egui::Button::new(l.text("Проверить обновления")),
+                )
+                .clicked()
+                && self.real_app
+            {
+                self.updates.check(self.prefs.preview_updates, ui.ctx());
+            }
+            if self.updates.available.is_some()
+                && self.updates.ready.is_none()
+                && ui
+                    .add_enabled(
+                        !self.updates.busy(),
+                        egui::Button::new(l.text("Скачать обновление")),
+                    )
+                    .clicked()
+                && self.real_app
+            {
+                self.updates.download(ui.ctx());
+            }
+            if self.updates.ready.is_some()
+                && ui
+                    .add_enabled(
+                        !self.updates.busy() && self.job.is_none(),
+                        egui::Button::new(l.text("Установить и перезапустить")),
+                    )
+                    .clicked()
+            {
+                self.update_confirm = true;
+            }
+            if self.updates.busy()
+                && self.updates.kind() != Some(updater::Kind::Prepare)
+                && ui.button(l.text("Отмена")).clicked()
+            {
+                self.updates.cancel();
+            }
+        });
+        if self.job.is_some() {
+            ui.label(l.text("Перед установкой заверши или останови текущую операцию."));
+        }
+        if let Some(error) = &self.updates.error {
+            ui.add(egui::Label::new(RichText::new(error).small().color(c.error)).wrap());
+        }
+        ui.label(RichText::new(l.text("Модель работает локально. Проверку обновлений можно отключить; CLI к сети не обращается.")).small().weak());
     }
 
     fn hardware_view(&self, ui: &mut egui::Ui) {
@@ -911,6 +1055,25 @@ impl Desktop {
                 });
             });
         }
+        if self.update_confirm {
+            egui::Modal::new(egui::Id::unique("confirm-update")).show(ui.ctx(), |ui| {
+                ui.set_max_width(430.0);
+                ui.heading(l.text("Установить и перезапустить?"));
+                ui.label(l.text("Текущая задача и отчёт в памяти не переносятся. Сохрани нужный отчёт перед продолжением."));
+                ui.label(l.text("Проекты, модели и локальные настройки сохраняются."));
+                ui.horizontal(|ui| {
+                    if ui.add_enabled(self.job.is_none(), egui::Button::new(l.text("Установить и перезапустить"))).clicked() {
+                        self.update_confirm = false;
+                        let saved = self.storage.as_ref().ok_or_else(|| io::Error::other("Settings directory unavailable")).and_then(|p| self.prefs.save(p));
+                        match saved {
+                            Ok(()) => {self.last_attempted = self.prefs.clone(); self.updates.prepare(ui.ctx());}
+                            Err(e) => self.preference_error = Some(e.to_string()),
+                        }
+                    }
+                    if ui.button(l.text("Отмена")).clicked() {self.update_confirm = false;}
+                });
+            });
+        }
         if self.help_open {
             egui::Modal::new(egui::Id::unique("help")).show(ui.ctx(), |ui| {
                 ui.heading(l.text("Как пользоваться"));
@@ -953,6 +1116,13 @@ impl Desktop {
                 Err(e) => app.preference_error = Some(e.to_string()),
             }
         }
+        app.real_app = true;
+        app.updates.configure(
+            app.storage
+                .as_ref()
+                .and_then(|p| p.parent())
+                .map(|p| p.join("updater")),
+        );
         app.last_attempted = app.prefs.clone();
         app
     }
@@ -987,6 +1157,21 @@ impl Drop for Desktop {
 impl eframe::App for Desktop {
     fn logic(&mut self, ctx: &egui::Context, _: &mut eframe::Frame) {
         self.poll();
+        let visible = !ctx.input(|i| i.viewport().minimized.unwrap_or(false));
+        self.updates.tick(
+            ctx,
+            self.prefs.check_updates,
+            self.prefs.preview_updates,
+            visible,
+            self.real_app,
+        );
+        if self.updates.close_now {
+            ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+        } else if self.updates.kind() == Some(updater::Kind::Prepare)
+            && ctx.input(|i| i.viewport().close_requested())
+        {
+            ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
+        }
         if self.job.is_some() && !ctx.input(|i| i.viewport().minimized.unwrap_or(false)) {
             ctx.request_repaint_after(Duration::from_millis(250));
         }
@@ -996,17 +1181,20 @@ impl eframe::App for Desktop {
             let step = counter
                 .load(std::sync::atomic::Ordering::Relaxed)
                 .min(SMOKE_STEPS - 1);
-            self.prefs.palette = Palette::ALL[step / 12];
-            self.prefs.language = if (step / 6) % 2 == 0 {
+            self.prefs.palette = Palette::ALL[step / 14];
+            self.prefs.language = if (step / 7) % 2 == 0 {
                 Language::Ru
             } else {
                 Language::En
             };
             self.prefs.animations = self.prefs.language == Language::Ru;
-            self.settings_open = step % 6 != 0;
-            self.settings_page = SettingsPage::ALL[(step % 6).saturating_sub(1)];
+            self.settings_open = step % 7 != 0;
+            self.settings_page = SettingsPage::ALL[(step % 7).saturating_sub(1)];
         }
         self.draw(ui);
+        if self.real_app {
+            self.updates.acknowledge_startup();
+        }
         if let Some(counter) = &self.smoke {
             if counter.fetch_add(1, std::sync::atomic::Ordering::Relaxed) + 1 >= SMOKE_STEPS {
                 ui.ctx().send_viewport_cmd(egui::ViewportCommand::Close);
@@ -1135,7 +1323,7 @@ mod tests {
                     app.prefs.palette = palette;
                     app.prefs.language = language;
                     app.prefs.animations = false;
-                    for page in 0usize..6 {
+                    for page in 0usize..7 {
                         app.settings_open = page != 0;
                         app.settings_page = SettingsPage::ALL[page.saturating_sub(1)];
                         let mut output = ctx.run_ui(
