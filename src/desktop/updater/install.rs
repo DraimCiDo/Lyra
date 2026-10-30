@@ -416,6 +416,9 @@ fn transaction(p: &Plan) -> io::Result<()> {
         safe_copy(&p.root.join(name), &p.stage.join("backup").join(name))?;
     }
     old.verify(&p.stage.join("backup"))?;
+    if hash_file(&p.stage.join("backup").join(MANIFEST))? != p.old_manifest_sha256 {
+        return Err(error("Backup manifest changed while installing"));
+    }
     let mut replaced = Vec::new();
     let result = (|| {
         for name in files() {

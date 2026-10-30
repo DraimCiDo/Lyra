@@ -205,6 +205,7 @@ pub fn unpack(
     fs::create_dir(&payload)?;
     let mut seen = BTreeSet::new();
     let mut total = 0u64;
+    let mut expanded = 0u64;
     for i in 0..archive.len() {
         cancelled(cancel)?;
         let mut entry = archive.by_index(i).map_err(error)?;
@@ -252,7 +253,8 @@ pub fn unpack(
                 break;
             }
             bytes += n as u64;
-            if bytes > limit {
+            expanded += n as u64;
+            if bytes > limit || expanded > EXPANDED_LIMIT {
                 return Err(error("ZIP entry exceeds its limit"));
             }
             output.write_all(&buffer[..n])?;
