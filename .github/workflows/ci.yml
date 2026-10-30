@@ -92,6 +92,7 @@ jobs:
           New-Item -ItemType Directory -Force -Path dist | Out-Null
           Copy-Item -LiteralPath './target/${{ matrix.target }}/release/${{ matrix.binary }}' -Destination dist
           Copy-Item -LiteralPath docs/DISTRIBUTION.md -Destination dist/README.md
+          "`nSource commit: https://github.com/DraimCiDo/Lyra/tree/$env:GITHUB_SHA" | Add-Content -Encoding utf8NoBOM -LiteralPath dist/README.md
           Copy-Item -LiteralPath Cargo.lock -Destination dist
           New-Item -ItemType Directory -Force -Path dist/docs, dist/examples | Out-Null
           Copy-Item -LiteralPath docs/ACCEPTANCE.md, docs/LOCAL_MODELS.md -Destination dist/docs
