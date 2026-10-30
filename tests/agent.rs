@@ -252,6 +252,30 @@ fn nested_whitelist_cannot_reopen_an_ignored_parent() {
     assert!(Workspace::open(&repo.0, &["sealed/public.rs".into()]).is_err());
 }
 
+#[test]
+fn read_only_files_are_not_replaced_or_left_with_staging_files() {
+    let repo = Repo::new();
+    repo.write("src/lib.rs", "old");
+    let mut workspace = Workspace::open(&repo.0, &[]).unwrap();
+    let edit = workspace.propose("src/lib.rs", "old", "new").unwrap();
+    let path = repo.0.join("src/lib.rs");
+    let original = std::fs::metadata(&path).unwrap().permissions();
+    let mut readonly = original.clone();
+    readonly.set_readonly(true);
+    std::fs::set_permissions(&path, readonly).unwrap();
+    let result = workspace.apply(&edit);
+    std::fs::set_permissions(&path, original).unwrap();
+    assert!(result.is_err());
+    assert_eq!(std::fs::read_to_string(&path).unwrap(), "old");
+    assert!(!std::fs::read_dir(&repo.0).unwrap().any(|entry| {
+        entry
+            .unwrap()
+            .file_name()
+            .to_string_lossy()
+            .starts_with(".lyra-apply")
+    }));
+}
+
 #[cfg(windows)]
 #[test]
 fn windows_junction_cannot_escape_the_workspace() {

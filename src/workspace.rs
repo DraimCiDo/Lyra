@@ -302,6 +302,12 @@ impl Workspace {
         self.safe_path(&edit.path)?;
         let current = self.dir.open(&edit.path)?;
         let permissions = current.metadata()?.permissions();
+        if permissions.readonly() {
+            return Err(io::Error::new(
+                io::ErrorKind::PermissionDenied,
+                "Файл помечен read-only; замена запрещена.",
+            ));
+        }
         let mut text = String::new();
         current
             .take((FILE_LIMIT + 1) as u64)
