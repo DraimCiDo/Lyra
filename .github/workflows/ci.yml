@@ -56,6 +56,16 @@ jobs:
         run: cargo clippy --workspace --all-targets --locked -- -D warnings
       - name: Tests
         run: cargo test --workspace --locked
+      - name: Explicit real CPU inference smoke (tiny GGUF)
+        run: |
+          $model = Join-Path $env:RUNNER_TEMP 'lyra-stories260K.gguf'
+          Invoke-WebRequest -Uri 'https://huggingface.co/ggml-org/models/resolve/499bc8821c6b12b4e53c5bffcb21ec206f212d81/tinyllamas/stories260K.gguf' -OutFile $model
+          $hash = (Get-FileHash -Algorithm SHA256 -LiteralPath $model).Hash.ToLowerInvariant()
+          if ($hash -ne '270cba1bd5109f42d03350f60406024560464db173c0e387d91f0426d3bd256d') { throw 'Test model checksum mismatch' }
+          $env:LYRA_TEST_MODEL = $model
+          cargo test --locked --test inference -- --ignored
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          Remove-Item -LiteralPath $model
       - name: Release build
         run: cargo build --release --locked --target ${{ matrix.target }}
       - name: Smoke test built binary

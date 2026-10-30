@@ -92,7 +92,7 @@ fn a_corrupt_header_is_rejected_before_native_loading() {
 }
 
 #[test]
-#[ignore = "requires explicitly supplied LYRA_TEST_MODEL; ordinary CI downloads no weights"]
+#[ignore = "requires explicitly supplied LYRA_TEST_MODEL; tests never auto-download weights"]
 fn real_local_model_generates_with_a_token_limit() {
     let path = std::env::var("LYRA_TEST_MODEL").expect("set LYRA_TEST_MODEL to a local test GGUF");
     let output = run(&[
