@@ -175,6 +175,62 @@ impl Language {
             return ru;
         }
         match ru {
+            "Проект · необязательно" => "Project · optional",
+            "Выбрать существующий проект" => "Choose existing project",
+            "Без проекта · создавать с нуля" => {
+                "No project · create from scratch"
+            }
+            "Выбрать GGUF" => "Choose GGUF",
+            "Новый чат" => "New chat",
+            "Что сделаем?" => "What shall we do?",
+            "Разобраться в проекте" => "Understand the project",
+            "Изучи проект и объясни его устройство." => {
+                "Explore the project and explain its structure."
+            }
+            "Ответь следующим сообщением. Файлы ещё не созданы." => {
+                "Reply in your next message. No files have been created."
+            }
+            "Опиши задачу. Существующий проект можно выбрать сверху." => {
+                "Describe your task. Choose an existing project above if needed."
+            }
+            "Сайт на Vue и TypeScript" => "Website with Vue and TypeScript",
+            "Создай адаптивный сайт на Vue и TypeScript. Уточни назначение и визуальное направление." => {
+                "Create a responsive website with Vue and TypeScript. Ask about its purpose and visual direction."
+            }
+            "Создай адаптивный сайт на Vue и TypeScript." => {
+                "Create a responsive website with Vue and TypeScript."
+            }
+            "Какое назначение сайта и какие примеры оформления тебе нравятся?" => {
+                "What is the website for, and which visual references do you like?"
+            }
+            "Вы" => "You",
+            "Файлы и предложения" => "Files and proposals",
+            "Файлы нового проекта" => "New project files",
+            "Имя папки" => "Folder name",
+            "Создать проект…" => "Create project…",
+            "Где сохранить новый проект?" => {
+                "Where should the new project be saved?"
+            }
+            "Сборка и тесты ещё не запускались. Создание — только в новой папке." => {
+                "Build and tests have not run. Only a new folder can be created."
+            }
+            "Напиши, что нужно сделать…" => "Describe what you need…",
+            "Enter — отправить · Shift+Enter — новая строка" => {
+                "Enter to send · Shift+Enter for a new line"
+            }
+            "Отправить" => "Send",
+            "Локальная модель · файлы меняются после просмотра" => {
+                "Local model · review changes before applying"
+            }
+            "1. Выбери локальную GGUF. Папка проекта — по необходимости." => {
+                "1. Choose a local GGUF. A project folder is optional."
+            }
+            "2. Напиши задачу в чате. Без папки Lyra подготовит новый проект." => {
+                "2. Write a message. Without a folder, Lyra plans a new project."
+            }
+            "3. Ответь на вопросы, просмотри файлы и явно создай проект или примени правку." => {
+                "3. Answer questions, review files, then explicitly create or apply."
+            }
             "Обязательные файлы, по одному на строке (необязательно)" => {
                 "Required files, one per line (optional)"
             }

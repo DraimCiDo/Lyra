@@ -346,3 +346,49 @@ fn profile_hints_do_not_confuse_trusted_with_rust_or_wallpaper_with_paper() {
         Profile::PaperKotlin
     );
 }
+
+#[test]
+fn vue_web_context_respects_explicit_languages_and_real_manifest_dependencies() {
+    for profile in Profile::ALL {
+        let wire = serde_json::to_string(&profile).unwrap();
+        assert!(
+            project::PLAN_GRAMMAR.contains(&serde_json::to_string(&wire).unwrap()),
+            "Profile {wire} is missing from native grammar"
+        );
+    }
+    use project::profile::{infer, version_hint};
+    assert_eq!(infer("Создай сайт"), Profile::VueTypeScript);
+    assert_eq!(
+        infer("Vue frontend with TypeScript"),
+        Profile::VueTypeScript
+    );
+    assert_eq!(infer("Vue with JavaScript"), Profile::JavaScript);
+    assert_eq!(infer("Rust backend for a website"), Profile::Rust);
+    assert_eq!(
+        version_hint(Profile::PaperJava, "Paper плагин\nВерсия 1.21.11"),
+        "1.21.11"
+    );
+    assert!(version_hint(Profile::PaperJava, "1.20.6 или 1.21.11").is_empty());
+    assert!(version_hint(Profile::VueTypeScript, "Vue 3.5").is_empty());
+    let root = tempfile::tempdir().unwrap();
+    fs::write(
+        root.path().join("package.json"),
+        r#"{"dependencies":{"vue":"3.5.0"},"devDependencies":{"typescript":"5.0.0"}}"#,
+    )
+    .unwrap();
+    let mut workspace = lyra::workspace::Workspace::open(root.path(), &[]).unwrap();
+    assert_eq!(
+        project::inspect(&mut workspace).unwrap().profile,
+        Profile::VueTypeScript
+    );
+    fs::write(
+        root.path().join("package.json"),
+        r#"{"description":"Vue TypeScript website","dependencies":{"react":"19.0.0"}}"#,
+    )
+    .unwrap();
+    let mut workspace = lyra::workspace::Workspace::open(root.path(), &[]).unwrap();
+    assert_eq!(
+        project::inspect(&mut workspace).unwrap().profile,
+        Profile::JavaScript
+    );
+}

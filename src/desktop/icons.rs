@@ -2,6 +2,8 @@
 use eframe::egui::{self, Color32};
 #[derive(Clone, Copy)]
 pub enum Icon {
+    ArrowUp,
+    NewChat,
     FolderPlus,
     BookOpen,
     Download,
@@ -25,7 +27,9 @@ pub enum Icon {
     Moon,
 }
 impl Icon {
-    pub const ALL: [Self; 21] = [
+    pub const ALL: [Self; 23] = [
+        Self::ArrowUp,
+        Self::NewChat,
         Self::FolderPlus,
         Self::BookOpen,
         Self::Download,
@@ -58,6 +62,8 @@ impl Icon {
             };
         }
         match self {
+            Self::ArrowUp => svg!("arrow-up"),
+            Self::NewChat => svg!("message-square-plus"),
             Self::FolderPlus => svg!("folder-plus"),
             Self::BookOpen => svg!("book-open"),
             Self::Download => svg!("download"),

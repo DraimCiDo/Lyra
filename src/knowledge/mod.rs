@@ -297,7 +297,7 @@ pub fn import(files: &[PathBuf], profile: Profile, version: &str) -> io::Result<
         if !path.extension().and_then(|e| e.to_str()).is_some_and(|e| {
             matches!(
                 e.to_ascii_lowercase().as_str(),
-                "md" | "txt" | "rst" | "c" | "java" | "kt" | "rs"
+                "md" | "txt" | "rst" | "c" | "java" | "kt" | "rs" | "ts" | "vue" | "css"
             )
         }) {
             return Err(err(
@@ -372,6 +372,26 @@ pub fn sources(profile: Profile, version: &str) -> io::Result<Vec<Location>> {
             "https://www.typescriptlang.org/docs/handbook/intro.html",
             "rolling; check TypeScript and runtime versions",
         ),
+        Profile::VueTypeScript => {
+            add(
+                "vue-typescript",
+                "Vue with TypeScript",
+                "https://vuejs.org/guide/typescript/overview.html",
+                "rolling Vue 3; check the installed Vue and vue-tsc versions",
+            );
+            add(
+                "vite-guide",
+                "Vite guide",
+                "https://vite.dev/guide/",
+                "rolling; verify Node.js and installed Vite compatibility",
+            );
+            add(
+                "typescript-handbook",
+                "TypeScript handbook",
+                "https://www.typescriptlang.org/docs/handbook/intro.html",
+                "rolling; check the installed TypeScript version",
+            );
+        }
         Profile::Dotnet => add(
             "dotnet",
             ".NET documentation",

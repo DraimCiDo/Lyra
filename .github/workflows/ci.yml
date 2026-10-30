@@ -121,7 +121,7 @@ jobs:
           "`nSource commit: https://github.com/DraimCiDo/Lyra/tree/$env:GITHUB_SHA" | Add-Content -Encoding utf8NoBOM -LiteralPath dist/README.md
           Copy-Item -LiteralPath Cargo.lock -Destination dist
           New-Item -ItemType Directory -Force -Path dist/docs, dist/examples | Out-Null
-          Copy-Item -LiteralPath docs/ACCEPTANCE.md, docs/LOCAL_MODELS.md, docs/DESKTOP.md, docs/UPDATES.md, docs/PROJECTS.md, docs/KNOWLEDGE.md -Destination dist/docs
+          Copy-Item -LiteralPath docs/ACCEPTANCE.md, docs/LOCAL_MODELS.md, docs/DESKTOP.md, docs/UPDATES.md, docs/PROJECTS.md, docs/KNOWLEDGE.md, docs/WEB_PROJECTS.md -Destination dist/docs
           Copy-Item -LiteralPath examples/buggy-add -Destination dist/examples -Recurse
           python tools/collect_licenses.py --features desktop --target ${{ matrix.target }} --output dist/THIRD_PARTY_NOTICES.txt
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }

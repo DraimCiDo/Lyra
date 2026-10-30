@@ -1,4 +1,5 @@
 //! Native shell around the same CLI contracts. No inference or filesystem policy in widgets.
+mod chat;
 mod icons;
 mod job;
 mod preferences;
@@ -145,11 +146,6 @@ impl SettingsPage {
 }
 
 #[derive(Clone, Copy, PartialEq)]
-enum Tab {
-    Changes,
-    Activity,
-}
-#[derive(Clone, Copy, PartialEq)]
 enum Operation {
     Task,
     Apply(usize),
@@ -161,7 +157,9 @@ enum Operation {
 }
 
 struct Desktop {
-    wizard: projects::Wizard,
+    chat: chat::Chat,
+    draft: projects::ProjectDraft,
+    request_task: String,
     knowledge_ui: projects::KnowledgeUi,
     updates: updater::Controller,
     update_confirm: bool,
@@ -184,7 +182,6 @@ struct Desktop {
     report_json: Vec<u8>,
     applied: Vec<usize>,
     selected: usize,
-    tab: Tab,
     message: String,
     log: String,
     hardware: Option<serde_json::Value>,
@@ -195,7 +192,9 @@ struct Desktop {
 impl Default for Desktop {
     fn default() -> Self {
         Self {
-            wizard: projects::Wizard::default(),
+            chat: chat::Chat::default(),
+            draft: projects::ProjectDraft::default(),
+            request_task: String::new(),
             knowledge_ui: projects::KnowledgeUi::default(),
             updates: updater::Controller::default(),
             update_confirm: false,
@@ -218,7 +217,6 @@ impl Default for Desktop {
             report_json: Vec::new(),
             applied: Vec::new(),
             selected: 0,
-            tab: Tab::Changes,
             message: "Готова к локальной работе".into(),
             log: String::new(),
             hardware: None,
@@ -252,9 +250,9 @@ impl Desktop {
                     .model
                     .as_ref()
                     .ok_or_else(|| io::Error::other("Выберите GGUF-модель."))?;
-                validate_task(&self.task, &self.prefs.files)?;
+                validate_task(&self.request_task, &self.prefs.files)?;
                 let task_path = temp.path().join("task.txt");
-                std::fs::write(&task_path, &self.task)?;
+                std::fs::write(&task_path, &self.request_task)?;
                 args.extend([
                     "task".into(),
                     "--repo".into(),
@@ -292,7 +290,6 @@ impl Desktop {
                 self.report_json.clear();
                 self.applied.clear();
                 self.selected = 0;
-                self.tab = Tab::Changes;
                 Some(Duration::from_secs(self.prefs.timeout + 5))
             }
             Operation::Apply(index) => {
@@ -355,7 +352,10 @@ impl Desktop {
         self.job = None;
         match result {
             Ok(result) => self.complete(result),
-            Err(error) => self.fail(error),
+            Err(error) => {
+                self.fail(error);
+                self.finish_chat();
+            }
         }
     }
 
@@ -369,6 +369,7 @@ impl Desktop {
                     "Задача остановлена. Правки не применялись."
                 },
             );
+            self.finish_chat();
             return;
         }
         let seconds = result.elapsed.as_secs_f32();
@@ -423,6 +424,15 @@ impl Desktop {
                 }
             }
         }
+        if !self.error
+            && matches!(
+                self.operation,
+                Operation::Apply(_) | Operation::ProjectCreate
+            )
+        {
+            self.chat.notice(self.message.clone());
+        }
+        self.finish_chat();
     }
 
     fn header(&mut self, ui: &mut egui::Ui) {
@@ -498,180 +508,6 @@ impl Desktop {
         });
     }
 
-    fn home(&mut self, ui: &mut egui::Ui) {
-        let c = self.prefs.palette.colors();
-        let l = self.prefs.language;
-        ui.columns(2, |columns| {
-            for (column, model) in columns.iter_mut().zip([false, true]) {
-                let path = if model {
-                    self.prefs.model.as_ref()
-                } else {
-                    self.prefs.repo.as_ref()
-                };
-                let title = if model {
-                    l.text("Модель GGUF")
-                } else {
-                    l.text("Проект")
-                };
-                let name = path
-                    .and_then(|p| p.file_name())
-                    .map(|n| n.to_string_lossy().into_owned())
-                    .unwrap_or_else(|| l.text("Выбрать…").into());
-                let full = path
-                    .map(|p| p.display().to_string())
-                    .unwrap_or_else(|| l.text("Выбрать…").into());
-                let width = column.available_width();
-                let response = column
-                    .add_enabled(
-                        self.job.is_none(),
-                        egui::Button::image_and_text(
-                            if model { Icon::Model } else { Icon::Folder }.image(c.accent),
-                            format!("{title}  ·  {name}"),
-                        )
-                        .min_size(egui::vec2(width, 40.0))
-                        .fill(c.card)
-                        .corner_radius(10)
-                        .wrap_mode(egui::TextWrapMode::Truncate),
-                    )
-                    .on_hover_text(full);
-                if response.clicked() {
-                    self.choose_path(model);
-                }
-            }
-        });
-        ui.horizontal(|ui| {
-            if ui
-                .add_enabled(
-                    self.job.is_none(),
-                    egui::Button::image_and_text(
-                        Icon::FolderPlus.image(c.accent),
-                        l.text("Новый проект"),
-                    ),
-                )
-                .clicked()
-            {
-                self.wizard.open = true;
-            }
-            if ui.small_button(l.text("Документация")).clicked() {
-                self.settings_open = true;
-                self.settings_page = SettingsPage::Knowledge;
-                self.transition = Some(Instant::now());
-            }
-            if let Some(path) = &self.prefs.documentation {
-                ui.add(
-                    egui::Label::new(
-                        RichText::new(path.file_name().unwrap_or_default().to_string_lossy())
-                            .small()
-                            .weak(),
-                    )
-                    .truncate(),
-                );
-            }
-        });
-        ui.add_space(3.0);
-        ui.add_enabled(
-            self.job.is_none(),
-            egui::TextEdit::multiline(&mut self.task)
-                .desired_rows(3)
-                .desired_width(f32::INFINITY)
-                .char_limit(16384)
-                .hint_text(l.text("Опиши задачу для выбранного проекта…")),
-        );
-        ui.horizontal(|ui| {
-            let ready = self.job.is_none()
-                && self.prefs.repo.is_some()
-                && self.prefs.model.is_some()
-                && !self.task.trim().is_empty();
-            let start = ui.add_enabled(
-                ready,
-                egui::Button::image_and_text(
-                    Icon::Play.image(c.on_accent),
-                    RichText::new(l.text("Запустить"))
-                        .color(c.on_accent)
-                        .strong(),
-                )
-                .fill(c.accent),
-            );
-            if start.clicked()
-                && let Err(e) = self.start(Operation::Task, ui.ctx())
-            {
-                self.fail(e);
-            }
-            if let Some(job) = &self.job {
-                ui.label(format!("{:.0} s", job.started.elapsed().as_secs_f32()));
-                if job.cancellable
-                    && icons::action(ui, Icon::Stop, l.text("Остановить"), c.error).clicked()
-                {
-                    job.cancel();
-                }
-            } else if self.prefs.subagents {
-                ui.add(Icon::Workers.image(c.muted));
-                ui.label(
-                    RichText::new(l.text("С исследователем и ревьюером"))
-                        .small()
-                        .weak(),
-                );
-            }
-        });
-        let message = self.prefs.language.text(&self.message);
-        ui.add(
-            egui::Label::new(RichText::new(message).small().color(if self.error {
-                c.error
-            } else {
-                c.success
-            }))
-            .truncate(),
-        )
-        .on_hover_text(message);
-        ui.horizontal(|ui| {
-            for (tab, icon, title) in [
-                (Tab::Changes, Icon::Model, "Предложения"),
-                (Tab::Activity, Icon::Log, "Журнал"),
-            ] {
-                if ui
-                    .add(
-                        egui::Button::image_and_text(
-                            icon.image(if self.tab == tab { c.accent } else { c.muted }),
-                            l.text(title),
-                        )
-                        .selected(self.tab == tab),
-                    )
-                    .clicked()
-                    && self.tab != tab
-                {
-                    self.tab = tab;
-                    self.transition = Some(Instant::now());
-                }
-            }
-        });
-        egui::ScrollArea::vertical()
-            .id_salt("results")
-            .auto_shrink([false, false])
-            .show(ui, |ui| match self.tab {
-                Tab::Changes => self.changes(ui),
-                Tab::Activity => {
-                    if let Some(report) = &self.report {
-                        ui.label(format!("{}: {}", l.text("Статус"), report.status));
-                        for event in &report.events {
-                            ui.label(format!(
-                                "{} · {} · {} · {}",
-                                event.call, event.role, event.tool, event.outcome
-                            ));
-                        }
-                    }
-                    selectable_code(ui, &self.log, c.muted);
-                    if self.log.is_empty() {
-                        ui.label(
-                            RichText::new(
-                                l.text("После задачи здесь появятся действия и журнал движка."),
-                            )
-                            .weak(),
-                        );
-                    }
-                }
-            });
-    }
-
     fn choose_path(&mut self, model: bool) {
         let l = self.prefs.language;
         if model {
@@ -685,7 +521,10 @@ impl Desktop {
         } else if let Some(p) = rfd::FileDialog::new()
             .set_title(l.text("Проект"))
             .pick_folder()
+            && self.prefs.repo.as_ref() != Some(&p)
         {
+            self.reset_chat();
+            self.prefs.files.clear();
             self.prefs.repo = Some(p);
         }
     }
@@ -1105,10 +944,9 @@ impl Desktop {
                 if self.settings_open {
                     self.settings(ui);
                 } else {
-                    self.home(ui);
+                    self.chat_home(ui);
                 }
             });
-        self.project_dialog(ui.ctx());
         if let Some(index) = self.confirm {
             let path = self
                 .report
@@ -1158,10 +996,10 @@ impl Desktop {
         if self.help_open {
             egui::Modal::new(egui::Id::unique("help")).show(ui.ctx(), |ui| {
                 ui.heading(l.text("Как пользоваться"));
-                ui.label(l.text("1. Выбери папку проекта и instruction-модель GGUF."));
-                ui.label(l.text("2. Опиши задачу и запусти. При необходимости останови её."));
+                ui.label(l.text("1. Выбери локальную GGUF. Папка проекта — по необходимости."));
+                ui.label(l.text("2. Напиши задачу в чате. Без папки Lyra подготовит новый проект."));
                 ui.label(l.text(
-                    "3. Просмотри предложение, подтверди применение и запусти тесты проекта.",
+                    "3. Ответь на вопросы, просмотри файлы и явно создай проект или примени правку.",
                 ));
                 ui.label(
                     RichText::new(l.text(
@@ -1270,7 +1108,7 @@ impl eframe::App for Desktop {
             };
             self.prefs.animations = self.prefs.language == Language::Ru;
             self.settings_open = step % 9 != 0 && step % 9 != 8;
-            self.wizard.open = step % 9 == 8;
+            self.smoke_conversation(step % 9 == 8);
             self.settings_page = SettingsPage::ALL[(step % 9).saturating_sub(1).min(6)];
         }
         self.draw(ui);
@@ -1410,7 +1248,7 @@ mod tests {
                     app.prefs.animations = false;
                     for page in 0usize..9 {
                         app.settings_open = page != 0 && page != 8;
-                        app.wizard.open = page == 8;
+                        app.smoke_conversation(page == 8);
                         app.settings_page = SettingsPage::ALL[page.saturating_sub(1).min(6)];
                         let mut output = ctx.run_ui(
                             egui::RawInput {

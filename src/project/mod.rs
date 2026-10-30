@@ -385,13 +385,29 @@ pub fn inspect(workspace: &mut crate::workspace::Workspace) -> io::Result<Contex
             candidates.push((Profile::Python, "Python manifest"));
         }
         if workspace.files.contains("package.json") {
+            let manifest = workspace
+                .read("package.json")
+                .ok()
+                .and_then(|text| serde_json::from_str::<serde_json::Value>(&text).ok());
+            let dependency = |name: &str| {
+                manifest.as_ref().is_some_and(|m| {
+                    ["dependencies", "devDependencies"].iter().any(|key| {
+                        m.get(key)
+                            .and_then(|deps| deps.get(name))
+                            .is_some_and(|v| v.is_string())
+                    })
+                })
+            };
             let ts = workspace.files.contains("tsconfig.json")
+                || dependency("typescript")
                 || workspace
                     .files
                     .iter()
                     .any(|p| p.ends_with(".ts") || p.ends_with(".tsx"));
             candidates.push((
-                if ts {
+                if ts && dependency("vue") {
+                    Profile::VueTypeScript
+                } else if ts {
                     Profile::TypeScript
                 } else {
                     Profile::JavaScript

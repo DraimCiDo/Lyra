@@ -68,7 +68,7 @@ examples/render-icon.rs; для пользователя Python не нужен.
 
 Проекты с нуля: [схема/создание/контекст](../src/project/mod.rs),
 [профили](../src/project/profile.rs), [каркасы](../src/project/templates.rs),
-[AI planner/grammar](../src/project/planner.rs), [мастер GUI](../src/desktop/projects.rs),
+[AI planner/grammar](../src/project/planner.rs), [результаты/worker GUI](../src/desktop/projects.rs),
 [тесты](../tests/projects.rs), [инструкция](PROJECTS.md),
 [текущий план](plans/0008-projects-knowledge.md).
 Документация: [packs/search](../src/knowledge/mod.rs),
@@ -76,3 +76,8 @@ examples/render-icon.rs; для пользователя Python не нужен.
 [инструкция](KNOWLEDGE.md). Новые файлы: Workspace::propose_new/apply,
 Action::ProposeFile; отчёт v2, v1 legacy edits читаются. Каркасы с внешними SDK
 проверяются [developer/CI harness](../tools/verify_starters.py), без исполнения AI-кода.
+
+Чат: [история/главный экран](../src/desktop/chat.rs), [план](plans/0009-chat-web.md).
+Один ввод, необязательный repo; без него planner, с ним task. История только в RAM,
+с ограничением числа/размера сообщений и сбросом при смене проекта.
+Веб-профиль Vue/TypeScript: [рекомендации и приёмка](WEB_PROJECTS.md).

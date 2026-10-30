@@ -6,30 +6,26 @@ use crate::{
 };
 use std::path::Path;
 
-pub(super) struct Wizard {
-    pub open: bool,
-    parent: Option<PathBuf>,
-    name: String,
-    profile: Profile,
-    version: String,
-    task: String,
-    required_files: String,
-    ai: bool,
-    plan: Option<Blueprint>,
-    selected: usize,
-    error: Option<String>,
+pub(super) struct ProjectDraft {
+    pub(super) parent: Option<PathBuf>,
+    pub(super) name: String,
+    pub(super) profile: Profile,
+    pub(super) version: String,
+    pub(super) task: String,
+    pub(super) required_files: String,
+    pub(super) plan: Option<Blueprint>,
+    pub(super) selected: usize,
+    pub(super) error: Option<String>,
 }
-impl Default for Wizard {
+impl Default for ProjectDraft {
     fn default() -> Self {
         Self {
-            open: false,
             parent: None,
             name: "new-project".into(),
             profile: Profile::Generic,
             version: String::new(),
             task: String::new(),
             required_files: String::new(),
-            ai: true,
             plan: None,
             selected: 0,
             error: None,
@@ -80,8 +76,8 @@ impl Desktop {
     ) -> io::Result<Option<Duration>> {
         match operation {
             Operation::ProjectPlan => {
-                validate_task(&self.wizard.task, "")?;
-                if !project::valid_name(&self.wizard.name) {
+                validate_task(&self.draft.task, "")?;
+                if !project::valid_name(&self.draft.name) {
                     return Err(io::Error::other(
                         "Имя проекта: a-z, 0-9, - или _, до 64 символов.",
                     ));
@@ -92,22 +88,22 @@ impl Desktop {
                     .as_ref()
                     .ok_or_else(|| io::Error::other("Выберите GGUF-модель."))?;
                 let path = temp.path().join("task.txt");
-                std::fs::write(&path, &self.wizard.task)?;
+                std::fs::write(&path, &self.draft.task)?;
                 args.extend([
                     "project".into(),
                     "plan".into(),
                     "--name".into(),
-                    self.wizard.name.clone().into(),
+                    self.draft.name.clone().into(),
                     "--task-file".into(),
                     path.into_os_string(),
                     "--profile".into(),
-                    serde_json::to_value(self.wizard.profile)
+                    serde_json::to_value(self.draft.profile)
                         .map_err(io::Error::other)?
                         .as_str()
                         .unwrap_or("generic")
                         .into(),
                     "--target-version".into(),
-                    self.wizard.version.clone().into(),
+                    self.draft.version.clone().into(),
                     "--model".into(),
                     model.as_os_str().into(),
                 ]);
@@ -121,7 +117,7 @@ impl Desktop {
                     args.extend([flag.into(), value.to_string().into()]);
                 }
                 for path in self
-                    .wizard
+                    .draft
                     .required_files
                     .lines()
                     .map(str::trim)
@@ -136,13 +132,13 @@ impl Desktop {
             }
             Operation::ProjectCreate => {
                 let plan = self
-                    .wizard
+                    .draft
                     .plan
                     .as_ref()
                     .ok_or_else(|| io::Error::other("Сначала подготовь и просмотри план."))?;
                 plan.ready()?;
                 let parent = self
-                    .wizard
+                    .draft
                     .parent
                     .as_ref()
                     .ok_or_else(|| io::Error::other("Выбери родительскую папку."))?;
@@ -211,7 +207,7 @@ impl Desktop {
                 self.operation,
                 Operation::ProjectPlan | Operation::ProjectCreate
             ) {
-                self.wizard.error = Some(message.clone());
+                self.draft.error = Some(message.clone());
             } else {
                 self.knowledge_ui.error = Some(message.clone());
             }
@@ -227,13 +223,13 @@ impl Desktop {
                         Ok(p)
                     }) {
                     Ok(plan) => {
-                        self.wizard.plan = Some(plan);
-                        self.wizard.error = None;
-                        self.wizard.selected = 0;
+                        self.draft.plan = Some(plan);
+                        self.draft.error = None;
+                        self.draft.selected = 0;
                         self.message = "План готов. Проверь файлы и вопросы.".into();
                     }
                     Err(e) => {
-                        self.wizard.error = Some(e.to_string());
+                        self.draft.error = Some(e.to_string());
                         self.fail(e);
                     }
                 }
@@ -241,23 +237,22 @@ impl Desktop {
             Operation::ProjectCreate => {
                 match serde_json::from_slice::<project::ProjectInfo>(bytes) {
                     Ok(info) => {
-                        if let Some(parent) = &self.wizard.parent {
+                        if let Some(parent) = &self.draft.parent {
                             self.prefs.repo = Some(parent.join(info.name));
                             self.prefs.files.clear();
                         }
-                        self.task = self.wizard.task.clone();
+                        self.task.clear();
                         self.report = None;
                         self.report_json.clear();
                         self.applied.clear();
-                        self.wizard.open = false;
-                        self.wizard.plan = None;
+                        self.draft.plan = None;
                         self.settings_open = false;
                         self.message =
                             "Проект создан. Сборка и внешние тесты ещё не выполнялись.".into();
                         self.error = false;
                     }
                     Err(e) => {
-                        self.wizard.error = Some(e.to_string());
+                        self.draft.error = Some(e.to_string());
                         self.fail(e);
                     }
                 }
@@ -273,60 +268,91 @@ impl Desktop {
             _ => {}
         }
     }
-    pub(super) fn project_dialog(&mut self, ctx: &egui::Context) {
-        if !self.wizard.open {
-            return;
-        }
+    pub(super) fn project_result(&mut self, ui: &mut egui::Ui) {
         let l = self.prefs.language;
         let c = self.prefs.palette.colors();
-        egui::Modal::new(egui::Id::unique("new-project")).show(ctx,|ui|{
-            ui.set_width((ctx.content_rect().width()-60.0).clamp(400.0,660.0));
-            ui.horizontal(|ui|{ui.heading(l.text("Новый проект"));ui.with_layout(egui::Layout::right_to_left(egui::Align::Center),|ui|{if icons::button(ui,Icon::Close,l.text("Закрыть"),false,c.muted).clicked(){self.wizard.open=false;}});});
-            egui::ScrollArea::vertical().id_salt("project-wizard").max_height((ctx.content_rect().height()-110.0).max(230.0)).show(ui,|ui|{
-                let key=(self.wizard.name.clone(),self.wizard.profile,self.wizard.version.clone(),self.wizard.task.clone(),self.wizard.ai,self.wizard.required_files.clone());
-                ui.add_enabled_ui(self.job.is_none(),|ui|{
-                    ui.horizontal(|ui|{ui.label(l.text("Имя"));ui.add(egui::TextEdit::singleline(&mut self.wizard.name).char_limit(64).desired_width(160.0));profile_picker(ui,"new-profile",&mut self.wizard.profile,l);});
-                    ui.horizontal(|ui|{ui.label(l.text("Версия платформы / SDK"));ui.add(egui::TextEdit::singleline(&mut self.wizard.version).char_limit(80).desired_width(160.0).hint_text("1.21.11"));});
-                    ui.label(RichText::new(l.text("Опиши результат, ограничения и критерии приёмки. Неизвестное можно оставить вопросом.")).small().weak());
-                    ui.add(egui::TextEdit::multiline(&mut self.wizard.task).desired_rows(3).desired_width(f32::INFINITY).char_limit(16384).hint_text(l.text("Что создать?")));
-                    ui.label(RichText::new(l.text("Обязательные файлы, по одному на строке (необязательно)")).small().weak());
-                    ui.add(egui::TextEdit::multiline(&mut self.wizard.required_files).desired_rows(1).desired_width(f32::INFINITY).char_limit(8192).hint_text("main.py"));
-                    ui.horizontal(|ui|{ui.radio_value(&mut self.wizard.ai,true,l.text("AI-проект"));ui.radio_value(&mut self.wizard.ai,false,l.text("Стартовый каркас"));});
-                    if self.wizard.ai {
-                        ui.label(RichText::new(format!("{}: {} / {}",l.text("Контекст / токены ответа"),self.prefs.context,self.prefs.tokens)).small().weak());
-                        ui.label(RichText::new(l.text("Для нескольких файлов обычно нужны 8192 контекста и 2048–4096 токенов ответа. Измени их в настройках модели.")).small().weak());
-                    } else {ui.label(RichText::new(l.text("Каркас не реализует задачу. После создания продолжи её на главной.")).small().weak());}
-                    if key!=(self.wizard.name.clone(),self.wizard.profile,self.wizard.version.clone(),self.wizard.task.clone(),self.wizard.ai,self.wizard.required_files.clone()){self.wizard.plan=None;}
-                    if icons::action(ui,Icon::Sparkles,l.text("Подготовить план"),c.accent).clicked(){
-                        self.wizard.plan=None;self.wizard.error=None;
-                        if self.wizard.ai {if self.real_app&&let Err(e)=self.start(Operation::ProjectPlan,ui.ctx()){self.wizard.error=Some(e.to_string());}}
-                        else {match project::starter(&project::StarterArgs{name:self.wizard.name.clone(),profile:self.wizard.profile,target_version:self.wizard.version.clone(),task:self.wizard.task.clone()}){Ok(mut p)=>{p.required_files=self.wizard.required_files.lines().map(str::trim).filter(|s|!s.is_empty()).map(str::to_owned).collect();match p.validate(){Ok(())=>{self.wizard.plan=Some(p);self.wizard.selected=0;},Err(e)=>self.wizard.error=Some(e.to_string())}},Err(e)=>self.wizard.error=Some(e.to_string())}}
-                    }
-                });
-
-                if self.job.is_some(){ui.horizontal(|ui|{ui.label(l.text(&self.message));if self.job.as_ref().is_some_and(|j|j.cancellable)&&ui.button(l.text("Остановить")).clicked()&&let Some(j)=&self.job{j.cancel();}});}
-                if let Some(plan)=&self.wizard.plan {
-                    ui.separator();ui.label(&plan.summary);
-                    for question in &plan.questions{ui.label(RichText::new(format!("? {question}")).color(c.accent));}
-                    for assumption in &plan.assumptions{ui.label(RichText::new(assumption).small().weak());}
-                    egui::CollapsingHeader::new(l.text("Требования и источники")).show(ui,|ui|{for r in &plan.requirements{ui.label(r);}for s in &plan.provided_sources {ui.label(RichText::new(format!("{} · {} · {}",s.title,s.version_scope,s.origin)).small().weak());}});
-                    if !plan.files.is_empty(){
-                        self.wizard.selected=self.wizard.selected.min(plan.files.len()-1);
-                        egui::ComboBox::from_id_salt("planned-files").selected_text(&plan.files[self.wizard.selected].path).show_ui(ui,|ui|{for(i,f)in plan.files.iter().enumerate(){ui.selectable_value(&mut self.wizard.selected,i,&f.path);}});
-                        egui::ScrollArea::vertical().id_salt("planned-code").max_height(120.0).show(ui,|ui|{selectable_code(ui,&plan.files[self.wizard.selected].content,c.text);});
-                    }
-                    ui.label(RichText::new(l.text("Это предложения. Компиляция и внешние тесты не выполнялись.")).small().color(c.accent));
-                    ui.horizontal(|ui|{
-                        if ui.add_enabled(self.job.is_none(),egui::Button::new(l.text("Куда создать…"))).clicked()&&let Some(p)=rfd::FileDialog::new().pick_folder(){self.wizard.parent=Some(p);}
-                        if let Some(parent)=&self.wizard.parent{ui.add(egui::Label::new(parent.join(&plan.name).display().to_string()).truncate());}
-                    });
-                    let ready=plan.ready().is_ok()&&self.wizard.parent.is_some()&&self.job.is_none()&&self.updates.kind()!=Some(updater::Kind::Prepare);
-                    if ui.add_enabled(ready,egui::Button::image_and_text(Icon::FolderPlus.image(c.accent),l.text("Создать и открыть проект"))).clicked()&&self.real_app&&let Err(e)=self.start(Operation::ProjectCreate,ui.ctx()){self.wizard.error=Some(e.to_string());}
-                    ui.label(RichText::new(l.text("Создаётся только новая папка. Существующий проект не перезаписывается.")).small().weak());
+        let Some(plan) = self.draft.plan.as_mut() else {
+            return;
+        };
+        ui.add_space(6.0);
+        let mut create = false;
+        egui::CollapsingHeader::new(format!(
+            "{} · {}",
+            l.text("Файлы нового проекта"),
+            plan.files.len()
+        ))
+        .default_open(false)
+        .show(ui, |ui| {
+            for assumption in &plan.assumptions {
+                ui.label(RichText::new(assumption).small().weak());
+            }
+            egui::CollapsingHeader::new(l.text("Требования и источники")).show(ui, |ui| {
+                for requirement in &plan.requirements {
+                    ui.label(requirement);
                 }
-                if let Some(e)=&self.wizard.error{ui.label(RichText::new(e).small().color(c.error));}
+                for source in &plan.provided_sources {
+                    ui.label(
+                        RichText::new(format!("{} · {}", source.title, source.version_scope))
+                            .small(),
+                    )
+                    .on_hover_text(&source.origin);
+                }
             });
+            if !plan.files.is_empty() {
+                self.draft.selected = self.draft.selected.min(plan.files.len() - 1);
+                egui::ComboBox::from_id_salt("planned-files")
+                    .selected_text(&plan.files[self.draft.selected].path)
+                    .show_ui(ui, |ui| {
+                        for (i, file) in plan.files.iter().enumerate() {
+                            ui.selectable_value(&mut self.draft.selected, i, &file.path);
+                        }
+                    });
+                egui::ScrollArea::vertical()
+                    .id_salt("planned-code")
+                    .max_height(160.0)
+                    .show(ui, |ui| {
+                        selectable_code(ui, &plan.files[self.draft.selected].content, c.text);
+                    });
+            }
+            ui.add_enabled_ui(self.job.is_none(), |ui| {
+                ui.horizontal(|ui| {
+                    ui.label(l.text("Имя папки"));
+                    ui.add(
+                        egui::TextEdit::singleline(&mut plan.name)
+                            .char_limit(64)
+                            .desired_width(150.0),
+                    );
+                    create = ui
+                        .add_enabled(
+                            plan.ready().is_ok()
+                                && self.updates.kind() != Some(updater::Kind::Prepare),
+                            egui::Button::image_and_text(
+                                Icon::FolderPlus.image(c.accent),
+                                l.text("Создать проект…"),
+                            ),
+                        )
+                        .clicked();
+                });
+            });
+            ui.label(
+                RichText::new(
+                    l.text("Сборка и тесты ещё не запускались. Создание — только в новой папке."),
+                )
+                .small()
+                .weak(),
+            );
         });
+        if create
+            && self.real_app
+            && let Some(parent) = rfd::FileDialog::new()
+                .set_title(l.text("Где сохранить новый проект?"))
+                .pick_folder()
+        {
+            self.draft.parent = Some(parent);
+            if let Err(e) = self.start(Operation::ProjectCreate, ui.ctx()) {
+                self.fail(e);
+            }
+        }
     }
     pub(super) fn knowledge_settings(&mut self, ui: &mut egui::Ui) {
         let l = self.prefs.language;
@@ -368,7 +394,12 @@ impl Desktop {
             ui.horizontal_wrapped(|ui| {
                 if ui.button(l.text("Импортировать файлы…")).clicked()
                     && let Some(files) = rfd::FileDialog::new()
-                        .add_filter("Docs / SDK", &["md", "txt", "rst", "c", "java", "kt", "rs"])
+                        .add_filter(
+                            "Docs / SDK",
+                            &[
+                                "md", "txt", "rst", "c", "java", "kt", "rs", "ts", "vue", "css",
+                            ],
+                        )
                         .pick_files()
                     && let Some(path) = pack_output()
                 {
@@ -497,17 +528,17 @@ mod tests {
     use super::*;
     use clap::Parser;
     #[test]
-    fn project_wizard_creates_through_the_real_cli_and_selects_the_new_root() {
+    fn chat_project_creates_through_the_real_cli_and_selects_the_new_root() {
         let t = tempfile::tempdir().unwrap();
         let mut app = Desktop::default();
-        app.wizard.parent = Some(t.path().to_path_buf());
-        app.wizard.task = "Implement a CLI".into();
-        app.wizard.plan = Some(
+        app.draft.parent = Some(t.path().to_path_buf());
+        app.draft.task = "Implement a CLI".into();
+        app.draft.plan = Some(
             project::starter(&project::StarterArgs {
                 name: "from-ui".into(),
                 profile: Profile::Rust,
                 target_version: String::new(),
-                task: app.wizard.task.clone(),
+                task: app.draft.task.clone(),
             })
             .unwrap(),
         );
@@ -528,8 +559,7 @@ mod tests {
             app.prefs.repo.as_deref(),
             Some(t.path().join("from-ui").as_path())
         );
-        assert_eq!(app.task, "Implement a CLI");
-        assert!(!app.wizard.open);
+        assert!(app.task.is_empty());
         assert!(t.path().join("from-ui/src/main.rs").is_file());
         assert!(!app.error);
     }

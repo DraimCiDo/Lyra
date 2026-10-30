@@ -64,6 +64,54 @@ fn sources_distinguish_rolling_docs_from_a_versioned_api() {
     assert!(knowledge::sources(Profile::Generic, "").unwrap().is_empty());
     assert!(knowledge::sources(Profile::PaperJava, "../../escape").is_err());
 }
+
+#[test]
+fn vue_sources_and_explicit_sdk_import_work_without_network() {
+    assert_eq!(
+        serde_json::to_string(&Profile::VueTypeScript).unwrap(),
+        "\"vue-typescript\""
+    );
+    let cli = <lyra::Cli as clap::Parser>::try_parse_from([
+        "lyra",
+        "docs",
+        "sources",
+        "--profile",
+        "vue-typescript",
+    ])
+    .unwrap();
+    let mut output = Vec::new();
+    lyra::run(cli, &mut output).unwrap();
+    assert!(
+        String::from_utf8(output)
+            .unwrap()
+            .contains("https://vuejs.org/guide/typescript/overview.html")
+    );
+    let sources = knowledge::sources(Profile::VueTypeScript, "3").unwrap();
+    assert_eq!(sources.len(), 3);
+    assert!(
+        sources
+            .iter()
+            .any(|s| s.url == "https://vuejs.org/guide/typescript/overview.html")
+    );
+    assert!(sources.iter().any(|s| s.url == "https://vite.dev/guide/"));
+    assert!(sources.iter().all(|s| s.version_scope.contains("rolling")));
+    let root = tempfile::tempdir().unwrap();
+    let file = root.path().join("Component.vue");
+    fs::write(
+        &file,
+        "<script setup lang=\"ts\">\ndefineProps<{ label: string }>()\n</script>\n",
+    )
+    .unwrap();
+    let pack = knowledge::import(&[file], Profile::VueTypeScript, "3").unwrap();
+    assert_eq!(pack.search("defineProps", 1, 1024).unwrap().len(), 1);
+    assert_eq!(pack.documents[0].source.origin, "local:Component.vue");
+    #[cfg(feature = "online-docs")]
+    for source in sources {
+        assert!(knowledge::online::allowed(
+            &reqwest::Url::parse(&source.url).unwrap()
+        ));
+    }
+}
 #[test]
 fn fetch_requires_explicit_network_authorization_without_making_a_request() {
     let t = tempfile::tempdir().unwrap();

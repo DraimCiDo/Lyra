@@ -16,6 +16,9 @@ pub enum Profile {
     #[serde(rename = "typescript")]
     #[value(name = "typescript")]
     TypeScript,
+    #[serde(rename = "vue-typescript")]
+    #[value(name = "vue-typescript")]
+    VueTypeScript,
     Java,
     Kotlin,
     Dotnet,
@@ -26,12 +29,13 @@ pub enum Profile {
     DayzEnforce,
 }
 impl Profile {
-    pub const ALL: [Self; 13] = [
+    pub const ALL: [Self; 14] = [
         Self::Generic,
         Self::Rust,
         Self::Python,
         Self::JavaScript,
         Self::TypeScript,
+        Self::VueTypeScript,
         Self::Java,
         Self::Kotlin,
         Self::Dotnet,
@@ -48,6 +52,7 @@ impl Profile {
             Self::Python => "Python",
             Self::JavaScript => "JavaScript",
             Self::TypeScript => "TypeScript",
+            Self::VueTypeScript => "Vue / TypeScript",
             Self::Java => "Java",
             Self::Kotlin => "Kotlin",
             Self::Dotnet => ".NET / C#",
@@ -94,6 +99,9 @@ impl Profile {
             Self::JavaScript | Self::TypeScript => {
                 "Distinguish browser, Node.js and other runtimes. Record runtime and package versions. Do not invent package versions; ask when they cannot be established."
             }
+            Self::VueTypeScript => {
+                "For a new website prefer Vue 3, TypeScript and Vite unless SSR/SEO or requirements call for a different architecture. Preserve an existing project's stack and package manager. Use Vue SFCs with script setup and typed props. Consult official documentation and existing package/lock files before selecting compatible stable versions; do not invent versions or use floating latest as a reproducible dependency. Vite transpiles but does not type-check: configure vue-tsc separately. Establish audience, content, visual references and acceptance criteria; ask concrete questions when missing. Define typography, spacing, colors and component states before implementing. Build responsive, keyboard-accessible layouts, visible focus, labels, adequate contrast, loading/empty/error states, and restrained animations respecting prefers-reduced-motion. Choose libraries only for actual needs; explain their purpose and bundle impact. Check real content, small/mobile widths and interactions. Do not claim a screenshot, browser test, measured performance or visual parity with another agent without evidence."
+            }
             Self::Java | Self::Kotlin => {
                 "Record JDK and build tool versions. Use documentation matching the actual dependencies. Kotlin requires a strategy for distributing its runtime."
             }
@@ -119,6 +127,11 @@ impl Profile {
             Self::TypeScript => vec![
                 "node --test tests/greeting.test.ts (starter requires Node.js 22.18+)".into(),
                 "Run a separately configured, pinned TypeScript type checker".into(),
+            ],
+            Self::VueTypeScript => vec![
+                "Use the project's pinned package manager/lockfile; review install scripts before running dependencies".into(),
+                "Run the declared vue-tsc type-check, tests and production build scripts; a Vite build alone is not a type check".into(),
+                "Review actual browser output on mobile and desktop, keyboard/focus, contrast, reduced motion and loading/empty/error states".into(),
             ],
             Self::PaperJava
             | Self::PaperKotlin
@@ -171,6 +184,10 @@ pub fn infer(task: &str) -> Profile {
         Profile::Rust
     } else if has("python") || has("питон") {
         Profile::Python
+    } else if (has("vue") || has("vuejs") || has("vue.js") || has("вью"))
+        && !(has("javascript") && !has("typescript"))
+    {
+        Profile::VueTypeScript
     } else if has("javascript") || has("джаваскрипт") {
         Profile::JavaScript
     } else if has("typescript") || has("типскрипт") {
@@ -181,8 +198,35 @@ pub fn infer(task: &str) -> Profile {
         Profile::Java
     } else if has(".net") || has("c#") {
         Profile::Dotnet
+    } else if has("website") || has("landing") || has("сайт") || has("сайта") || has("лендинг")
+    {
+        Profile::VueTypeScript
     } else {
         Profile::Generic
+    }
+}
+/// Conservative Minecraft hint from user messages only, never assistant suggestions/docs.
+/// Ambiguous versions remain a question for the planner.
+pub fn version_hint(profile: Profile, task: &str) -> String {
+    if !profile.minecraft() {
+        return String::new();
+    }
+    let mut versions: Vec<_> = task
+        .split(|c: char| !c.is_ascii_digit() && c != '.')
+        .map(|s| s.trim_matches('.'))
+        .filter(|s| {
+            (s.starts_with("1.") || s.starts_with("26."))
+                && s.split('.')
+                    .all(|part| !part.is_empty() && part.bytes().all(|b| b.is_ascii_digit()))
+                && s.len() <= 20
+        })
+        .collect();
+    versions.sort_unstable();
+    versions.dedup();
+    if versions.len() == 1 {
+        versions[0].into()
+    } else {
+        String::new()
     }
 }
 pub fn version_text(version: &str) -> io::Result<()> {

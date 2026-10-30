@@ -12,6 +12,8 @@ pub fn allowed(url: &Url) -> bool {
             url.host_str(),
             Some(
                 "doc.rust-lang.org"
+                    | "vuejs.org"
+                    | "vite.dev"
                     | "docs.python.org"
                     | "www.typescriptlang.org"
                     | "developer.mozilla.org"
