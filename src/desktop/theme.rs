@@ -175,6 +175,7 @@ impl Language {
             return ru;
         }
         match ru {
+            "Выбрать проект" => "Choose project",
             "Проект · необязательно" => "Project · optional",
             "Выбрать существующий проект" => "Choose existing project",
             "Без проекта · создавать с нуля" => {

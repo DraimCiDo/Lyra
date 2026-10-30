@@ -563,6 +563,13 @@ impl Desktop {
                     SettingsPage::Knowledge=>ui.vertical(|ui|self.knowledge_settings(ui)).response,
                     SettingsPage::Updates=>ui.vertical(|ui| self.update_settings(ui)).response,
                     SettingsPage::Model=>ui.add_enabled_ui(self.job.is_none(),|ui|{
+                        let title=self.prefs.model.as_ref().and_then(|p|p.file_name())
+                            .map(|s|s.to_string_lossy().into_owned()).unwrap_or_else(||l.text("Выбрать…").into());
+                        let full=self.prefs.model.as_ref().map(|p|p.display().to_string()).unwrap_or_else(||l.text("Модель GGUF").into());
+                        if ui.add(egui::Button::image_and_text(Icon::Model.image(c.accent),format!("{} · {}",l.text("Модель GGUF"),title))
+                            .min_size(egui::vec2(ui.available_width(),32.0)).wrap_mode(egui::TextWrapMode::Truncate))
+                            .on_hover_text(full).clicked() {self.choose_path(true);}
+                        ui.add_space(8.0);
                         ui.columns(2,|columns|{
                             columns[0].horizontal(|ui|{
                                 ui.label(l.text("Контекст"));

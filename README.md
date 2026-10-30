@@ -22,7 +22,7 @@ Lyra (Лира) — имя по созвездию Лиры.
 SHA256, подтверждение установки и откат. [Инструкция](docs/UPDATES.md).
 CLI `lyra.exe` остаётся доступным. Это alpha; качество модели проверяется отдельно.
 
-![Настольная Lyra: проект, модель и задача](docs/images/desktop.png)
+![Чат Lyra с необязательным выбором проекта](docs/images/desktop.png)
 
 ![Компактные настройки Lyra](docs/images/desktop-settings.png)
 

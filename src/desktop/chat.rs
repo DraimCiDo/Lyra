@@ -185,96 +185,96 @@ impl Desktop {
         let c = self.prefs.palette.colors();
         let l = self.prefs.language;
         ui.horizontal(|ui| {
-            let width = ((ui.available_width() - 104.0) / 2.0).max(160.0);
             let repo = self.prefs.repo.as_ref();
             let title = repo
                 .and_then(|p| p.file_name())
-                .map(|s| s.to_string_lossy().into_owned())
-                .unwrap_or_else(|| l.text("Проект · необязательно").into());
-            let response = ui
-                .add_enabled_ui(self.job.is_none(), |ui| {
-                    ui.add_sized(
-                        egui::vec2(width, 28.0),
-                        egui::Button::image_and_text(Icon::Folder.image(c.accent), title)
-                            .wrap_mode(egui::TextWrapMode::Truncate),
-                    )
+                .map(|s| {
+                    let s = s.to_string_lossy();
+                    let mut title = s.chars().take(36).collect::<String>();
+                    if s.chars().count() > 36 {
+                        title.push('…');
+                    }
+                    title
                 })
+                .unwrap_or_else(|| l.text("Выбрать проект").into());
+            if ui
+                .allocate_ui_with_layout(
+                    egui::vec2((ui.available_width() - 100.0).max(160.0), 28.0),
+                    egui::Layout::left_to_right(egui::Align::Center),
+                    |ui| {
+                        ui.add_enabled(
+                            self.job.is_none(),
+                            egui::Button::image_and_text(Icon::Folder.image(c.muted), title)
+                                .frame(false)
+                                .wrap_mode(egui::TextWrapMode::Truncate),
+                        )
+                    },
+                )
                 .inner
                 .on_hover_text(
                     repo.map(|p| p.display().to_string())
                         .unwrap_or_else(|| l.text("Выбрать существующий проект").into()),
-                );
-            if response.clicked() {
+                )
+                .clicked()
+            {
                 self.choose_path(false);
             }
-            if ui
-                .add_enabled(
-                    self.job.is_none() && self.prefs.repo.is_some(),
-                    egui::Button::image(Icon::Close.image(c.muted)),
-                )
-                .on_hover_text(l.text("Без проекта · создавать с нуля"))
-                .clicked()
+            if self.prefs.repo.is_some()
+                && ui
+                    .add_enabled(
+                        self.job.is_none(),
+                        egui::Button::image(Icon::Close.image(c.muted)).frame(false),
+                    )
+                    .on_hover_text(l.text("Без проекта · создавать с нуля"))
+                    .clicked()
             {
                 self.reset_chat();
                 self.prefs.repo = None;
                 self.prefs.files.clear();
             }
-            let title = self
-                .prefs
-                .model
-                .as_ref()
-                .and_then(|p| p.file_name())
-                .map(|s| s.to_string_lossy().into_owned())
-                .unwrap_or_else(|| l.text("Выбрать GGUF").into());
-            if ui
-                .add_enabled_ui(self.job.is_none(), |ui| {
-                    ui.add_sized(
-                        egui::vec2(width, 28.0),
-                        egui::Button::image_and_text(Icon::Model.image(c.muted), title)
-                            .wrap_mode(egui::TextWrapMode::Truncate),
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                if ui
+                    .add_enabled(
+                        self.job.is_none(),
+                        egui::Button::image(Icon::NewChat.image(c.accent)).frame(false),
                     )
-                })
-                .inner
-                .on_hover_text(l.text("Модель GGUF"))
-                .clicked()
-            {
-                self.choose_path(true);
-            }
-            if ui
-                .add_enabled(
-                    self.job.is_none(),
-                    egui::Button::image(Icon::NewChat.image(c.accent)),
-                )
-                .on_hover_text(l.text("Новый чат"))
-                .clicked()
-            {
-                self.reset_chat();
-            }
+                    .on_hover_text(l.text("Новый чат"))
+                    .clicked()
+                {
+                    self.reset_chat();
+                }
+            });
         });
         ui.add_space(5.0);
-        let height = (ui.available_height() - 119.0).max(100.0);
-        egui::ScrollArea::vertical().id_salt("conversation").max_height(height)
-            .auto_shrink([false,false]).stick_to_bottom(true).show(ui,|ui| {
+        let reserve = if self.error { 132.0 } else { 110.0 };
+        let height = (ui.available_height() - reserve).max(100.0);
+        egui::ScrollArea::vertical()
+            .id_salt("conversation")
+            .max_height(height)
+            .auto_shrink([false, false])
+            .stick_to_bottom(true)
+            .show(ui, |ui| {
                 ui.set_min_width(ui.available_width());
                 if self.chat.messages.is_empty() {
-                    ui.add_space((height*0.18).min(42.0));
+                    ui.add_space((height * 0.18).min(42.0));
                     ui.vertical_centered(|ui| {
-                        ui.add(Icon::Sparkles.image(c.accent).fit_to_exact_size(egui::vec2(28.0,28.0)));
+                        ui.add(
+                            Icon::Sparkles
+                                .image(c.accent)
+                                .fit_to_exact_size(egui::vec2(28.0, 28.0)),
+                        );
                         ui.label(RichText::new(l.text("Что сделаем?")).size(24.0).strong());
-                        ui.label(RichText::new(l.text("Опиши задачу. Существующий проект можно выбрать сверху.")).color(c.muted));
-                        ui.add_space(10.0);
-                        let existing = self.prefs.repo.is_some();
-                        if ui.button(l.text(if existing {"Разобраться в проекте"} else {"Сайт на Vue и TypeScript"})).clicked() {
-                            self.task = l.text(if existing {"Изучи проект и объясни его устройство."} else {"Создай адаптивный сайт на Vue и TypeScript. Уточни назначение и визуальное направление."}).into();
-                        }
                     });
                 }
                 for message in &self.chat.messages {
                     ui.add_space(6.0);
-                    let label = if message.user {l.text("Вы")} else {"Lyra"};
-                    egui::Frame::new().fill(if message.user {c.input} else {c.card})
-                        .corner_radius(10).inner_margin(10).show(ui,|ui| {
-                            ui.set_min_width((ui.available_width()-2.0).max(0.0));
+                    let label = if message.user { l.text("Вы") } else { "Lyra" };
+                    egui::Frame::new()
+                        .fill(if message.user { c.input } else { c.card })
+                        .corner_radius(10)
+                        .inner_margin(10)
+                        .show(ui, |ui| {
+                            ui.set_min_width((ui.available_width() - 2.0).max(0.0));
                             ui.label(RichText::new(label).small().strong().color(c.accent));
                             ui.add(egui::Label::new(&message.text).selectable(true).wrap());
                         });
@@ -283,48 +283,62 @@ impl Desktop {
                     ui.add_space(8.0);
                     ui.label(RichText::new(l.text(&self.message)).color(c.accent));
                 }
-                if self.draft.plan.is_some() { self.project_result(ui); }
+                if self.draft.plan.is_some() {
+                    self.project_result(ui);
+                }
                 if self.report.is_some() {
                     ui.add_space(6.0);
                     egui::CollapsingHeader::new(l.text("Файлы и предложения"))
-                        .default_open(false).show(ui,|ui| self.changes(ui));
+                        .default_open(false)
+                        .show(ui, |ui| self.changes(ui));
                 }
-                if !self.log.is_empty() || self.report.as_ref().is_some_and(|report| !report.events.is_empty()) {
-                    egui::CollapsingHeader::new(l.text("Журнал")).show(ui,|ui| {
+                if !self.log.is_empty()
+                    || self
+                        .report
+                        .as_ref()
+                        .is_some_and(|report| !report.events.is_empty())
+                {
+                    egui::CollapsingHeader::new(l.text("Журнал")).show(ui, |ui| {
                         ui.add(Icon::Log.image(c.muted));
                         if let Some(report) = &self.report {
                             for event in &report.events {
-                                ui.label(format!("{} · {} · {} · {}",event.call,event.role,event.tool,event.outcome));
+                                ui.label(format!(
+                                    "{} · {} · {} · {}",
+                                    event.call, event.role, event.tool, event.outcome
+                                ));
                             }
                         }
-                        selectable_code(ui,&self.log,c.muted);
+                        selectable_code(ui, &self.log, c.muted);
                     });
                 }
             });
         ui.add_space(5.0);
         card(c).inner_margin(9).show(ui, |ui| {
-            let edit = ui.add_enabled(
-                self.job.is_none(),
-                egui::TextEdit::multiline(&mut self.task)
-                    .id_salt("chat-composer")
-                    .desired_rows(2)
-                    .desired_width(f32::INFINITY)
-                    .char_limit(16384)
-                    .frame(egui::Frame::NONE)
-                    .return_key(Some(egui::KeyboardShortcut::new(
-                        egui::Modifiers::SHIFT,
-                        egui::Key::Enter,
-                    )))
-                    .hint_text(l.text("Напиши, что нужно сделать…")),
-            );
+            let edit = egui::ScrollArea::vertical()
+                .id_salt("composer-scroll")
+                .min_scrolled_height(32.0)
+                .max_height(36.0)
+                .auto_shrink([false, false])
+                .show(ui, |ui| {
+                    ui.add_enabled(
+                        self.job.is_none(),
+                        egui::TextEdit::multiline(&mut self.task)
+                            .id_salt("chat-composer")
+                            .desired_rows(2)
+                            .desired_width(f32::INFINITY)
+                            .char_limit(16384)
+                            .frame(egui::Frame::NONE)
+                            .return_key(Some(egui::KeyboardShortcut::new(
+                                egui::Modifiers::SHIFT,
+                                egui::Key::Enter,
+                            )))
+                            .hint_text(l.text("Напиши, что нужно сделать…")),
+                    )
+                })
+                .inner;
             let enter = edit.has_focus()
                 && ui.input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::Enter));
             ui.horizontal(|ui| {
-                ui.label(
-                    RichText::new(l.text("Enter — отправить · Shift+Enter — новая строка"))
-                        .small()
-                        .weak(),
-                );
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                     if let Some(job) = &self.job {
                         if job.cancellable
@@ -360,19 +374,13 @@ impl Desktop {
                 });
             });
         });
-        ui.add(
-            egui::Label::new(
-                RichText::new(l.text(if self.error {
-                    &self.message
-                } else {
-                    "Локальная модель · файлы меняются после просмотра"
-                }))
-                .small()
-                .color(if self.error { c.error } else { c.muted }),
+        if self.error {
+            ui.add(
+                egui::Label::new(RichText::new(l.text(&self.message)).small().color(c.error))
+                    .truncate(),
             )
-            .truncate(),
-        )
-        .on_hover_text(l.text(&self.message));
+            .on_hover_text(l.text(&self.message));
+        }
     }
 }
 
