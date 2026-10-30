@@ -4,13 +4,18 @@
 
 Скачайте артефакт `lyra-x86_64-pc-windows-msvc` успешного запуска
 [GitHub Actions](https://github.com/DraimCiDo/Lyra/actions/workflows/ci.yml)
-**ветки с desktop-интерфейсом**. Распакуйте архив и откройте `lyra-desktop.exe`
+**ветки `feat/desktop-app`**. Распакуйте архив и откройте `lyra-desktop.exe`
 двойным щелчком. Rust, Python, Node, браузер, сервер и соседний `lyra.exe`
-для работы GUI не нужны. Модель в архив не входит: заранее подготовьте
+для работы GUI не нужны. Нужен системный **Microsoft Visual C++ v14 x64 Runtime**:
+[официальный пакет Microsoft](https://aka.ms/vc14/vc_redist.x64.exe),
+[описание и поддерживаемые версии](https://learn.microsoft.com/en-us/cpp/windows/latest-supported-vc-redist).
+Если он уже установлен, повторная установка не требуется. В архив DLL runtime
+не включены: PE imports подтверждают MSVCP140/VCRUNTIME140/VCRUNTIME140_1.
+Модель в архив не входит: заранее подготовьте
 instruction GGUF. Сборка CPU; CUDA здесь не проверена.
 
 Это portable-программа: установщика, подписи издателя и автоматического
-обновления пока нет. Не меняйте настройки защиты Windows ради запуска.
+обновления пока нет.
 
 1. Выберите папку проекта и файл GGUF в левой панели.
 2. При необходимости укажите относительные пути файлов контекста, по одному

@@ -113,7 +113,7 @@ CUDA-сборка и работа на пользовательской RTX по
 ## Начать работу с репозиторием
 
 ```powershell
-git clone https://github.com/DraimCiDo/Lyra.git
+git clone --branch feat/desktop-app https://github.com/DraimCiDo/Lyra.git
 Set-Location -LiteralPath .\Lyra
 git status --short
 ```

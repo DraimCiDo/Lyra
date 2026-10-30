@@ -35,3 +35,7 @@
 введите задачу, просмотрите предложения и подтвердите нужную правку.
 Инструкции: `docs/DESKTOP.md`. Соседний CLI и установленные
 Rust/Python/Node для GUI не нужны. Веса модели в архив не включены.
+
+Windows требует Microsoft Visual C++ v14 x64 Runtime. Если он отсутствует,
+установите [официальный пакет Microsoft](https://aka.ms/vc14/vc_redist.x64.exe).
+DLL runtime не входят в архив; инструкция и остальные условия — `docs/DESKTOP.md`.
