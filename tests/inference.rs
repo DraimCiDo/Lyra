@@ -154,6 +154,10 @@ fn one_loaded_model_serves_independent_contexts_and_json_grammar() {
         let mut action = Vec::new();
         session.complete("hi", Some(lyra::agent::ACTION_GRAMMAR), &mut action)?;
         assert!(String::from_utf8(action).unwrap().starts_with('{'));
+        let scoped = lyra::agent::action_grammar(&["src/тест.rs".into()], true)?;
+        let mut scoped_output = Vec::new();
+        session.complete("hi", Some(&scoped), &mut scoped_output)?;
+        assert!(String::from_utf8(scoped_output).unwrap().starts_with('{'));
         Ok(())
     })
     .unwrap();
