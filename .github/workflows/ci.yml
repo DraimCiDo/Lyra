@@ -93,9 +93,9 @@ jobs:
       - name: Open and render desktop window (Windows)
         if: runner.os == 'Windows'
         run: |
-          $app = Start-Process -FilePath './target/${{ matrix.target }}/release/lyra-desktop.exe' -ArgumentList '--smoke-test' -PassThru
+          $app = Start-Process -FilePath './target/${{ matrix.target }}/release/lyra-desktop.exe' -ArgumentList '--smoke-test' -RedirectStandardError desktop-smoke.err -RedirectStandardOutput desktop-smoke.out -PassThru
           if (-not $app.WaitForExit(30000)) { $app.Kill(); throw 'Desktop smoke timed out' }
-          if ($app.ExitCode -ne 0) { throw "Desktop smoke failed: $($app.ExitCode)" }
+          if ($app.ExitCode -ne 0) { Get-Content -LiteralPath desktop-smoke.err; throw "Desktop smoke failed: $($app.ExitCode)" }
       - name: Collect build files and dependency licenses
         run: |
           New-Item -ItemType Directory -Force -Path dist | Out-Null

@@ -87,11 +87,19 @@ fn configure(ctx: &egui::Context) {
     style.visuals.window_fill = Color32::from_rgb(25, 30, 44);
     style.visuals.selection.bg_fill = Color32::from_rgb(76, 62, 125);
     style.visuals.hyperlink_color = ACCENT;
+    style.visuals.override_text_color = Some(Color32::from_rgb(220, 225, 238));
+    style.visuals.weak_text_color = Some(Color32::from_rgb(158, 169, 192));
     style.spacing.item_spacing = egui::vec2(10.0, 10.0);
     style.spacing.button_padding = egui::vec2(12.0, 8.0);
     style
         .text_styles
         .insert(egui::TextStyle::Body, egui::FontId::proportional(15.0));
+    style
+        .text_styles
+        .insert(egui::TextStyle::Small, egui::FontId::proportional(12.0));
+    style
+        .text_styles
+        .insert(egui::TextStyle::Monospace, egui::FontId::monospace(14.0));
     ctx.set_theme(egui::Theme::Dark);
     ctx.set_style_of(egui::Theme::Dark, style);
 }
@@ -130,7 +138,7 @@ struct Desktop {
     tab: Tab,
     message: String,
     log: String,
-    hardware: String,
+    hardware: Option<serde_json::Value>,
     confirm: Option<usize>,
     error: bool,
 }
@@ -158,7 +166,7 @@ impl Default for Desktop {
             tab: Tab::Changes,
             message: "Готова к локальной работе".into(),
             log: String::new(),
-            hardware: String::new(),
+            hardware: None,
             confirm: None,
             error: false,
         }
@@ -320,7 +328,7 @@ impl Desktop {
             }
             Operation::Doctor => {
                 if result.code == Some(0) {
-                    self.hardware = String::from_utf8_lossy(&result.stdout).into_owned();
+                    self.hardware = serde_json::from_slice(&result.stdout).ok();
                     self.message = "Сведения собраны локально".into();
                 } else {
                     self.fail("Не удалось получить диагностику. Откройте журнал.");
@@ -445,9 +453,57 @@ impl Desktop {
                     {
                         self.fail(error);
                     }
-                    selectable_code(ui, &self.hardware, Color32::from_rgb(180, 187, 205));
+                    self.hardware_view(ui);
                 }
             });
+    }
+
+    fn hardware_view(&self, ui: &mut egui::Ui) {
+        let Some(report) = &self.hardware else {
+            return;
+        };
+        let name = |value: &serde_json::Value| value.as_str().unwrap_or("Недоступно").to_owned();
+        ui.heading(name(&report["os"]));
+        ui.separator();
+        ui.label(RichText::new("ПРОЦЕССОР").small().color(ACCENT));
+        ui.label(name(&report["cpu"]["brand"]));
+        if let Some(count) = report["cpu"]["available_parallelism"].as_u64() {
+            ui.label(format!("Доступно CPU-потоков: {count}"));
+        }
+        ui.label(RichText::new("ОПЕРАТИВНАЯ ПАМЯТЬ").small().color(ACCENT));
+        ui.label(format!(
+            "{} всего · {} свободно",
+            memory_label(&report["memory"]["total_bytes"]),
+            memory_label(&report["memory"]["available_bytes"])
+        ));
+        ui.label(RichText::new("ВИДЕОКАРТЫ").small().color(ACCENT));
+        if let Some(gpus) = report["gpus"].as_array() {
+            for gpu in gpus {
+                ui.label(format!(
+                    "{} · {} выделенной VRAM",
+                    name(&gpu["model"]),
+                    memory_label(&gpu["dedicated_vram_bytes"])
+                ));
+            }
+        }
+        ui.label(RichText::new("ДИСКИ").small().color(ACCENT));
+        if let Some(disks) = report["disks"].as_array() {
+            for disk in disks {
+                ui.label(format!(
+                    "{} · {} свободно из {}",
+                    name(&disk["mount_point"]),
+                    memory_label(&disk["available_bytes"]),
+                    memory_label(&disk["total_bytes"])
+                ));
+            }
+        }
+        if let Some(warnings) = report["warnings"].as_array() {
+            for warning in warnings {
+                ui.label(RichText::new(name(warning)).weak());
+            }
+        }
+        ui.separator();
+        ui.label("Текущая сборка использует CPU для модели. Видеокарта обслуживает окно; ускорение модели CUDA проверяется отдельно.");
     }
 
     fn changes(&mut self, ui: &mut egui::Ui) {
@@ -536,7 +592,7 @@ impl Desktop {
             )
             .show(ui, |ui| {
                 ui.horizontal(|ui| {
-                    ui.label(RichText::new("✦  LYRA").size(25.0).strong().color(ACCENT));
+                    ui.label(RichText::new("LYRA").size(25.0).strong().color(ACCENT));
                     ui.label("Твоё локальное пространство для кодинга");
                 });
             });
@@ -624,6 +680,12 @@ fn selectable_code(ui: &mut egui::Ui, text: &str, color: Color32) {
             .wrap(),
     );
 }
+fn memory_label(value: &serde_json::Value) -> String {
+    value
+        .as_u64()
+        .map(|n| format!("{:.1} GiB", n as f64 / 1_073_741_824.0))
+        .unwrap_or_else(|| "Недоступно".into())
+}
 fn validate_task(task: &str, files: &str) -> io::Result<()> {
     if task.trim().is_empty() || task.len() > 16384 {
         return Err(io::Error::other(
@@ -671,7 +733,7 @@ mod tests {
             confirm: Some(0),
             ..Default::default()
         };
-        let output = ctx.run_ui(
+        let mut output = ctx.run_ui(
             egui::RawInput {
                 screen_rect: Some(egui::Rect::from_min_size(
                     egui::Pos2::ZERO,
@@ -681,6 +743,8 @@ mod tests {
             },
             |ui| app.draw(ui),
         );
+        // No renderer in this headless layout test; acknowledge unuploaded font textures.
+        output.textures_delta.clear();
         assert!(!output.shapes.is_empty());
         assert_eq!(
             app.report.as_ref().unwrap().proposals[0].original,
@@ -693,7 +757,7 @@ mod tests {
         let ctx = egui::Context::default();
         configure(&ctx);
         let mut app = Desktop::default();
-        let output = ctx.run_ui(
+        let mut output = ctx.run_ui(
             egui::RawInput {
                 screen_rect: Some(egui::Rect::from_min_size(
                     egui::Pos2::ZERO,
@@ -703,6 +767,8 @@ mod tests {
             },
             |ui| app.draw(ui),
         );
+        // No renderer in this headless layout test; acknowledge unuploaded font textures.
+        output.textures_delta.clear();
         assert!(!output.shapes.is_empty());
     }
 }

@@ -49,6 +49,16 @@ impl Job {
             use std::os::windows::process::CommandExt;
             command.creation_flags(0x08000000); // CREATE_NO_WINDOW; inherited redirected handles.
         }
+        Self::start_command(command, temp, cancellable, deadline, repaint)
+    }
+
+    fn start_command(
+        command: Command,
+        temp: TempDir,
+        cancellable: bool,
+        deadline: Option<Duration>,
+        repaint: impl FnOnce() + Send + 'static,
+    ) -> io::Result<Self> {
         let cancel = Arc::new(AtomicBool::new(false));
         let flag = cancel.clone();
         let (sender, receiver) = mpsc::sync_channel(1);
@@ -264,5 +274,40 @@ mod tests {
         thread::sleep(Duration::from_millis(100));
         flag.store(true, Ordering::Relaxed);
         assert!(handle.join().unwrap().cancelled);
+    }
+    #[test]
+    fn closing_job_reaps_worker_and_cleans_private_temp() {
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().to_path_buf();
+        let job = Job::start_command(sleeper(), temp, true, None, || {}).unwrap();
+        drop(job);
+        assert!(!path.exists());
+    }
+
+    #[test]
+    #[ignore = "subprocess fixture; invoked explicitly by output-limit test"]
+    fn worker_floods_output() {
+        use std::io::Write;
+        io::stdout()
+            .lock()
+            .write_all(&vec![b'x'; OUTPUT_LIMIT + 8192])
+            .unwrap();
+    }
+
+    #[test]
+    fn oversized_worker_report_is_rejected_without_pipe_deadlock() {
+        let mut command = Command::new(std::env::current_exe().unwrap());
+        command.args([
+            "--exact",
+            "desktop::job::tests::worker_floods_output",
+            "--ignored",
+            "--nocapture",
+        ]);
+        let result = capture(
+            command,
+            Arc::new(AtomicBool::new(false)),
+            Some(Duration::from_secs(10)),
+        );
+        assert!(result.err().unwrap().to_string().contains("2 MiB"));
     }
 }

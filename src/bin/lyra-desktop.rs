@@ -14,6 +14,8 @@ fn main() -> std::process::ExitCode {
         Ok(()) => std::process::ExitCode::SUCCESS,
         Err(error) => {
             if smoke {
+                use std::io::Write;
+                let _ = writeln!(std::io::stderr().lock(), "Desktop smoke: {error}");
                 return std::process::ExitCode::FAILURE;
             }
             rfd::MessageDialog::new()
