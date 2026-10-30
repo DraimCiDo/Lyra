@@ -109,7 +109,7 @@ prompt processing и tokens/s, VRAM, KV-cache и размер контекста
 
 ## Релизы
 
-Версия разработки CLI — `0.2.0-dev.3`; артефакт CI не является стабильным релизом.
+Версия разработки CLI — `0.2.0-dev.4`; артефакт CI не является стабильным релизом.
 До стабильного релиза нужны нативная проверка Windows, понятная инструкция,
 лицензия/уведомления зависимостей, артефакты и их контрольные суммы.
 Не добавлять фиктивный номер версии, ссылку на отсутствующий EXE или значок зелёного CI.
@@ -153,9 +153,9 @@ CLI без feature сохраняет прежний путь сборки. Ли
 Новые зависимости: eframe/egui (MIT/Apache-2.0, нативный renderer), rfd (MIT, диалоги),
 tempfile (MIT/Apache-2.0, временные файлы). Runtime не требует Python/Node/WebView.
 
-Компактный UI 0.2.0-dev.3: проверяются 4 темы × RU/EN × главная/6 настроек
+Компактный UI 0.2.0-dev.4: проверяются 4 темы × RU/EN × главная/7 настроек/мастер
 на 760×480 и 640×460, контраст текста ≥4.5, декодирование встроенных SVG/PNG,
-ограничения/перезапись файла preferences. Native --smoke-test перебирает 56
+ограничения/перезапись файла preferences. Native --smoke-test перебирает 72
 состояний без чтения/записи пользовательской конфигурации. Windows SDK нужен
 также build-only winresource для значка EXE. Optional egui_extras/svg даёт
 локальный SVG renderer; CLI без desktop не подключает UI зависимости.
@@ -168,10 +168,24 @@ tempfile (MIT/Apache-2.0, временные файлы). Runtime не треб�
 Optional reqwest/rustls + Tokio обеспечивают ограниченный HTTPS и отмену;
 semver выбирает канал/версию, sha2 проверяет целостность, zip извлекает только
 фиксированные файлы. Rustls использует native OS trust, без OpenSSL DLL.
-Эти зависимости отсутствуют в `cargo tree --no-default-features -e normal`.
+HTTP/Tokio/HTML parser отсутствуют в `cargo tree --no-default-features -e normal`.
+SHA256 и tempfile теперь также обслуживают offline packs и создание проектов.
 `tools/package_update.py --verify-executables` проверяет версии готовых Windows
 EXE и генерирует update assets; Python нужен только разработчику/CI.
 Linux helper-тесты используют strip --strip-debug для тестовой копии настоящего
 EXE, как release-поставка. Нужен binutils strip; он уже входит в Ubuntu CI.
 Обычный push main только собирает артефакты. Тег `v<Cargo version>` после успешного
 CI готовит draft release; публикация выполняется отдельно.
+
+### Проекты и документация
+
+[PROJECTS.md](PROJECTS.md), [KNOWLEDGE.md](KNOWLEDGE.md),
+[план/результаты](plans/0008-projects-knowledge.md). CLI-only tests не требуют
+интернета/SDK/GPU. Полный CI отдельно ставит полный JDK 21 и Node 24, затем
+`python tools/verify_starters.py --binary PATH --minecraft` компилирует только
+доверенные встроенные каркасы и проверяет JAR/API scope/Kotlin runtime/licenses.
+Rust-каркас проходит cargo test --offline в обычном интеграционном тесте.
+Maven нужен разработчику для этой приёмки, не пользователю готовой Lyra.
+API SNAPSHOT требует сети и может изменяться; Minecraft-сервер/DayZ Tools не
+подменяются Rust-тестом. html2text 0.17.4 — optional Rust HTML parser без JS/runtime;
+не добавляет браузер/WebView. Default CLI имеет только offline-документацию.

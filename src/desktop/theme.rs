@@ -175,6 +175,74 @@ impl Language {
             return ru;
         }
         match ru {
+            "Обязательные файлы, по одному на строке (необязательно)" => {
+                "Required files, one per line (optional)"
+            }
+            "Новый проект" => "New project",
+            "Документация" => "Documentation",
+            "Закрыть" => "Close",
+            "Имя" => "Name",
+            "Версия платформы / SDK" => "Platform / SDK version",
+            "Опиши результат, ограничения и критерии приёмки. Неизвестное можно оставить вопросом." => {
+                "Describe the result, constraints and acceptance criteria. Leave material unknowns as questions."
+            }
+            "Что создать?" => "What should be created?",
+            "AI-проект" => "AI project",
+            "Стартовый каркас" => "Starter scaffold",
+            "Контекст / токены ответа" => "Context / response tokens",
+            "Для нескольких файлов обычно нужны 8192 контекста и 2048–4096 токенов ответа. Измени их в настройках модели." => {
+                "Multiple files usually need 8192 context and 2048–4096 response tokens. Adjust these in model settings."
+            }
+            "Каркас не реализует задачу. После создания продолжи её на главной." => {
+                "A scaffold does not implement the task. Continue it on the main page after creation."
+            }
+            "Подготовить план" => "Prepare plan",
+            "Требования и источники" => "Requirements and sources",
+            "Это предложения. Компиляция и внешние тесты не выполнялись." => {
+                "These are proposals. Compilation and external tests have not been run."
+            }
+            "Куда создать…" => "Choose parent folder…",
+            "Создать и открыть проект" => "Create and open project",
+            "Создаётся только новая папка. Существующий проект не перезаписывается." => {
+                "Only a new folder is created. Existing projects are never overwritten."
+            }
+            "Документация обрабатывается локально. Загрузка официальных страниц — только по кнопке." => {
+                "Documentation is processed locally. Official pages are downloaded only on request."
+            }
+            "Выбрать pack…" => "Choose pack…",
+            "Отключить документы" => "Disable documents",
+            "Импортировать файлы…" => "Import files…",
+            "Загрузить официальные документы…" => {
+                "Download official documents…"
+            }
+            "Символ или вопрос по API" => "API symbol or question",
+            "Поиск" => "Search",
+            "Официальные источники профиля" => {
+                "Official sources for this profile"
+            }
+            "Для любого другого языка или SDK импортируй локальные тексты. Rolling-документация не доказывает совместимость с версией проекта." => {
+                "Import local texts for any other language or SDK. Rolling documentation does not prove compatibility with the project version."
+            }
+            "План готов. Проверь файлы и вопросы." => {
+                "Plan ready. Review the files and questions."
+            }
+            "Проект создан. Сборка и внешние тесты ещё не выполнялись." => {
+                "Project created. Build and external tests have not been run."
+            }
+            "Документация сохранена локально и выбрана для задач." => {
+                "Documentation saved locally and selected for tasks."
+            }
+            "Готовлю план проекта…" => "Preparing project plan…",
+            "Создаю новый проект…" => "Creating new project…",
+            "Загружаю документацию…" => "Downloading documentation…",
+            "Импортирую документацию…" => "Importing documentation…",
+            "Операция остановлена. Проверь путь пакета: сохранение могло завершиться." => {
+                "Operation stopped. Check the pack path: saving may have completed."
+            }
+            "Новый файл" => "New file",
+            "Документация в контексте" => "Documentation in context",
+            "Другой / выбор AI" => "Other / AI choice",
+
             "Обновления" => "Updates",
             "Проверять обновления каждые 5 минут" => {
                 "Check for updates every 5 minutes"

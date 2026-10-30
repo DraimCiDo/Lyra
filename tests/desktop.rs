@@ -76,3 +76,54 @@ fn standalone_apply_rechecks_conflicts_and_rejects_incomplete_report() {
     assert!(!apply().status.success());
     assert_eq!(fs::read_to_string(&source).unwrap(), "new\r\n");
 }
+
+#[test]
+fn standalone_gui_worker_supports_new_project_and_document_commands() {
+    let temp = tempfile::tempdir().unwrap();
+    let output = worker()
+        .args([
+            "project",
+            "starter",
+            "--name",
+            "gui-starter",
+            "--profile",
+            "python",
+        ])
+        .output()
+        .unwrap();
+    assert!(output.status.success());
+    let plan = temp.path().join("plan.json");
+    fs::write(&plan, &output.stdout).unwrap();
+    let output = worker()
+        .args(["project", "create", "--plan"])
+        .arg(plan)
+        .arg("--parent")
+        .arg(temp.path())
+        .output()
+        .unwrap();
+    assert!(output.status.success());
+    assert!(temp.path().join("gui-starter/main.py").is_file());
+    let source = temp.path().join("guide.md");
+    fs::write(
+        &source,
+        "# Python\nargparse defines a command-line parser.\n",
+    )
+    .unwrap();
+    let pack = temp.path().join("pack.json");
+    let output = worker()
+        .args(["docs", "import", "--file"])
+        .arg(source)
+        .arg("--output")
+        .arg(&pack)
+        .output()
+        .unwrap();
+    assert!(output.status.success());
+    let output = worker()
+        .args(["docs", "search", "--pack"])
+        .arg(pack)
+        .args(["--query", "argparse"])
+        .output()
+        .unwrap();
+    assert!(output.status.success());
+    assert!(String::from_utf8_lossy(&output.stdout).contains("local:guide.md"));
+}

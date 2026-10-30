@@ -1,4 +1,4 @@
-# Компактная настольная Lyra · 0.2.0-dev.3
+# Компактная настольная Lyra · 0.2.0-dev.4
 
 ## Запуск Windows
 
@@ -87,8 +87,8 @@ cargo test --workspace --locked --features desktop
 cargo clippy --workspace --all-targets --locked --features desktop -- -D warnings
 ```
 
-`--smoke-test` открывает настоящее окно и перебирает 56 состояний UI:
-4 темы × 2 языка × (главная + 6 разделов). Личные настройки при этом не читаются
+`--smoke-test` открывает настоящее окно и перебирает 72 состояний UI:
+4 темы × 2 языка × (главная + 7 разделов + мастер нового проекта). Личные настройки при этом не читаются
 и не записываются. Это проверка создания контекста/отрисовки, а не качества модели.
 `--worker` — служебный режим того же CLI. Windows использует wgpu/DX12,
 Linux — OpenGL; Linux нужны X11/Wayland, libxkbcommon-x11 и, для rfd-диалогов,
@@ -99,3 +99,5 @@ xdg-desktop-portal с подходящим backend. В CI окно открыв�
 на главной. Отдельно проверить Windows 11/DPI, системные диалоги, GGUF и CUDA.
 
 Обновление Windows CPU из приложения и восстановление: [UPDATES.md](UPDATES.md).
+
+Новый мастер и документация: [PROJECTS.md](PROJECTS.md), [KNOWLEDGE.md](KNOWLEDGE.md).

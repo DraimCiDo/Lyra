@@ -2,6 +2,7 @@
 mod icons;
 mod job;
 mod preferences;
+mod projects;
 mod theme;
 pub mod updater;
 use crate::agent::Report;
@@ -20,7 +21,7 @@ use theme::{Language, Palette};
 
 const WINDOW_SIZE: [f32; 2] = [760.0, 480.0];
 const MIN_SIZE: [f32; 2] = [640.0, 460.0];
-const SMOKE_STEPS: usize = 56;
+const SMOKE_STEPS: usize = 72;
 
 pub fn worker_main() -> ExitCode {
     use clap::Parser;
@@ -107,15 +108,17 @@ enum SettingsPage {
     Appearance,
     Hardware,
     Updates,
+    Knowledge,
 }
 impl SettingsPage {
-    const ALL: [Self; 6] = [
+    const ALL: [Self; 7] = [
         Self::Model,
         Self::Context,
         Self::Workers,
         Self::Appearance,
         Self::Hardware,
         Self::Updates,
+        Self::Knowledge,
     ];
     fn title(self) -> &'static str {
         match self {
@@ -125,6 +128,7 @@ impl SettingsPage {
             Self::Appearance => "Оформление",
             Self::Hardware => "Мой компьютер",
             Self::Updates => "Обновления",
+            Self::Knowledge => "Документация",
         }
     }
     fn icon(self) -> Icon {
@@ -135,6 +139,7 @@ impl SettingsPage {
             Self::Appearance => Icon::Palette,
             Self::Hardware => Icon::Monitor,
             Self::Updates => Icon::Download,
+            Self::Knowledge => Icon::BookOpen,
         }
     }
 }
@@ -149,9 +154,15 @@ enum Operation {
     Task,
     Apply(usize),
     Doctor,
+    ProjectPlan,
+    ProjectCreate,
+    DocsFetch,
+    DocsImport,
 }
 
 struct Desktop {
+    wizard: projects::Wizard,
+    knowledge_ui: projects::KnowledgeUi,
     updates: updater::Controller,
     update_confirm: bool,
     real_app: bool,
@@ -184,6 +195,8 @@ struct Desktop {
 impl Default for Desktop {
     fn default() -> Self {
         Self {
+            wizard: projects::Wizard::default(),
+            knowledge_ui: projects::KnowledgeUi::default(),
             updates: updater::Controller::default(),
             update_confirm: false,
             real_app: false,
@@ -260,6 +273,9 @@ impl Desktop {
                 ] {
                     args.extend([flag.into(), value.to_string().into()]);
                 }
+                if let Some(docs) = &self.prefs.documentation {
+                    args.extend(["--docs".into(), docs.as_os_str().into()]);
+                }
                 for file in self
                     .prefs
                     .files
@@ -300,6 +316,10 @@ impl Desktop {
                 ]);
                 None // Do not kill a worker while it commits a file replacement.
             }
+            Operation::ProjectPlan
+            | Operation::ProjectCreate
+            | Operation::DocsFetch
+            | Operation::DocsImport => self.prepare_project_job(operation, &temp, &mut args)?,
             Operation::Doctor => {
                 args.extend(["doctor".into(), "--json".into()]);
                 Some(Duration::from_secs(30))
@@ -309,7 +329,7 @@ impl Desktop {
         self.job = Some(Job::start(
             args,
             temp,
-            !matches!(operation, Operation::Apply(_)),
+            !matches!(operation, Operation::Apply(_) | Operation::ProjectCreate),
             deadline,
             move || ctx.request_repaint(),
         )?);
@@ -319,6 +339,10 @@ impl Desktop {
             Operation::Task => "Модель работает…",
             Operation::Apply(_) => "Применение выбранной правки…",
             Operation::Doctor => "Сбор сведений о ПК…",
+            Operation::ProjectPlan => "Готовлю план проекта…",
+            Operation::ProjectCreate => "Создаю новый проект…",
+            Operation::DocsFetch => "Загружаю документацию…",
+            Operation::DocsImport => "Импортирую документацию…",
         }
         .into();
         Ok(())
@@ -338,13 +362,23 @@ impl Desktop {
     fn complete(&mut self, result: ResultData) {
         self.log = result.stderr;
         if result.cancelled {
-            self.fail("Задача остановлена. Правки не применялись.");
+            self.fail(
+                if matches!(self.operation, Operation::DocsFetch | Operation::DocsImport) {
+                    "Операция остановлена. Проверь путь пакета: сохранение могло завершиться."
+                } else {
+                    "Задача остановлена. Правки не применялись."
+                },
+            );
             return;
         }
         let seconds = result.elapsed.as_secs_f32();
         match self.operation {
+            Operation::ProjectPlan
+            | Operation::ProjectCreate
+            | Operation::DocsFetch
+            | Operation::DocsImport => self.complete_project_job(result.code, &result.stdout),
             Operation::Task => match serde_json::from_slice::<Report>(&result.stdout) {
-                Ok(report) if report.schema_version == 1 => {
+                Ok(report) if matches!(report.schema_version, 1 | 2) => {
                     self.error = result.code != Some(0) || report.status != "completed";
                     self.message = format!(
                         "{} · {} {} · {:.1} s · {} {}",
@@ -505,6 +539,35 @@ impl Desktop {
                 }
             }
         });
+        ui.horizontal(|ui| {
+            if ui
+                .add_enabled(
+                    self.job.is_none(),
+                    egui::Button::image_and_text(
+                        Icon::FolderPlus.image(c.accent),
+                        l.text("Новый проект"),
+                    ),
+                )
+                .clicked()
+            {
+                self.wizard.open = true;
+            }
+            if ui.small_button(l.text("Документация")).clicked() {
+                self.settings_open = true;
+                self.settings_page = SettingsPage::Knowledge;
+                self.transition = Some(Instant::now());
+            }
+            if let Some(path) = &self.prefs.documentation {
+                ui.add(
+                    egui::Label::new(
+                        RichText::new(path.file_name().unwrap_or_default().to_string_lossy())
+                            .small()
+                            .weak(),
+                    )
+                    .truncate(),
+                );
+            }
+        });
         ui.add_space(3.0);
         ui.add_enabled(
             self.job.is_none(),
@@ -658,6 +721,7 @@ impl Desktop {
             card(c).show(ui,|ui|{
                 ui.set_min_width((ui.available_width()-2.0).max(0.0));
                 match self.settings_page{
+                    SettingsPage::Knowledge=>ui.vertical(|ui|self.knowledge_settings(ui)).response,
                     SettingsPage::Updates=>ui.vertical(|ui| self.update_settings(ui)).response,
                     SettingsPage::Model=>ui.add_enabled_ui(self.job.is_none(),|ui|{
                         ui.columns(2,|columns|{
@@ -969,7 +1033,15 @@ impl Desktop {
             }
             if let Some(edit) = report.proposals.get(self.selected) {
                 ui.columns(2, |columns| {
-                    columns[0].label(RichText::new(l.text("Исходный код")).small().color(c.error));
+                    columns[0].label(
+                        RichText::new(l.text(if edit.create {
+                            "Новый файл"
+                        } else {
+                            "Исходный код"
+                        }))
+                        .small()
+                        .color(c.error),
+                    );
                     selectable_code(&mut columns[0], &edit.original, c.text);
                     columns[1].label(
                         RichText::new(l.text("Предложенный код"))
@@ -979,6 +1051,14 @@ impl Desktop {
                     selectable_code(&mut columns[1], &edit.replacement, c.text);
                 });
             }
+        }
+        if !report.documentation_sources.is_empty() {
+            egui::CollapsingHeader::new(l.text("Документация в контексте")).show(ui, |ui| {
+                for s in &report.documentation_sources {
+                    ui.label(RichText::new(format!("{} · {}", s.title, s.version_scope)).small())
+                        .on_hover_text(&s.origin);
+                }
+            });
         }
         for (role, summary) in &report.summaries {
             egui::CollapsingHeader::new(format!("{}: {role}", l.text("Итог"))).show(ui, |ui| {
@@ -1028,6 +1108,7 @@ impl Desktop {
                     self.home(ui);
                 }
             });
+        self.project_dialog(ui.ctx());
         if let Some(index) = self.confirm {
             let path = self
                 .report
@@ -1181,15 +1262,16 @@ impl eframe::App for Desktop {
             let step = counter
                 .load(std::sync::atomic::Ordering::Relaxed)
                 .min(SMOKE_STEPS - 1);
-            self.prefs.palette = Palette::ALL[step / 14];
-            self.prefs.language = if (step / 7) % 2 == 0 {
+            self.prefs.palette = Palette::ALL[step / 18];
+            self.prefs.language = if (step / 9) % 2 == 0 {
                 Language::Ru
             } else {
                 Language::En
             };
             self.prefs.animations = self.prefs.language == Language::Ru;
-            self.settings_open = step % 7 != 0;
-            self.settings_page = SettingsPage::ALL[(step % 7).saturating_sub(1)];
+            self.settings_open = step % 9 != 0 && step % 9 != 8;
+            self.wizard.open = step % 9 == 8;
+            self.settings_page = SettingsPage::ALL[(step % 9).saturating_sub(1).min(6)];
         }
         self.draw(ui);
         if self.real_app {
@@ -1260,9 +1342,12 @@ fn validate_task(task: &str, files: &str) -> io::Result<()> {
     Ok(())
 }
 fn can_apply(report: &Report, index: usize, applied: &[usize]) -> bool {
-    report.schema_version == 1
+    matches!(report.schema_version, 1 | 2)
         && report.status == "completed"
-        && report.proposals.get(index).is_some()
+        && report
+            .proposals
+            .get(index)
+            .is_some_and(|p| !p.create || report.schema_version == 2)
         && !applied.contains(&index)
 }
 
@@ -1323,9 +1408,10 @@ mod tests {
                     app.prefs.palette = palette;
                     app.prefs.language = language;
                     app.prefs.animations = false;
-                    for page in 0usize..7 {
-                        app.settings_open = page != 0;
-                        app.settings_page = SettingsPage::ALL[page.saturating_sub(1)];
+                    for page in 0usize..9 {
+                        app.settings_open = page != 0 && page != 8;
+                        app.wizard.open = page == 8;
+                        app.settings_page = SettingsPage::ALL[page.saturating_sub(1).min(6)];
                         let mut output = ctx.run_ui(
                             egui::RawInput {
                                 screen_rect: Some(egui::Rect::from_min_size(

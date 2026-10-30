@@ -26,8 +26,7 @@ alpha добавляет task/предложения/apply и ограничен
 ## Следующий этап
 
 Текущее состояние M1 — в [плане](plans/0002-local-cli.md).
-M2/alpha/desktop реализованы в следующих планах ниже. Текущая задача — updater и
-перенос реализации в main; CUDA и качество 7B на пользовательском ПК ещё не проверены.
+M2/alpha/desktop реализованы в следующих планах ниже. Текущая задача — универсальные проекты и документация; CUDA и качество 7B на пользовательском ПК ещё не проверены.
 Пользовательский профиль железа хранится в игнорируемой `.lyra/user-hardware.json`,
 если он есть в текущей рабочей среде. Он не входит в Git и не подменяет диагностику.
 
@@ -64,3 +63,14 @@ examples/render-icon.rs; для пользователя Python не нужен.
 [package](../src/desktop/updater/package.rs), [helper/rollback](../src/desktop/updater/install.rs),
 [сквозные тесты](../tests/updater.rs), [упаковка](../tools/package_update.py),
 [инструкция](UPDATES.md), [текущий план](plans/0007-updater.md).
+
+Проекты с нуля: [схема/создание/контекст](../src/project/mod.rs),
+[профили](../src/project/profile.rs), [каркасы](../src/project/templates.rs),
+[AI planner/grammar](../src/project/planner.rs), [мастер GUI](../src/desktop/projects.rs),
+[тесты](../tests/projects.rs), [инструкция](PROJECTS.md),
+[текущий план](plans/0008-projects-knowledge.md).
+Документация: [packs/search](../src/knowledge/mod.rs),
+[явный fetch](../src/knowledge/online.rs), [тесты](../tests/knowledge.rs),
+[инструкция](KNOWLEDGE.md). Новые файлы: Workspace::propose_new/apply,
+Action::ProposeFile; отчёт v2, v1 legacy edits читаются. Каркасы с внешними SDK
+проверяются [developer/CI harness](../tools/verify_starters.py), без исполнения AI-кода.

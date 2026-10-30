@@ -3,6 +3,8 @@ pub mod agent;
 pub mod desktop;
 pub mod doctor;
 pub mod inference;
+pub mod knowledge;
+pub mod project;
 pub mod workspace;
 
 use clap::{Parser, Subcommand};
@@ -23,6 +25,10 @@ pub struct Cli {
 
 #[derive(Debug, Subcommand)]
 pub enum Command {
+    /// Создание проектов с нуля: blueprint, каркас, явное создание, контекст
+    Project(project::ProjectArgs),
+    /// Локальная документация, поиск и явная загрузка официальных источников
+    Docs(knowledge::DocsArgs),
     /// Выполнить задачу: чтение проекта, предложения, опциональные подагенты
     Task(agent::TaskArgs),
     /// Применить одно выбранное предложение из завершённого JSON-отчёта
@@ -39,6 +45,8 @@ pub enum Command {
 
 pub fn run(cli: Cli, output: &mut impl Write) -> io::Result<()> {
     match cli.command {
+        Command::Project(args) => project::run(args, output),
+        Command::Docs(args) => knowledge::run(args, output),
         Command::Task(args) => agent::task(args, output),
         Command::Apply(args) => agent::apply(args, output),
         Command::Generate(args) => inference::generate(&args, output),

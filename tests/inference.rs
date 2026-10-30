@@ -158,6 +158,14 @@ fn one_loaded_model_serves_independent_contexts_and_json_grammar() {
         let mut scoped_output = Vec::new();
         session.complete("hi", Some(&scoped), &mut scoped_output)?;
         assert!(String::from_utf8(scoped_output).unwrap().starts_with('{'));
+        let mut blueprint = Vec::new();
+        session.complete("hi", Some(lyra::project::PLAN_GRAMMAR), &mut blueprint)?;
+        assert!(String::from_utf8(blueprint).unwrap().starts_with('{'));
+        let grammar =
+            lyra::project::plan_grammar(&["main.py".into(), "tests/test_main.py".into()])?;
+        let mut named = Vec::new();
+        session.complete("hi", Some(&grammar), &mut named)?;
+        assert!(String::from_utf8(named).unwrap().starts_with('{'));
         Ok(())
     })
     .unwrap();

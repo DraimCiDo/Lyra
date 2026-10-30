@@ -28,6 +28,12 @@ pub struct Edit {
     pub path: String,
     pub original: String,
     pub replacement: String,
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub create: bool,
+}
+
+fn is_false(value: &bool) -> bool {
+    !*value
 }
 
 fn error(message: &str) -> io::Error {
@@ -286,10 +292,101 @@ impl Workspace {
             path: path.into(),
             original,
             replacement,
+            create: false,
         })
     }
 
-    pub fn apply(&self, edit: &Edit) -> io::Result<()> {
+    pub fn propose_new(&mut self, path: &str, content: &str) -> io::Result<Edit> {
+        self.new_path(path)?;
+        if content.len() > FILE_LIMIT || content.contains('\0') {
+            return Err(error("Новый файл: до 64 KiB текста без NUL."));
+        }
+        Ok(Edit {
+            path: path.into(),
+            original: String::new(),
+            replacement: content.into(),
+            create: true,
+        })
+    }
+
+    fn new_path(&mut self, path: &str) -> io::Result<()> {
+        crate::project::validate_path(path, false)?;
+        if !permitted(path) {
+            return Err(error("Путь запрещён политикой проекта."));
+        }
+        let mut prefix = PathBuf::new();
+        for part in Path::new(path).components() {
+            prefix.push(part);
+            match self.dir.symlink_metadata(&prefix) {
+                Ok(m) => {
+                    if m.file_type().is_symlink() {
+                        return Err(error("Symlink запрещён."));
+                    }
+                    #[cfg(windows)]
+                    {
+                        use cap_std::fs::MetadataExt;
+                        if m.file_attributes() & 0x400 != 0 {
+                            return Err(error("Reparse point запрещён."));
+                        }
+                    }
+                    if prefix == Path::new(path) {
+                        return Err(io::Error::new(
+                            io::ErrorKind::AlreadyExists,
+                            "Файл уже существует; создание отменено.",
+                        ));
+                    }
+                    if !m.is_dir() {
+                        return Err(error("Родитель файла не является каталогом."));
+                    }
+                    self.load_ignore(&prefix.to_string_lossy().replace('\\', "/"))?;
+                }
+                Err(e) if e.kind() == io::ErrorKind::NotFound => {}
+                Err(e) => return Err(e),
+            }
+        }
+        if self.ignored(path, false) {
+            return Err(error("Новый файл исключён gitignore."));
+        }
+        Ok(())
+    }
+
+    pub fn apply(&mut self, edit: &Edit) -> io::Result<()> {
+        if edit.create {
+            if !edit.original.is_empty() {
+                return Err(error("Новый файл не может иметь исходное содержимое."));
+            }
+            self.propose_new(&edit.path, &edit.replacement)?;
+            let mut prefix = PathBuf::new();
+            if let Some(parent) = Path::new(&edit.path).parent() {
+                for component in parent.components() {
+                    prefix.push(component);
+                    match self.dir.create_dir(&prefix) {
+                        Ok(()) => {}
+                        Err(e) if e.kind() == io::ErrorKind::AlreadyExists => {}
+                        Err(e) => return Err(e),
+                    };
+                    self.safe_path(&prefix.to_string_lossy().replace('\\', "/"))?;
+                }
+            }
+            let nonce = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map_err(io::Error::other)?
+                .as_nanos();
+            let temp = format!(".lyra-new-{}-{nonce}.tmp", std::process::id());
+            let mut options = OpenOptions::new();
+            options.write(true).create_new(true);
+            let mut staged = self.dir.open_with(&temp, &options)?;
+            let result = (|| {
+                staged.write_all(edit.replacement.as_bytes())?;
+                staged.sync_all()?;
+                drop(staged);
+                self.new_path(&edit.path)?;
+                // Atomic no-clobber publication on NTFS/Unix. Fail safely on filesystems without hard links.
+                self.dir.hard_link(&temp, &self.dir, &edit.path)
+            })();
+            let _ = self.dir.remove_file(&temp);
+            return result;
+        }
         if !self.files.contains(&edit.path) {
             return Err(error("Файл вне выбранного контекста."));
         }

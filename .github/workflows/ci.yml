@@ -48,6 +48,7 @@ jobs:
         with:
           path: |
             ~/.cargo/registry
+            ~/.m2/repository
             target
           key: lyra-native-${{ runner.os }}-${{ hashFiles('rust-toolchain.toml') }}-${{ hashFiles('Cargo.lock', 'Cargo.toml') }}
           restore-keys: lyra-native-${{ runner.os }}-${{ hashFiles('rust-toolchain.toml') }}-
@@ -78,6 +79,18 @@ jobs:
           Remove-Item -LiteralPath $model
       - name: Release build
         run: cargo build --release --locked --features desktop --bins --target ${{ matrix.target }}
+      - name: Set up full JDK 21 for trusted starter acceptance
+        uses: actions/setup-java@b843ebf9b913146b38da2eaa7aeddf76074ae1ad # v6.1.0
+        with:
+          distribution: temurin
+          java-version: '21'
+      - name: Set up Node 24 for dependency-free TypeScript starter
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: '24'
+      - name: Compile trusted Minecraft starters and test Python/TypeScript starters
+        timeout-minutes: 8
+        run: python tools/verify_starters.py --binary ./target/${{ matrix.target }}/release/${{ matrix.binary }} --minecraft
       - name: Smoke test built binary
         run: |
           $binary = './target/${{ matrix.target }}/release/${{ matrix.binary }}'
@@ -108,7 +121,7 @@ jobs:
           "`nSource commit: https://github.com/DraimCiDo/Lyra/tree/$env:GITHUB_SHA" | Add-Content -Encoding utf8NoBOM -LiteralPath dist/README.md
           Copy-Item -LiteralPath Cargo.lock -Destination dist
           New-Item -ItemType Directory -Force -Path dist/docs, dist/examples | Out-Null
-          Copy-Item -LiteralPath docs/ACCEPTANCE.md, docs/LOCAL_MODELS.md, docs/DESKTOP.md, docs/UPDATES.md -Destination dist/docs
+          Copy-Item -LiteralPath docs/ACCEPTANCE.md, docs/LOCAL_MODELS.md, docs/DESKTOP.md, docs/UPDATES.md, docs/PROJECTS.md, docs/KNOWLEDGE.md -Destination dist/docs
           Copy-Item -LiteralPath examples/buggy-add -Destination dist/examples -Recurse
           python tools/collect_licenses.py --features desktop --target ${{ matrix.target }} --output dist/THIRD_PARTY_NOTICES.txt
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }

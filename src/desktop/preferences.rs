@@ -18,6 +18,7 @@ pub struct Preferences {
     pub preview_updates: bool,
     pub repo: Option<PathBuf>,
     pub model: Option<PathBuf>,
+    pub documentation: Option<PathBuf>,
     pub files: String,
     pub subagents: bool,
     pub context: u32,
@@ -37,6 +38,7 @@ impl Default for Preferences {
             preview_updates: env!("CARGO_PKG_VERSION").contains('-'),
             repo: None,
             model: None,
+            documentation: None,
             files: String::new(),
             subagents: false,
             context: 4096,
@@ -58,7 +60,7 @@ impl Preferences {
             && (1..=3600).contains(&self.timeout)
             && self.files.len() <= 32768
             && self.files.lines().filter(|l| !l.trim().is_empty()).count() <= 32
-            && [&self.repo, &self.model]
+            && [&self.repo, &self.model, &self.documentation]
                 .into_iter()
                 .all(|p| p.as_ref().is_none_or(|p| p.as_os_str().len() <= 4096))
     }
