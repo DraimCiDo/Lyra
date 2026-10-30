@@ -21,6 +21,9 @@ def main():
         "Includes resolved registry packages for the selected build target.\n"
         "These licenses apply to the dependencies, not to Lyra itself.\n"
     ]
+    if "desktop" in args.features.replace(",", " ").split():
+        notice = Path("third_party/lucide/LICENSE")
+        sections.append(f"\n--- Embedded Lucide icons / ISC and Feather MIT ---\n{notice.read_text(encoding='utf-8')}\n")
     nodes = {node["id"]: node for node in metadata["resolve"]["nodes"]}
     pending = [metadata["resolve"]["root"]]
     reachable = set()
@@ -40,12 +43,14 @@ def main():
         notices = sorted(p for p in root.iterdir() if p.is_file() and p.name.upper().startswith(
             ("LICENSE", "LICENCE", "COPYING", "COPYRIGHT", "NOTICE")
         ))
+        if (root / "LICENSES").is_dir():
+            notices += sorted((root / "LICENSES").glob("*.txt"))
         vendored = {
             ("accesskit", "0.25.2"): "accesskit",
             ("clipboard-win", "5.4.3"): "clipboard-win",
             ("profiling", "1.0.18"): "profiling",
             **{(name, "0.37.0"): "egui" for name in (
-                "ecolor", "eframe", "egui", "egui-wgpu", "egui-winit",
+                "ecolor", "eframe", "egui", "egui_extras", "egui-wgpu", "egui-winit",
                 "egui_glow", "emath", "epaint", "epaint_default_fonts")},
         }.get((package["name"], package["version"]))
         if vendored:

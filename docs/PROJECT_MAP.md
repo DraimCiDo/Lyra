@@ -53,3 +53,9 @@ Alpha: [оркестратор](../src/agent.rs), [границы проекта
 [worker](../src/desktop/job.rs), [точка входа](../src/bin/lyra-desktop.rs),
 [тесты](../tests/desktop.rs), [запуск/приёмка](DESKTOP.md),
 [план](plans/0005-desktop.md). Feature `desktop` добавляет отдельный нативный EXE.
+
+Компактный GUI: [темы/локализация](../src/desktop/theme.rs),
+[Lucide и переключатели](../src/desktop/icons.rs),
+[локальные настройки](../src/desktop/preferences.rs), [ресурсы EXE](../build.rs),
+[план](plans/0006-compact-ui.md). Конвертер значка: tools/render_icon.py и
+examples/render-icon.rs; для пользователя Python не нужен.

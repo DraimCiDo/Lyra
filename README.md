@@ -15,13 +15,18 @@ Lyra (Лира) — имя по созвездию Лиры.
 настройки, отмена, просмотр исходного/предложенного кода и отдельное применение.
 Работает локально, без браузера, Python/Node или сервера; portable CPU-сборка.
 Инструкции запуска, сборки и приёмки — [настольная Lyra](docs/DESKTOP.md).
+В `0.2.0-dev.2` окно уменьшено до **760×480**: отдельные настройки, Lucide Icons,
+ползунки/переключатели, четыре мягкие темы и RU/EN. Короткие анимации можно отключить.
+Параметры и пути сохраняются локально; задания и код автоматически не сохраняются.
 CLI `lyra.exe` остаётся доступным. Это alpha; качество модели проверяется отдельно.
 
 ![Настольная Lyra: проект, модель и задача](docs/images/desktop.png)
 
+![Компактные настройки Lyra](docs/images/desktop-settings.png)
+
 ## Состояние проекта
 
-**0.2.0-dev.1: тестируемая alpha кодинг-агента.**
+**0.2.0-dev.2: тестируемая alpha кодинг-агента.**
 Доступны `--help`, `--version`, `doctor` и `doctor --json`, тесты и CI для Linux
 и Windows MSVC. Диагностика работает без сети, аккаунта, API-ключа и модели.
 Команда `generate` выполняет потоковую генерацию на CPU; CUDA включается при
@@ -113,7 +118,7 @@ CUDA-сборка и работа на пользовательской RTX по
 ## Начать работу с репозиторием
 
 ```powershell
-git clone --branch feat/desktop-app https://github.com/DraimCiDo/Lyra.git
+git clone --branch feat/compact-desktop https://github.com/DraimCiDo/Lyra.git
 Set-Location -LiteralPath .\Lyra
 git status --short
 ```
