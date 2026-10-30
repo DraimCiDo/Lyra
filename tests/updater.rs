@@ -169,6 +169,19 @@ fn fixture(version: &str) -> PathBuf {
                 String::from_utf8_lossy(&output.stderr)
             );
         }
+        let helper = t.path().join("helper.exe");
+        fs::copy(env!("CARGO_BIN_EXE_lyra-desktop"), &helper).unwrap();
+        // Linux DWARF makes the debug GUI hundreds of MiB. Ship builds already strip it.
+        // Exercise the exact helper code with shipping-like file size, keeping real timeouts.
+        #[cfg(target_os = "linux")]
+        assert!(
+            Command::new("strip")
+                .arg("--strip-debug")
+                .arg(&helper)
+                .status()
+                .unwrap()
+                .success()
+        );
         t
     });
     t.path().join(format!("{version}.exe"))
@@ -232,7 +245,7 @@ fn native_update(fail_health: bool, lock_cli: bool) {
         pkg,
         &root,
         parent.0.id(),
-        Path::new(env!("CARGO_BIN_EXE_lyra-desktop")),
+        &fixture("0.0.1").parent().unwrap().join("helper.exe"),
         &cache,
         true,
     )

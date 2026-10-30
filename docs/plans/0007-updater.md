@@ -39,3 +39,10 @@ Debian 13 x64 / Rust 1.99.1: fmt, Clippy -D warnings, 46 обычных tests,
 CI packager также проверяет версии обоих готовых release EXE.
 Windows locked-file test выполняется только в нативном Windows CI.
 Релиз не опубликован; draft workflow подготовлен по tag, main push релиз не создаёт.
+
+CI обнаружил превышение 15-секундного handshake в Linux debug-файлe с DWARF
+(свыше 400 MiB). Тестовая копия реального helper теперь проходит strip --strip-debug,
+как release-поставка; код и production timeout не меняются. Локально та же группа
+6 updater-тестов: 22.04 с до, 8.33 с после. Нативный Windows test job первой ревизии
+прошёл все тесты, включая locked CLI rollback; финальный main run проверяется отдельно.
+Обновлены фактические native Linux скриншоты dev.3, без модели/личного проекта.
