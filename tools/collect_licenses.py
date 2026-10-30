@@ -27,7 +27,8 @@ def main():
         if package_id in reachable:
             continue
         reachable.add(package_id)
-        pending.extend(dep["pkg"] for dep in nodes[package_id]["deps"])
+        pending.extend(dep["pkg"] for dep in nodes[package_id]["deps"]
+                       if any(kind["kind"] is None for kind in dep["dep_kinds"]))
     for package in sorted(metadata["packages"], key=lambda p: (p["name"], p["version"])):
         if package["id"] not in reachable:
             continue
@@ -37,6 +38,14 @@ def main():
         notices = sorted(p for p in root.iterdir() if p.is_file() and p.name.upper().startswith(
             ("LICENSE", "LICENCE", "COPYING", "COPYRIGHT", "NOTICE")
         ))
+        if package["name"] == "llama-cpp-sys-2":
+            notices += sorted(p for p in (root / "llama.cpp").rglob("*")
+                              if p.is_file() and p.name.upper().startswith(("LICENSE", "COPYING", "NOTICE")))
+        if package["name"] in ("llama-cpp-2", "llama-cpp-sys-2"):
+            for notice in sorted(Path("third_party/llama-cpp-rs").glob("LICENSE-*")):
+                sections.append(f"\n--- {package['name']} {package['version']} / {notice.name} ---\n{notice.read_text(encoding='utf-8')}\n")
+            if not notices:
+                continue
         if not notices:
             raise SystemExit(f"Missing license text: {package['name']} {package['version']}")
         sections.append(
@@ -44,7 +53,7 @@ def main():
             f"License expression: {package.get('license') or 'unspecified'}\n"
         )
         for notice in notices:
-            sections.append(f"\n--- {notice.name} ---\n{notice.read_text(encoding='utf-8')}\n")
+            sections.append(f"\n--- {notice.relative_to(root)} ---\n{notice.read_text(encoding='utf-8')}\n")
     args.output.parent.mkdir(parents=True, exist_ok=True)
     args.output.write_text("\n".join(sections), encoding="utf-8")
     print(f"Dependency notices written to {args.output}")

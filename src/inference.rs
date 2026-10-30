@@ -1,0 +1,259 @@
+use clap::Args;
+use llama_cpp_2::{
+    context::params::LlamaContextParams,
+    llama_backend::LlamaBackend,
+    llama_batch::LlamaBatch,
+    model::{LlamaChatMessage, LlamaModel, params::LlamaModelParams},
+    sampling::LlamaSampler,
+};
+use std::{
+    fs::File,
+    io::{self, Read, Write},
+    num::NonZeroU32,
+    path::PathBuf,
+    sync::{
+        Arc,
+        atomic::{AtomicBool, Ordering},
+    },
+    time::{Duration, Instant},
+};
+
+#[derive(Debug, Args)]
+pub struct GenerateArgs {
+    /// Полный путь к локальному GGUF (не URL)
+    #[arg(long)]
+    pub model: PathBuf,
+    #[arg(long)]
+    pub prompt: String,
+    /// Общее окно: prompt + шаблон + ответ
+    #[arg(long, default_value_t=2048, value_parser=clap::value_parser!(u32).range(128..=32768))]
+    pub context: u32,
+    #[arg(long, default_value_t=256, value_parser=clap::value_parser!(u32).range(1..=8192))]
+    pub max_tokens: u32,
+    #[arg(long, default_value_t=8, value_parser=clap::value_parser!(u32).range(1..=256))]
+    pub threads: u32,
+    /// Требует сборку --features cuda; 0 означает CPU
+    #[arg(long, default_value_t=0, value_parser=clap::value_parser!(u32).range(0..=1024))]
+    pub gpu_layers: u32,
+    /// Кооперативный таймаут, включая загрузку модели
+    #[arg(long, default_value_t=120, value_parser=clap::value_parser!(u64).range(1..=3600))]
+    pub timeout_secs: u64,
+    /// Продолжение текста без шаблона чата (для base/test моделей)
+    #[arg(long)]
+    pub raw: bool,
+}
+
+fn fail(message: impl Into<String>) -> io::Error {
+    io::Error::other(message.into())
+}
+
+pub fn validate(args: &GenerateArgs) -> io::Result<()> {
+    if !(128..=32768).contains(&args.context)
+        || !(1..=8192).contains(&args.max_tokens)
+        || !(1..=256).contains(&args.threads)
+        || !(1..=3600).contains(&args.timeout_secs)
+        || args.gpu_layers > 1024
+    {
+        return Err(fail("Параметры генерации вне допустимого диапазона."));
+    }
+    if args.prompt.trim().is_empty() || args.prompt.len() > 1024 * 1024 {
+        return Err(fail("Prompt должен содержать от 1 до 1048576 байт текста."));
+    }
+    if args.max_tokens >= args.context {
+        return Err(fail("max-tokens должен быть меньше context."));
+    }
+    if args.gpu_layers > 0 && !cfg!(feature = "cuda") {
+        return Err(fail(
+            "GPU layers требуют сборку с --features cuda; CPU fallback не выполняется.",
+        ));
+    }
+    let mut file = File::open(&args.model)?;
+    if !file.metadata()?.is_file() {
+        return Err(fail("Путь модели должен указывать на обычный GGUF-файл."));
+    }
+    let mut header = [0u8; 8];
+    file.read_exact(&mut header)?;
+    if &header[..4] != b"GGUF"
+        || ![2, 3].contains(&u32::from_le_bytes(
+            header[4..].try_into().map_err(|_| fail("GGUF header"))?,
+        ))
+    {
+        return Err(fail("Ожидается GGUF версии 2 или 3; файл не загружается."));
+    }
+    Ok(())
+}
+
+pub fn context_budget(prompt_tokens: usize, max_tokens: u32, context: u32) -> io::Result<()> {
+    if prompt_tokens == 0
+        || (prompt_tokens as u64)
+            .checked_add(u64::from(max_tokens))
+            .is_none_or(|sum| sum > u64::from(context))
+    {
+        return Err(fail(format!(
+            "Контекст переполнен: prompt {prompt_tokens} + ответ {max_tokens} > окно {context}. Уменьшите prompt/ответ или явно увеличьте context."
+        )));
+    }
+    Ok(())
+}
+
+fn check(cancelled: &AtomicBool, started: Instant, timeout: Duration) -> io::Result<()> {
+    if cancelled.load(Ordering::Relaxed) {
+        return Err(io::Error::new(
+            io::ErrorKind::Interrupted,
+            "Генерация отменена.",
+        ));
+    }
+    if started.elapsed() >= timeout {
+        return Err(io::Error::new(
+            io::ErrorKind::TimedOut,
+            "Истёк таймаут генерации.",
+        ));
+    }
+    Ok(())
+}
+
+pub fn generate(args: &GenerateArgs, output: &mut impl Write) -> io::Result<()> {
+    validate(args)?;
+    let cancelled = Arc::new(AtomicBool::new(false));
+    let signal = cancelled.clone();
+    ctrlc::set_handler(move || signal.store(true, Ordering::Relaxed))
+        .map_err(|e| fail(e.to_string()))?;
+    let started = Instant::now();
+    let timeout = Duration::from_secs(args.timeout_secs);
+    let backend = LlamaBackend::init().map_err(|e| fail(e.to_string()))?;
+    if args.gpu_layers > 0
+        && !llama_cpp_2::list_llama_ggml_backend_devices()
+            .iter()
+            .any(|device| device.backend == "CUDA")
+    {
+        return Err(fail(
+            "CUDA-устройство недоступно; CPU fallback не выполняется.",
+        ));
+    }
+    let params = LlamaModelParams::default().with_n_gpu_layers(args.gpu_layers);
+    let model = LlamaModel::load_from_file(&backend, &args.model, &params)
+        .map_err(|e| fail(format!("Не удалось загрузить GGUF: {e}")))?;
+    check(&cancelled, started, timeout)?;
+    if args.context > model.n_ctx_train() {
+        return Err(fail(format!(
+            "context {} превышает обученное окно модели {}.",
+            args.context,
+            model.n_ctx_train()
+        )));
+    }
+    let prompt = if args.raw {
+        args.prompt.clone()
+    } else {
+        let template = model.chat_template(None).map_err(|e| {
+            fail(format!(
+                "Шаблон чата недоступен: {e}. Для base-модели укажите --raw."
+            ))
+        })?;
+        let message = LlamaChatMessage::new("user".into(), args.prompt.clone())
+            .map_err(|e| fail(e.to_string()))?;
+        model
+            .apply_chat_template(&template, &[message], true)
+            .map_err(|e| fail(e.to_string()))?
+    };
+    let vocab = model.vocab();
+    let tokens = vocab.tokenize(prompt.as_bytes(), true, true);
+    context_budget(tokens.len(), args.max_tokens, args.context)?;
+    let context_params = LlamaContextParams::default()
+        .with_n_ctx(NonZeroU32::new(args.context))
+        .with_n_batch(128)
+        .with_n_ubatch(128)
+        .with_n_threads(args.threads as i32)
+        .with_n_threads_batch(args.threads as i32)
+        .with_offload_kqv(args.gpu_layers > 0);
+    let mut context = model
+        .new_context(&backend, context_params)
+        .map_err(|e| fail(e.to_string()))?;
+    let mut batch = LlamaBatch::new(128, 1);
+    for (chunk_index, chunk) in tokens.chunks(128).enumerate() {
+        check(&cancelled, started, timeout)?;
+        batch.clear();
+        for (i, &token) in chunk.iter().enumerate() {
+            let pos = chunk_index * 128 + i;
+            batch
+                .add(token, pos as i32, &[0], pos + 1 == tokens.len())
+                .map_err(|e| fail(e.to_string()))?;
+        }
+        context
+            .decode(&mut batch)
+            .map_err(|e| fail(e.to_string()))?;
+    }
+    let mut sampler = LlamaSampler::greedy();
+    let mut decoder = encoding_rs::UTF_8.new_decoder();
+    let mut count = 0;
+    for index in 0..args.max_tokens {
+        check(&cancelled, started, timeout)?;
+        let token = sampler.sample(&context, -1);
+        if vocab.is_eog(token) {
+            break;
+        }
+        sampler.accept(token);
+        let bytes = vocab.token_to_piece(token, false, None);
+        let mut text = String::with_capacity(bytes.len() * 3 + 16);
+        let (_, read, _) = decoder.decode_to_string(&bytes, &mut text, false);
+        if read != bytes.len() {
+            return Err(fail("Не удалось декодировать текст токена."));
+        }
+        output.write_all(text.as_bytes())?;
+        output.flush()?;
+        count += 1;
+        if index + 1 < args.max_tokens {
+            batch.clear();
+            batch
+                .add(token, (tokens.len() + index as usize) as i32, &[0], true)
+                .map_err(|e| fail(e.to_string()))?;
+            context
+                .decode(&mut batch)
+                .map_err(|e| fail(e.to_string()))?;
+        }
+    }
+    let mut tail = String::with_capacity(16);
+    let (result, _, _) = decoder.decode_to_string(&[], &mut tail, true);
+    if result != encoding_rs::CoderResult::InputEmpty {
+        return Err(fail("Не удалось завершить UTF-8 поток."));
+    }
+    output.write_all(tail.as_bytes())?;
+    writeln!(output)?;
+    output.flush()?;
+    eprintln!(
+        "Сгенерировано {count} токенов; {:.2} с с загрузкой; лимит ответа {}.",
+        started.elapsed().as_secs_f64(),
+        args.max_tokens
+    );
+    Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn context_reserves_the_whole_answer() {
+        assert!(context_budget(100, 28, 128).is_ok());
+        assert!(context_budget(101, 28, 128).is_err());
+        assert!(context_budget(0, 1, 128).is_err());
+        assert!(context_budget(usize::MAX, u32::MAX, 128).is_err());
+    }
+    #[test]
+    fn cancellation_and_deadline_have_distinct_errors() {
+        assert_eq!(
+            check(
+                &AtomicBool::new(true),
+                Instant::now(),
+                Duration::from_secs(10)
+            )
+            .unwrap_err()
+            .kind(),
+            io::ErrorKind::Interrupted
+        );
+        assert_eq!(
+            check(&AtomicBool::new(false), Instant::now(), Duration::ZERO)
+                .unwrap_err()
+                .kind(),
+            io::ErrorKind::TimedOut
+        );
+    }
+}

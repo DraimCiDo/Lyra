@@ -25,5 +25,9 @@ fn output_failure(error: io::Error) -> ExitCode {
         return ExitCode::SUCCESS;
     }
     let _ = writeln!(io::stderr().lock(), "Ошибка: {error}");
-    ExitCode::FAILURE
+    match error.kind() {
+        io::ErrorKind::Interrupted => ExitCode::from(130),
+        io::ErrorKind::TimedOut => ExitCode::from(124),
+        _ => ExitCode::FAILURE,
+    }
 }

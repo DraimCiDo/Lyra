@@ -53,7 +53,14 @@ fn doctor_json_is_an_offline_snapshot_not_a_readiness_claim() {
     let report: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
     assert_eq!(report["schema_version"], 1);
     assert_eq!(report["architecture"], std::env::consts::ARCH);
-    assert_eq!(report["inference_status"], "not_implemented");
+    assert_eq!(
+        report["inference_status"],
+        if cfg!(feature = "cuda") {
+            "runtime_available_cuda"
+        } else {
+            "runtime_available_cpu"
+        }
+    );
     assert!(report["warnings"].is_array());
     assert!(report.get("cpu").is_some());
     assert!(report.get("memory").is_some());

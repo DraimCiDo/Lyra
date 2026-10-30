@@ -81,3 +81,12 @@ Tree-sitter, автоматический граф, dashboard и pipeline AI-п�
 - [Официальный Qwen2.5-Coder-7B-Instruct GGUF](https://huggingface.co/Qwen/Qwen2.5-Coder-7B-Instruct-GGUF/tree/main):
   проверены файл Q4_K_M около 4,68 GB и лицензия Apache-2.0.
   Это данные весов, не замер их VRAM/скорости на пользовательском ПК.
+
+## M2 — встроенный локальный runtime
+
+- [llama-cpp-2 0.1.160](https://docs.rs/llama-cpp-2/0.1.160/llama_cpp_2/):
+  API сверен с исходниками закреплённого crate (vocab, batch, context, sampling).
+- [Исходная ревизия binding](https://github.com/utilityai/llama-cpp-rs/tree/0dd5814c9b061930965d144c1653cd4d05054873):
+  лицензии MIT/Apache-2.0 сохранены в `third_party/llama-cpp-rs`.
+- [ggml-org tinyllamas](https://huggingface.co/ggml-org/models/tree/main/tinyllamas):
+  небольшой тестовый GGUF для CPU smoke, не модель кодинга и не часть поставки.

@@ -21,7 +21,7 @@ jobs:
   check:
     name: ${{ matrix.os }}
     runs-on: ${{ matrix.os }}
-    timeout-minutes: 20
+    timeout-minutes: 40
     strategy:
       fail-fast: false
       matrix:
@@ -41,6 +41,15 @@ jobs:
           persist-credentials: false
       - name: Install pinned toolchain
         run: rustup show active-toolchain
+      - name: Native inference build dependencies (Linux)
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y cmake libclang-dev
+      - name: Native inference build dependencies (Windows)
+        if: runner.os == 'Windows'
+        run: |
+          $clang = 'C:\Program Files\LLVM\bin'
+          if (-not (Test-Path -LiteralPath "$clang\libclang.dll")) { throw 'LLVM libclang is missing' }
+          "LIBCLANG_PATH=$clang" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
       - name: Format
         run: cargo fmt --all -- --check
       - name: Clippy
@@ -57,7 +66,7 @@ jobs:
           $json = & $binary doctor --json
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           $report = $json | ConvertFrom-Json
-          if ($report.schema_version -ne 1 -or $report.inference_status -ne 'not_implemented') {
+          if ($report.schema_version -ne 1 -or $report.inference_status -ne 'runtime_available_cpu') {
             throw 'Unexpected diagnostic report'
           }
       - name: Collect build files and dependency licenses

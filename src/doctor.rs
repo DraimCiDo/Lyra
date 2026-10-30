@@ -141,7 +141,11 @@ pub fn collect() -> io::Result<DoctorReport> {
         memory,
         gpus,
         disks,
-        inference_status: "not_implemented",
+        inference_status: if cfg!(feature = "cuda") {
+            "runtime_available_cuda"
+        } else {
+            "runtime_available_cpu"
+        },
         warnings,
     })
 }

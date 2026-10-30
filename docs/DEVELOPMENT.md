@@ -3,7 +3,7 @@
 ## Текущий этап
 
 Есть Cargo-проект, CLI/doctor, тесты и CI Linux/Windows. Команды ниже применимы
-к текущему checkout. Inference, редактирование и команды модели ещё не реализованы.
+к текущему checkout. Локальный CPU inference реализован; редактирование и команды модели отсутствуют.
 
 ## Окружение Windows
 
@@ -113,3 +113,16 @@ prompt processing и tokens/s, VRAM, KV-cache и размер контекста
 До стабильного релиза нужны нативная проверка Windows, понятная инструкция,
 лицензия/уведомления зависимостей, артефакты и их контрольные суммы.
 Не добавлять фиктивный номер версии, ссылку на отсутствующий EXE или значок зелёного CI.
+
+## Сборка встроенного inference (M2)
+
+Кроме Rust нужны CMake, C++ compiler и libclang для bindgen. Linux CI устанавливает
+`cmake libclang-dev`; Windows CI использует MSVC и LLVM/libclang из образа runner.
+Они нужны при сборке, а не при запуске готового CPU-артефакта.
+CUDA — feature `cuda`; нужен совместимый CUDA Toolkit и NVIDIA driver.
+Нативная cross-check из Linux теперь также требует Windows C++ headers/SDK:
+одного Rust target для C++ runtime недостаточно, используйте native Windows CI.
+
+Обычные тесты не загружают веса. Для отдельного CPU smoke-теста задайте
+`LYRA_TEST_MODEL` абсолютным путём к небольшой base GGUF, затем выполните
+`cargo test --test inference -- --ignored`. Этот тест не измеряет качество 7B.
