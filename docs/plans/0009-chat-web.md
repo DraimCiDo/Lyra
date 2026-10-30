@@ -1,6 +1,6 @@
 # Чат вместо мастера проекта; веб-контекст
 
-Статус: в работе. main, исходная ревизия f4f29f9.
+Статус: реализовано и проверено. main, исходная ревизия f4f29f9.
 
 Пользователь попросил поддержку современного оформления веб-проектов (Vue/TS),
 показать приложение, затем явно заменить отдельный мастер новым интерфейсом чата:
@@ -30,7 +30,7 @@
 - [x] План показан в переписке, новая папка создаётся только явно; wizard удалён.
 - [x] Vue-профиль согласован с grammar, определением контекста и docs allowlist.
 - [x] Rust fmt/Clippy, применимые тесты и native GUI smoke; фактические скриншоты.
-- [ ] Документы, результаты, commit/push main.
+- [x] Документы, результаты, commit/push main.
 
 ## Источники
 
@@ -74,7 +74,7 @@ hash/provenance валидны; offline search vue-tsc вернул фрагме
 `vue-typescript`; исправлено явными serde/clap именами. Тесты проверяют реальные
 CLI sources и присутствие всех сериализованных профилей в native grammar.
 
-Windows-проверка текущего изменения и итог main CI ещё ожидаются. Предыдущие
+Windows-проверка текущего изменения и итог main CI получены ниже. Предыдущие
 Windows-артефакты dev.4 не считаются приёмкой нового UI. Публичный release/tag
 не создаётся; пользователь ранее разрешил push в main.
 
@@ -85,3 +85,40 @@ Windows-артефакты dev.4 не считаются приёмкой нов
 Повторены Clippy и layout-тест всех тем/языков/размеров; реальные native снимки
 760×480 и 640×460, длинный ввод, выбор настроек и GGUF Enter→blueprint проверены.
 Скриншоты обновлены. Сочетания клавиш не отключались, убраны только подписи.
+
+## Финальная нативная приёмка · 2026-10-30
+
+Код: [8087ee6](https://github.com/DraimCiDo/Lyra/commit/8087ee6d2101ca696a098dccbb90eba8fd259a09).
+[Main CI 41115487752](https://github.com/DraimCiDo/Lyra/actions/runs/41115487752)
+завершился с `success`. Первая реализация чата 4da3a4d также прошла CI;
+для итоговых архивов используется последующая ревизия с замечаниями пользователя.
+Следующий коммит содержит только результаты в Markdown, без изменения бинарников.
+
+| Проверка | Ubuntu 24.04 x64 | Windows Server 2022 x64 |
+| --- | --- | --- |
+| Format / Clippy all-targets desktop -D warnings | прошли | прошли |
+| Обычные тесты | 76 passed, 0 failed | 75 passed, 0 failed |
+| Явные tiny GGUF / native grammar | 2 passed | 2 passed |
+| Release CLI / GUI, doctor | прошли | прошли |
+| Native GUI smoke, 72 состояния | прошёл | прошёл |
+| Python / TypeScript starter tests | прошли | прошли |
+| Paper/Spigot Java/Kotlin Maven verify и JAR checks | все 4 прошли | все 4 прошли |
+| Упаковка и notices | прошли | прошли |
+
+Platform-specific тесты объясняют разницу сумм. Это не Windows 11/RTX 4060
+пользователя и не проверка CUDA или качества 7B. Игры/серверы не запускались.
+
+Артефакты доступны 14 дней:
+
+- [Windows portable](https://github.com/DraimCiDo/Lyra/actions/runs/41115487752/artifacts/13006361288).
+- [Windows update assets](https://github.com/DraimCiDo/Lyra/actions/runs/41115487752/artifacts/13006860687).
+- [Linux portable](https://github.com/DraimCiDo/Lyra/actions/runs/41115487752/artifacts/13005242926).
+
+Windows update artifact скачан: SHA256 совпал с GitHub, CRC ZIP и все manifest
+размеры/хеши совпали. Версия `0.2.0-dev.5`, source SHA 8087ee6, PE AMD64,
+GUI/console subsystems, семь размеров иконки и новые инструкции проверены.
+Внутренний ZIP — 14 705 194 байта,
+SHA256 `edfe8fc2635b87e1c402e392c642205b8dc45a36441f31e0ecf41974b5bb9dbd`.
+GUI EXE — 24 169 984 байта, CLI EXE — 11 455 488 байт. GGUF и внешние SDK
+не включены. Штатный Rust package reader также принял и проверил этот ZIP;
+чтение на Linux не считается установкой Windows-пакета.
