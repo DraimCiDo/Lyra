@@ -53,12 +53,13 @@ impl Job {
     }
 
     fn start_command(
-        command: Command,
+        mut command: Command,
         temp: TempDir,
         cancellable: bool,
         deadline: Option<Duration>,
         repaint: impl FnOnce() + Send + 'static,
     ) -> io::Result<Self> {
+        command.current_dir(temp.path());
         let cancel = Arc::new(AtomicBool::new(false));
         let flag = cancel.clone();
         let (sender, receiver) = mpsc::sync_channel(1);
