@@ -143,6 +143,14 @@ fn one_loaded_model_serves_independent_contexts_and_json_grammar() {
         let mut constrained = Vec::new();
         session.complete("hi", Some("root ::= \"ok\""), &mut constrained)?;
         assert_eq!(String::from_utf8(constrained).unwrap().trim(), "ok");
+        let mut system_output = Vec::new();
+        session.complete_with_system(
+            "hi",
+            Some("system instruction"),
+            Some("root ::= \"ok\""),
+            &mut system_output,
+        )?;
+        assert_eq!(String::from_utf8(system_output).unwrap().trim(), "ok");
         let mut action = Vec::new();
         session.complete("hi", Some(lyra::agent::ACTION_GRAMMAR), &mut action)?;
         assert!(String::from_utf8(action).unwrap().starts_with('{'));

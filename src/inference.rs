@@ -175,7 +175,19 @@ impl Session<'_> {
         grammar: Option<&str>,
         output: &mut impl Write,
     ) -> io::Result<()> {
-        if prompt.is_empty() || prompt.len() > 1024 * 1024 {
+        self.complete_with_system(prompt, None, grammar, output)
+    }
+
+    pub fn complete_with_system(
+        &self,
+        prompt: &str,
+        system: Option<&str>,
+        grammar: Option<&str>,
+        output: &mut impl Write,
+    ) -> io::Result<()> {
+        if prompt.is_empty()
+            || prompt.len().saturating_add(system.map_or(0, str::len)) > 1024 * 1024
+        {
             return Err(fail("Prompt вне допустимого размера."));
         }
         let Self {
@@ -188,7 +200,7 @@ impl Session<'_> {
         } = *self;
         check(cancelled, started, timeout)?;
         let prompt = if args.raw {
-            prompt.to_owned()
+            system.map_or_else(|| prompt.to_owned(), |system| format!("{system}\n{prompt}"))
         } else {
             let template = model.chat_template(None).map_err(|e| {
                 fail(format!(
@@ -197,8 +209,16 @@ impl Session<'_> {
             })?;
             let message = LlamaChatMessage::new("user".into(), prompt.to_owned())
                 .map_err(|e| fail(e.to_string()))?;
+            let mut messages = Vec::new();
+            if let Some(system) = system {
+                messages.push(
+                    LlamaChatMessage::new("system".into(), system.to_owned())
+                        .map_err(|e| fail(e.to_string()))?,
+                );
+            }
+            messages.push(message);
             model
-                .apply_chat_template(&template, &[message], true)
+                .apply_chat_template(&template, &messages, true)
                 .map_err(|e| fail(e.to_string()))?
         };
         let vocab = model.vocab();
