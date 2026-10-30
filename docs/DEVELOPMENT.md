@@ -142,3 +142,13 @@ Windows CI отдельно создаёт junction и проверяет отк
 В CI кэшируются Cargo registry и target (без credentials), чтобы повторные
 проверки Rust-оркестратора не требовали каждый раз полного пересоздания C++ runtime.
 Пользовательская приёмка: [ACCEPTANCE.md](ACCEPTANCE.md).
+
+## Desktop feature
+
+Интерфейс и нативная приёмка: [DESKTOP.md](DESKTOP.md). Полный CI включает
+`--features desktop` в Clippy/tests/release, собирает оба бинарника, открывает
+настоящее окно smoke-режима и упаковывает две контрольные суммы.
+CLI без feature сохраняет прежний путь сборки. Лицензии поставки собираются
+через `python tools/collect_licenses.py --features desktop --target TARGET --output FILE`.
+Новые зависимости: eframe/egui (MIT/Apache-2.0, нативный renderer), rfd (MIT, диалоги),
+tempfile (MIT/Apache-2.0, временные файлы). Runtime не требует Python/Node/WebView.

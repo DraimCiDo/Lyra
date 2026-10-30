@@ -48,3 +48,8 @@ alpha добавляет task/предложения/apply и ограничен
 Alpha: [оркестратор](../src/agent.rs), [границы проекта](../src/workspace.rs),
 [сквозные тесты](../tests/agent.rs), [приёмка](ACCEPTANCE.md),
 [план](plans/0004-testable-agent.md). Произвольного shell и полноценной OS sandbox нет.
+
+Настольный интерфейс: [src/desktop.rs](../src/desktop.rs),
+[worker](../src/desktop/job.rs), [точка входа](../src/bin/lyra-desktop.rs),
+[тесты](../tests/desktop.rs), [запуск/приёмка](DESKTOP.md),
+[план](plans/0005-desktop.md). Feature `desktop` добавляет отдельный нативный EXE.

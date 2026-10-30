@@ -1,4 +1,6 @@
 pub mod agent;
+#[cfg(feature = "desktop")]
+pub mod desktop;
 pub mod doctor;
 pub mod inference;
 pub mod workspace;
