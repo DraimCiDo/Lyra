@@ -1,6 +1,6 @@
 [package]
 name = "lyra"
-version = "0.1.0-dev.1"
+version = "0.2.0-dev.1"
 edition = "2024"
 rust-version = "1.99"
 description = "Local-first coding agent: CLI foundation and offline hardware diagnostics"
@@ -15,6 +15,8 @@ sysinfo = { version = "0.40.0", default-features = false, features = ["system", 
 llama-cpp-2 = { version = "=0.1.160", default-features = false }
 ctrlc = "3"
 encoding_rs = "0.8"
+cap-std = "=3.4.6"
+ignore = "0.4"
 
 [features]
 default = []

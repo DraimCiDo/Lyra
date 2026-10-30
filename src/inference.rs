@@ -113,6 +113,13 @@ fn check(cancelled: &AtomicBool, started: Instant, timeout: Duration) -> io::Res
 }
 
 pub fn generate(args: &GenerateArgs, output: &mut impl Write) -> io::Result<()> {
+    with_session(args, |session| session.complete(&args.prompt, None, output))
+}
+
+pub fn with_session<T>(
+    args: &GenerateArgs,
+    work: impl FnOnce(&Session<'_>) -> io::Result<T>,
+) -> io::Result<T> {
     validate(args)?;
     let cancelled = Arc::new(AtomicBool::new(false));
     let signal = cancelled.clone();
@@ -141,90 +148,138 @@ pub fn generate(args: &GenerateArgs, output: &mut impl Write) -> io::Result<()> 
             model.n_ctx_train()
         )));
     }
-    let prompt = if args.raw {
-        args.prompt.clone()
-    } else {
-        let template = model.chat_template(None).map_err(|e| {
-            fail(format!(
-                "Шаблон чата недоступен: {e}. Для base-модели укажите --raw."
-            ))
-        })?;
-        let message = LlamaChatMessage::new("user".into(), args.prompt.clone())
-            .map_err(|e| fail(e.to_string()))?;
-        model
-            .apply_chat_template(&template, &[message], true)
-            .map_err(|e| fail(e.to_string()))?
-    };
-    let vocab = model.vocab();
-    let tokens = vocab.tokenize(prompt.as_bytes(), true, true);
-    context_budget(tokens.len(), args.max_tokens, args.context)?;
-    let context_params = LlamaContextParams::default()
-        .with_n_ctx(NonZeroU32::new(args.context))
-        .with_n_batch(128)
-        .with_n_ubatch(128)
-        .with_n_threads(args.threads as i32)
-        .with_n_threads_batch(args.threads as i32)
-        .with_offload_kqv(args.gpu_layers > 0);
-    let mut context = model
-        .new_context(&backend, context_params)
-        .map_err(|e| fail(e.to_string()))?;
-    let mut batch = LlamaBatch::new(128, 1);
-    for (chunk_index, chunk) in tokens.chunks(128).enumerate() {
-        check(&cancelled, started, timeout)?;
-        batch.clear();
-        for (i, &token) in chunk.iter().enumerate() {
-            let pos = chunk_index * 128 + i;
-            batch
-                .add(token, pos as i32, &[0], pos + 1 == tokens.len())
+    work(&Session {
+        model: &model,
+        backend: &backend,
+        args,
+        cancelled: &cancelled,
+        started,
+        timeout,
+    })
+}
+
+#[derive(Clone, Copy)]
+pub struct Session<'a> {
+    model: &'a LlamaModel,
+    backend: &'a LlamaBackend,
+    args: &'a GenerateArgs,
+    cancelled: &'a AtomicBool,
+    started: Instant,
+    timeout: Duration,
+}
+
+impl Session<'_> {
+    pub fn complete(
+        &self,
+        prompt: &str,
+        grammar: Option<&str>,
+        output: &mut impl Write,
+    ) -> io::Result<()> {
+        if prompt.is_empty() || prompt.len() > 1024 * 1024 {
+            return Err(fail("Prompt вне допустимого размера."));
+        }
+        let Self {
+            model,
+            backend,
+            args,
+            cancelled,
+            started,
+            timeout,
+        } = *self;
+        check(cancelled, started, timeout)?;
+        let prompt = if args.raw {
+            prompt.to_owned()
+        } else {
+            let template = model.chat_template(None).map_err(|e| {
+                fail(format!(
+                    "Шаблон чата недоступен: {e}. Для base-модели укажите --raw."
+                ))
+            })?;
+            let message = LlamaChatMessage::new("user".into(), prompt.to_owned())
                 .map_err(|e| fail(e.to_string()))?;
-        }
-        context
-            .decode(&mut batch)
+            model
+                .apply_chat_template(&template, &[message], true)
+                .map_err(|e| fail(e.to_string()))?
+        };
+        let vocab = model.vocab();
+        let tokens = vocab.tokenize(prompt.as_bytes(), true, true);
+        context_budget(tokens.len(), args.max_tokens, args.context)?;
+        let context_params = LlamaContextParams::default()
+            .with_n_ctx(NonZeroU32::new(args.context))
+            .with_n_batch(128)
+            .with_n_ubatch(128)
+            .with_n_threads(args.threads as i32)
+            .with_n_threads_batch(args.threads as i32)
+            .with_offload_kqv(args.gpu_layers > 0);
+        let mut context = model
+            .new_context(backend, context_params)
             .map_err(|e| fail(e.to_string()))?;
-    }
-    let mut sampler = LlamaSampler::greedy();
-    let mut decoder = encoding_rs::UTF_8.new_decoder();
-    let mut count = 0;
-    for index in 0..args.max_tokens {
-        check(&cancelled, started, timeout)?;
-        let token = sampler.sample(&context, -1);
-        if vocab.is_eog(token) {
-            break;
-        }
-        sampler.accept(token);
-        let bytes = vocab.token_to_piece(token, false, None);
-        let mut text = String::with_capacity(bytes.len() * 3 + 16);
-        let (_, read, _) = decoder.decode_to_string(&bytes, &mut text, false);
-        if read != bytes.len() {
-            return Err(fail("Не удалось декодировать текст токена."));
-        }
-        output.write_all(text.as_bytes())?;
-        output.flush()?;
-        count += 1;
-        if index + 1 < args.max_tokens {
+        let mut batch = LlamaBatch::new(128, 1);
+        for (chunk_index, chunk) in tokens.chunks(128).enumerate() {
+            check(cancelled, started, timeout)?;
             batch.clear();
-            batch
-                .add(token, (tokens.len() + index as usize) as i32, &[0], true)
-                .map_err(|e| fail(e.to_string()))?;
+            for (i, &token) in chunk.iter().enumerate() {
+                let pos = chunk_index * 128 + i;
+                batch
+                    .add(token, pos as i32, &[0], pos + 1 == tokens.len())
+                    .map_err(|e| fail(e.to_string()))?;
+            }
             context
                 .decode(&mut batch)
                 .map_err(|e| fail(e.to_string()))?;
         }
+        let mut sampler = if let Some(grammar) = grammar {
+            LlamaSampler::chain_simple([
+                LlamaSampler::grammar(model, grammar, "root").map_err(|e| fail(e.to_string()))?,
+                LlamaSampler::greedy(),
+            ])
+        } else {
+            LlamaSampler::greedy()
+        };
+        let mut decoder = encoding_rs::UTF_8.new_decoder();
+        let mut count = 0;
+        for index in 0..args.max_tokens {
+            check(cancelled, started, timeout)?;
+            let token = sampler.sample(&context, -1);
+            if vocab.is_eog(token) {
+                break;
+            }
+            // sample() already accepts the token, including grammar state.
+            let bytes = vocab.token_to_piece(token, false, None);
+            let mut text = String::with_capacity(bytes.len() * 3 + 16);
+            let (_, read, _) = decoder.decode_to_string(&bytes, &mut text, false);
+            if read != bytes.len() {
+                return Err(fail("Не удалось декодировать текст токена."));
+            }
+            output.write_all(text.as_bytes())?;
+            output.flush()?;
+            count += 1;
+            if index + 1 < args.max_tokens {
+                batch.clear();
+                batch
+                    .add(token, (tokens.len() + index as usize) as i32, &[0], true)
+                    .map_err(|e| fail(e.to_string()))?;
+                context
+                    .decode(&mut batch)
+                    .map_err(|e| fail(e.to_string()))?;
+            }
+        }
+        let mut tail = String::with_capacity(16);
+        let (result, _, _) = decoder.decode_to_string(&[], &mut tail, true);
+        if result != encoding_rs::CoderResult::InputEmpty {
+            return Err(fail("Не удалось завершить UTF-8 поток."));
+        }
+        output.write_all(tail.as_bytes())?;
+        writeln!(output)?;
+        output.flush()?;
+        let _ = writeln!(
+            io::stderr().lock(),
+            "Сгенерировано {count} токенов; {:.2} с с загрузкой; лимит ответа {}.",
+            started.elapsed().as_secs_f64(),
+            args.max_tokens
+        );
+        Ok(())
     }
-    let mut tail = String::with_capacity(16);
-    let (result, _, _) = decoder.decode_to_string(&[], &mut tail, true);
-    if result != encoding_rs::CoderResult::InputEmpty {
-        return Err(fail("Не удалось завершить UTF-8 поток."));
-    }
-    output.write_all(tail.as_bytes())?;
-    writeln!(output)?;
-    output.flush()?;
-    eprintln!(
-        "Сгенерировано {count} токенов; {:.2} с с загрузкой; лимит ответа {}.",
-        started.elapsed().as_secs_f64(),
-        args.max_tokens
-    );
-    Ok(())
 }
 
 #[cfg(test)]

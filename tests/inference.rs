@@ -117,3 +117,36 @@ fn real_local_model_generates_with_a_token_limit() {
     assert!(!String::from_utf8_lossy(&output.stdout).trim().is_empty());
     assert!(String::from_utf8_lossy(&output.stderr).contains("лимит ответа 4"));
 }
+
+#[test]
+#[ignore = "requires explicitly supplied LYRA_TEST_MODEL"]
+fn one_loaded_model_serves_independent_contexts_and_json_grammar() {
+    use lyra::inference::{GenerateArgs, with_session};
+    let path = std::env::var("LYRA_TEST_MODEL").expect("set LYRA_TEST_MODEL");
+    let args = GenerateArgs {
+        model: path.into(),
+        prompt: "Once upon a time".into(),
+        context: 128,
+        max_tokens: 16,
+        threads: 2,
+        gpu_layers: 0,
+        timeout_secs: 120,
+        raw: true,
+    };
+    with_session(&args, |session| {
+        let mut first = Vec::new();
+        let mut second = Vec::new();
+        session.complete(&args.prompt, None, &mut first)?;
+        session.complete(&args.prompt, None, &mut second)?;
+        assert_eq!(first, second);
+        assert!(!first.is_empty());
+        let mut constrained = Vec::new();
+        session.complete("hi", Some("root ::= \"ok\""), &mut constrained)?;
+        assert_eq!(String::from_utf8(constrained).unwrap().trim(), "ok");
+        let mut action = Vec::new();
+        session.complete("hi", Some(lyra::agent::ACTION_GRAMMAR), &mut action)?;
+        assert!(String::from_utf8(action).unwrap().starts_with('{'));
+        Ok(())
+    })
+    .unwrap();
+}

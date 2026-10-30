@@ -1,5 +1,7 @@
+pub mod agent;
 pub mod doctor;
 pub mod inference;
+pub mod workspace;
 
 use clap::{Parser, Subcommand};
 use std::io::{self, Write};
@@ -9,7 +11,7 @@ use std::io::{self, Write};
     name = "lyra",
     version,
     about = "Локальная генерация текста и диагностика ПК",
-    long_about = "Локальная генерация из GGUF без сети и API-ключа.\nРедактирование файлов и инструменты агента ещё не реализованы.",
+    long_about = "Локальный кодинг-агент: task, предложения правок и явный apply.\nПроизвольные команды модели ещё не реализованы.",
     arg_required_else_help = true
 )]
 pub struct Cli {
@@ -19,6 +21,10 @@ pub struct Cli {
 
 #[derive(Debug, Subcommand)]
 pub enum Command {
+    /// Выполнить задачу: чтение проекта, предложения, опциональные подагенты
+    Task(agent::TaskArgs),
+    /// Применить одно выбранное предложение из завершённого JSON-отчёта
+    Apply(agent::ApplyArgs),
     /// Сгенерировать ответ локальной моделью (не исполняет сгенерированный код)
     Generate(inference::GenerateArgs),
     /// Показать характеристики компьютера, на котором запущена Lyra
@@ -31,6 +37,8 @@ pub enum Command {
 
 pub fn run(cli: Cli, output: &mut impl Write) -> io::Result<()> {
     match cli.command {
+        Command::Task(args) => agent::task(args, output),
+        Command::Apply(args) => agent::apply(args, output),
         Command::Generate(args) => inference::generate(&args, output),
         Command::Doctor { json } => {
             let report = doctor::collect()?;
