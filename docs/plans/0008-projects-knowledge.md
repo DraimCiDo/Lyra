@@ -1,6 +1,6 @@
 # Универсальные проекты с нуля и документация
 
-Статус: в работе. Исходная main a7dfa3a. Пользователь поручил реализовать
+Статус: реализовано, нативная приёмка получена. Исходная main a7dfa3a. Пользователь поручил реализовать
 создание проектов/изучение документации и уточнил, что задачи бывают разными.
 Работа в main; ранее разрешены push/объединение основной разработки в main.
 
@@ -44,8 +44,8 @@ Gradle/Maven plugins и другой код: пока нет OS sandbox, при�
 - [x] Локальная документация и model search_docs с источником/версией; ограничение объёма.
 - [x] Явный official fetch: HTTPS/allowlist/лимиты/таймаут; offline по умолчанию.
 - [x] Каркасы Rust/Paper/Spigot Java/Kotlin/DayZ; честная внешняя приёмка.
-- [ ] GUI/CLI, backward-compatible prefs/reports, native Windows/Linux tests/build.
-- [ ] Документы/карта/результаты/commit/push main.
+- [x] GUI/CLI, backward-compatible prefs/reports, native Windows/Linux tests/build.
+- [x] Документы/карта/результаты/commit/push main.
 
 ## Исследование
 
@@ -54,8 +54,8 @@ Paper docs project-setup и Spigot Maven открываются. Bohemia wiki в
 Maven Central metadata: compiler 3.16.0 (stable, не 4 beta), shade 3.6.2,
 Kotlin 2.4.21 stable (не 2.5 beta). HTML-to-text crate html2text 0.17.4 проверен
 по crates.io metadata, default features пустые; отдельный optional parser.
-JDK 21 установлен локально. Maven CLI пока отсутствует; возможна локальная
-установка в scratch/CI для проверки каркасов, не runtime-зависимость Lyra.
+Для проверки каркасов в scratch установлены полный JDK 21 и Maven CLI;
+они не являются runtime-зависимостями Lyra. Результаты приведены ниже.
 
 ## Реализация и локальная приёмка
 
@@ -69,7 +69,7 @@ Task имеет search_docs/propose_file, отчёт v2 с реально пер
 
 Локально Debian 13 / Rust 1.99.1: полный набор tests, Clippy -D warnings,
 CLI-only check, две явные tiny GGUF проверки (включая scoped project grammar),
-72 native views Xvfb/Mesa. Финальный полный повтор фиксируется ниже после последних правок.
+72 native views Xvfb/Mesa. Полный набор окончательной ревизии проверен в CI ниже.
 Official fetch через настоящий Rust client: Rust Book и Paper/JavaPlugin 1.21.11
 успешно сохранены/проверены, без модели/кода в запросах.
 
@@ -92,7 +92,47 @@ OmniRoute README исследован: это gateway готовых модел�
 добавляются внешние model providers, автоматическая смена модели или cloud fallback.
 Публичные релизы не публикуются; пользователь разрешил main, не публикацию release.
 
-Перед CI: 69 ordinary tests Linux (последний добавленный profile-hint тест отдельно),
-Clippy -D warnings, CLI-only check, native GBNF 2/2, 72 native GUI views прошли.
-Windows count ожидается на один меньше из-за platform-specific CLI/symlink/updater tests.
-Точные результаты main CI и артефактов ещё не получены.
+## Окончательная нативная приёмка · 2026-10-30
+
+Проверенный код: [ca031a9](https://github.com/DraimCiDo/Lyra/commit/ca031a9b713031b224838cd0f6a1f09ed873d7f2).
+[Запуск main CI 41099862697](https://github.com/DraimCiDo/Lyra/actions/runs/41099862697).
+Результаты получены из полных журналов обоих jobs и скачанных артефактов этой
+ревизии. Следующий коммит меняет только Markdown и не меняет проверенные бинарники.
+
+| Проверка | Ubuntu 24.04.5 x64 | Windows Server 2022 10.0.20348 x64 |
+| --- | --- | --- |
+| Format / Clippy desktop all-targets -D warnings | прошли | прошли |
+| Обычные тесты | 69 passed, 0 failed | 68 passed, 0 failed |
+| Явные native tiny GGUF / grammar тесты | 2 passed | 2 passed |
+| Release CLI / desktop, doctor | прошли | прошли |
+| Встроенные Python / TypeScript тесты | прошли | прошли |
+| Paper/Spigot Java/Kotlin Maven verify и проверка JAR | все 4 прошли | все 4 прошли |
+| Оконный GUI smoke: 72 состояния | прошёл, Xvfb | прошёл, нативный EXE |
+| Упаковка / notices / загрузка артефактов | прошли | прошли |
+
+Каркасы проверялись с полным Temurin JDK 21 и Node 24. Native GUI smoke проходит
+4 темы × 2 языка × главную/7 разделов настроек/мастер проекта. Часть тестов зависит
+от платформы, поэтому суммы обычных тестов различаются. Это Windows Server CI,
+не Windows 11 и не видеокарта пользователя; CUDA и полноценная 7B остаются непроверенными.
+
+Артефакты доступны 14 дней, не являются опубликованным релизом:
+
+- [Windows portable](https://github.com/DraimCiDo/Lyra/actions/runs/41099862697/artifacts/13000845146).
+- [Windows update assets](https://github.com/DraimCiDo/Lyra/actions/runs/41099862697/artifacts/12998164832).
+- [Linux portable](https://github.com/DraimCiDo/Lyra/actions/runs/41099862697/artifacts/12998463701).
+
+Скачанные Linux и Windows update artifacts совпали с SHA256 GitHub. В Windows
+проверены CRC ZIP, версия `0.2.0-dev.4`, все размеры/хеши manifest, source SHA,
+PE AMD64 и GUI/console subsystems, 7 размеров иконки, notices и новые инструкции.
+Производственный Rust `updater::package::unpack` также принял настоящий Windows
+пакет и проверил payload. Это проверка чтения пакета на Linux, не установка Windows.
+
+Внутренний `lyra-windows-x86_64.zip`: 14 685 174 байта,
+SHA256 `8edd4300c45e04d72f54ee77674470cb9d6595324a1a20dfc1f6939136f0c138`.
+GUI EXE: 24 151 040 байт; CLI EXE: 11 446 784 байта. Модели/Java/Node/Python
+в поставку не включаются. GGUF подготавливается отдельно; компилятор/SDK нужен
+целевому проекту. Игра/сервер для Minecraft/DayZ не запускались.
+
+Следующие улучшения предложены в [roadmap](../ROADMAP.md): изоляция запуска
+проверок, общий benchmark качества, измерение CUDA/памяти и более точный контекст.
+Они не включены в завершённый объём этой задачи.
