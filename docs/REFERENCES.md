@@ -63,3 +63,21 @@ Tree-sitter, автоматический граф, dashboard и pipeline AI-п�
 Проверка этих материалов не означает, что API-интеграция или Windows sandbox
 уже реализованы. Конкретные модели, тарифы, схемы и совместимость SDK проверяются
 при реализации соответствующего этапа.
+
+## Уточнение M1: локальная работа вместо OpenAI-first
+
+Пользователь изменил требование: AI работает на ПК без обязательного внешнего
+сервиса. Материалы OpenAI выше остаются историческими ориентирами, а не планом
+облачной зависимости.
+
+- [Rust stable manifest](https://static.rust-lang.org/dist/channel-rust-stable.toml):
+  при M1 проверена версия 1.99.1 от 2026-10-15, она закреплена в toolchain.
+- [clap](https://docs.rs/clap/4.6.7/clap/),
+  [sysinfo](https://docs.rs/sysinfo/0.40.0/sysinfo/),
+  [serde_json](https://docs.rs/serde_json/1.0.154/serde_json/):
+  API сверены с загруженными исходниками закреплённых зависимостей.
+- [llama.cpp](https://github.com/ggml-org/llama.cpp): кандидат локального runtime
+  для следующего этапа; в M1 не встроен.
+- [Официальный Qwen2.5-Coder-7B-Instruct GGUF](https://huggingface.co/Qwen/Qwen2.5-Coder-7B-Instruct-GGUF/tree/main):
+  проверены файл Q4_K_M около 4,68 GB и лицензия Apache-2.0.
+  Это данные весов, не замер их VRAM/скорости на пользовательском ПК.

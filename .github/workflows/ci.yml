@@ -1,0 +1,77 @@
+name: CLI checks and Windows build
+
+on:
+  push:
+    paths-ignore:
+      - '**/*.md'
+      - '.editorconfig'
+      - '.gitignore'
+      - '.gitattributes'
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: cli-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  check:
+    name: ${{ matrix.os }}
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-24.04
+            target: x86_64-unknown-linux-gnu
+            binary: lyra
+          - os: windows-2022
+            target: x86_64-pc-windows-msvc
+            binary: lyra.exe
+    defaults:
+      run:
+        shell: pwsh
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Install pinned toolchain
+        run: rustup show active-toolchain
+      - name: Format
+        run: cargo fmt --all -- --check
+      - name: Clippy
+        run: cargo clippy --workspace --all-targets --locked -- -D warnings
+      - name: Tests
+        run: cargo test --workspace --locked
+      - name: Release build
+        run: cargo build --release --locked --target ${{ matrix.target }}
+      - name: Smoke test built binary
+        run: |
+          $binary = './target/${{ matrix.target }}/release/${{ matrix.binary }}'
+          & $binary --version
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          $json = & $binary doctor --json
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          $report = $json | ConvertFrom-Json
+          if ($report.schema_version -ne 1 -or $report.inference_status -ne 'not_implemented') {
+            throw 'Unexpected diagnostic report'
+          }
+      - name: Collect build files and dependency licenses
+        run: |
+          New-Item -ItemType Directory -Force -Path dist | Out-Null
+          Copy-Item -LiteralPath './target/${{ matrix.target }}/release/${{ matrix.binary }}' -Destination dist
+          Copy-Item -LiteralPath README.md, Cargo.lock -Destination dist
+          python tools/collect_licenses.py --target ${{ matrix.target }} --output dist/THIRD_PARTY_NOTICES.txt
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          $hash = (Get-FileHash -Algorithm SHA256 -LiteralPath 'dist/${{ matrix.binary }}').Hash.ToLowerInvariant()
+          "$hash  ${{ matrix.binary }}" | Set-Content -Encoding utf8NoBOM -LiteralPath dist/SHA256SUMS.txt
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: lyra-${{ matrix.target }}
+          path: dist/
+          if-no-files-found: error
+          retention-days: 14
