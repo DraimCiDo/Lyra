@@ -11,9 +11,9 @@ C# код не переносится: используется общий по�
 - [x] Встроенные Lucide SVG/лицензия, кнопки с tooltip и доступным именем.
 - [x] Ползунки, toggle, темы mint/ocean/violet/light, RU/EN, отключаемая анимация.
 - [x] Локальные настройки; не сохранять текст задачи/код/отчёт/логи автоматически.
-- [ ] Тесты прав/ошибок сохраняются; UI проверен в 760×480, минимум/масштаб,
+- [x] Тесты прав/ошибок сохраняются; UI проверен в 760×480, минимум/масштаб,
       темы/EN/навигация/покой/отмена, Windows native CI/упаковка/хеши.
-- [ ] Документация, снимки, commit/push.
+- [x] Документация, снимки, commit/push.
 
 Новая optional dependency egui_extras/svg нужна для рендера встроенных SVG,
 без web/HTTP loader. CLI dependency graph не расширяется. SVG хранятся локально,
@@ -69,3 +69,34 @@ Stop, исчезновение worker (остался только процес�
 Первый CI eaf8c70 / 41056773336 — success Linux и Windows, в том числе ресурсы
 EXE, SVG и native 48-state smoke. Финальный CI на исправления фокуса/контраста/
 JSON-budget фиксируется после завершения ниже.
+
+## Финальная принятая сборка
+
+Source **1681ee92ca2e04f9a0b097b91b91bed71f6fb588**,
+[CI 41059982110](https://github.com/DraimCiDo/Lyra/actions/runs/41059982110) —
+**success Windows Server 2022 и Ubuntu 24.04**. fmt, Clippy, обычные тесты,
+реальный CPU GGUF smoke, release, CLI smoke, native 48-state GUI и упаковка
+прошли. Это не приёмка 7B/CUDA/Windows 11 пользователя.
+
+[Windows ZIP](https://github.com/DraimCiDo/Lyra/actions/runs/41059982110/artifacts/12977834651):
+11 024 608 байт, SHA-256
+`bf3074cc29ce1f6d037edf30a204cbaf6a6551f174aab97f98bfdbb70afac8f8`.
+Linux artifact 12978333119. Оба доступны до 2026-11-13.
+
+Windows ZIP скачан и проверен: его SHA соответствует API digest; оба EXE
+соответствуют SHA256SUMS.txt; source stamp, версия, VC Runtime prerequisite,
+Lucide/Feather, egui_extras/resvg и font notices присутствуют; Markdown-ссылки
+в архиве корректны; пользовательских настроек и весов нет.
+
+| Бинарник | Размер | SHA-256 |
+| --- | --- | --- |
+| lyra-desktop.exe | 18 934 272 | 1fc682cc4118b36af905f6974942e6191a53d92dbd204dd4bd99107d2f62a199 |
+| lyra.exe | 6 908 928 | 83b911691c27a0fb68b7901b925b971c1106121c0cd174738a713e9f32f64f8d |
+
+PE: AMD64, desktop GUI subsystem 2, CLI CUI 3. В desktop проверены ресурсы
+RT_ICON/RT_GROUP_ICON/RT_VERSION и 7 изображений ICO. Значок встроен в EXE,
+а не только нарисован внутри окна. Дополнительный размер относительно GUI
+прошлого этапа обусловлен SVG renderer и ресурсами; обещания ускорения модели нет.
+
+Рабочая ветка feat/compact-desktop; task/apply/worker сохраняют прежние права.
+Ручная целевая приёмка/ограничения: [DESKTOP.md](../DESKTOP.md).
