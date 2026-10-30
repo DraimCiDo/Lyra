@@ -135,10 +135,11 @@ cargo build --release --locked --target x86_64-pc-windows-msvc
 .\target\x86_64-pc-windows-msvc\release\lyra.exe doctor --json
 ```
 
-Сборки без установки Rust: [GitHub Actions](https://github.com/DraimCiDo/Lyra/actions/workflows/ci.yml)
-→ успешный запуск → артефакт `lyra-x86_64-pc-windows-msvc`. Распаковать весь
-архив и запустить `lyra.exe doctor` из PowerShell. Для скачивания артефакта GitHub
-может потребоваться вход в аккаунт. Сборка и тест на CI не проверяют драйвер
+Сборки без установки Rust: [GitHub Actions · main](https://github.com/DraimCiDo/Lyra/actions/workflows/ci.yml?query=branch%3Amain)
+→ успешный запуск → артефакт `lyra-update-x86_64-pc-windows-msvc`. Внутри —
+ZIP приложения и `.sha256`; распакуй весь ZIP и открой `lyra-desktop.exe`.
+Обычный артефакт `lyra-x86_64-pc-windows-msvc` также содержит GUI и CLI.
+Для скачивания артефакта GitHub может потребоваться вход в аккаунт. Сборка и тест на CI не проверяют драйвер
 видеокарты и производительность конкретного пользовательского ПК.
 
 `doctor` читает ОС, CPU, RAM, доступные GPU/выделенную VRAM и диски. Недоступные

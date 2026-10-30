@@ -161,3 +161,17 @@ tempfile (MIT/Apache-2.0, временные файлы). Runtime не треб�
 локальный SVG renderer; CLI без desktop не подключает UI зависимости.
 Конвертер значка разработчика: `python tools/render_icon.py` (Rust + Pillow).
 Готовые PNG/ICO закоммичены, обычная сборка приложения Python не требует.
+
+### Portable updater
+
+Контракт, использование и восстановление: [UPDATES.md](UPDATES.md).
+Optional reqwest/rustls + Tokio обеспечивают ограниченный HTTPS и отмену;
+semver выбирает канал/версию, sha2 проверяет целостность, zip извлекает только
+фиксированные файлы. Rustls использует native OS trust, без OpenSSL DLL.
+Эти зависимости отсутствуют в `cargo tree --no-default-features -e normal`.
+`tools/package_update.py --verify-executables` проверяет версии готовых Windows
+EXE и генерирует update assets; Python нужен только разработчику/CI.
+Linux helper-тесты используют strip --strip-debug для тестовой копии настоящего
+EXE, как release-поставка. Нужен binutils strip; он уже входит в Ubuntu CI.
+Обычный push main только собирает артефакты. Тег `v<Cargo version>` после успешного
+CI готовит draft release; публикация выполняется отдельно.
