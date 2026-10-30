@@ -1,0 +1,28 @@
+# Rust build outputs; keep Cargo.lock for the application.
+/target/
+**/*.rs.bk
+
+# Local secrets and configuration overrides.
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+
+# Local agent data, diagnostics and distributions.
+/.lyra/
+/logs/
+/tmp/
+/dist/
+*.log
+*.dmp
+
+# Editor and OS state.
+.vs/
+.idea/
+.vscode/
+*.swp
+*.swo
+.DS_Store
+Thumbs.db
+Desktop.ini
