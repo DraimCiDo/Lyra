@@ -129,10 +129,14 @@ pub fn toggle(
     label: &str,
     animations: bool,
     accent: Color32,
+    on_accent: Color32,
 ) -> egui::Response {
     ui.horizontal(|ui| {
         let (rect, mut response) =
             ui.allocate_exact_size(egui::vec2(38.0, 22.0), egui::Sense::click());
+        if response.clicked() {
+            response.request_focus();
+        }
         let key = response.has_focus()
             && ui.input(|i| i.key_pressed(egui::Key::Space) || i.key_pressed(egui::Key::Enter));
         if response.clicked() || key {
@@ -162,7 +166,10 @@ pub fn toggle(
         ui.painter().circle_filled(
             egui::pos2(x, rect.center().y),
             7.0,
-            ui.visuals().text_color(),
+            Color32::from(egui::lerp(
+                egui::Rgba::from(ui.visuals().text_color())..=egui::Rgba::from(on_accent),
+                t,
+            )),
         );
         ui.label(label);
         response
@@ -173,6 +180,78 @@ pub fn toggle(
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn toggle_can_be_clicked_then_activated_with_keyboard() {
+        let ctx = egui::Context::default();
+        super::super::theme::configure(&ctx, super::super::theme::Palette::Violet, false);
+        let mut value = false;
+        let mut rect = egui::Rect::NOTHING;
+        let mut frame = |events: Vec<egui::Event>| {
+            let mut out = ctx.run_ui(
+                egui::RawInput {
+                    events,
+                    screen_rect: Some(egui::Rect::from_min_size(
+                        egui::Pos2::ZERO,
+                        egui::vec2(640.0, 460.0),
+                    )),
+                    ..Default::default()
+                },
+                |ui| {
+                    rect = toggle(
+                        ui,
+                        &mut value,
+                        "Workers",
+                        false,
+                        Color32::LIGHT_GREEN,
+                        Color32::BLACK,
+                    )
+                    .rect;
+                },
+            );
+            out.textures_delta.clear();
+            (value, rect)
+        };
+        let (_, rect) = frame(Vec::new());
+        let pos = rect.center();
+        frame(vec![
+            egui::Event::PointerMoved(pos),
+            egui::Event::PointerButton {
+                pos,
+                button: egui::PointerButton::Primary,
+                pressed: true,
+                modifiers: Default::default(),
+            },
+        ]);
+        assert!(
+            frame(vec![egui::Event::PointerButton {
+                pos,
+                button: egui::PointerButton::Primary,
+                pressed: false,
+                modifiers: Default::default()
+            }])
+            .0
+        );
+        assert!(
+            !frame(vec![egui::Event::Key {
+                key: egui::Key::Space,
+                physical_key: None,
+                pressed: true,
+                repeat: false,
+                modifiers: Default::default()
+            }])
+            .0
+        );
+        assert!(
+            !frame(vec![egui::Event::Key {
+                key: egui::Key::Space,
+                physical_key: None,
+                pressed: false,
+                repeat: false,
+                modifiers: Default::default()
+            }])
+            .0
+        );
+    }
     #[test]
     fn embedded_svg_and_application_icon_decode_offline() {
         for icon in Icon::ALL {

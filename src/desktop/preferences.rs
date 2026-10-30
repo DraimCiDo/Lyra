@@ -76,12 +76,16 @@ impl Preferences {
         if !self.valid() {
             return Err(io::Error::other("Invalid preference values"));
         }
+        let bytes = serde_json::to_vec_pretty(self).map_err(io::Error::other)?;
+        if bytes.len() as u64 > LIMIT {
+            return Err(io::Error::other("Preferences exceed 64 KiB"));
+        }
         let parent = path
             .parent()
             .ok_or_else(|| io::Error::other("No preferences directory"))?;
         std::fs::create_dir_all(parent)?;
         let mut file = tempfile::NamedTempFile::new_in(parent)?;
-        serde_json::to_writer_pretty(&mut file, self).map_err(io::Error::other)?;
+        file.write_all(&bytes)?;
         file.flush()?;
         file.persist(path).map_err(|e| e.error)?;
         Ok(())
@@ -133,6 +137,10 @@ mod tests {
         p.save(&path).unwrap();
         assert_eq!(Preferences::load(&path).unwrap(), p);
         assert_eq!(std::fs::read_dir(dir.path()).unwrap().count(), 1);
+        let mut oversized = p.clone();
+        oversized.files = "\"".repeat(32768);
+        assert!(oversized.save(&path).is_err());
+        assert_eq!(Preferences::load(&path).unwrap(), p);
         std::fs::write(&path, r#"{"threads":0}"#).unwrap();
         assert!(Preferences::load(&path).is_err());
         std::fs::write(&path, r#"{"task":"private code"}"#).unwrap();

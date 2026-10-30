@@ -643,7 +643,7 @@ impl Desktop {
                         ui.label(format!("{} / 32",self.prefs.files.lines().filter(|s|!s.trim().is_empty()).count()));
                     }).response,
                     SettingsPage::Workers=>ui.add_enabled_ui(self.job.is_none(),|ui|{
-                        icons::toggle(ui,&mut self.prefs.subagents,l.text("Исследователь и ревьюер"),self.prefs.animations,c.accent);
+                        icons::toggle(ui,&mut self.prefs.subagents,l.text("Исследователь и ревьюер"),self.prefs.animations,c.accent,c.on_accent);
                         if self.prefs.subagents{self.prefs.calls=self.prefs.calls.max(3);}
                         ui.label(RichText::new(l.text("Роли работают последовательно с одной моделью. Дополнительные проверки требуют времени.")).small().weak());
                         let min=if self.prefs.subagents{3}else{1};
@@ -659,7 +659,7 @@ impl Desktop {
                             egui::ComboBox::from_id_salt("language").selected_text(if l==Language::Ru{"Русский"}else{"English"}).show_ui(ui,|ui|{ui.selectable_value(&mut self.prefs.language,Language::Ru,"Русский");ui.selectable_value(&mut self.prefs.language,Language::En,"English");});
                         });
                         let animate=self.prefs.animations;
-                        icons::toggle(ui,&mut self.prefs.animations,l.text("Мягкие анимации"),animate,c.accent);
+                        icons::toggle(ui,&mut self.prefs.animations,l.text("Мягкие анимации"),animate,c.accent,c.on_accent);
                         ui.label(RichText::new(l.text("Короткие переходы и отклик переключателей. В покое нет постоянных анимаций.")).small().weak());
                         ui.separator();
                         ui.label(RichText::new(l.text("Параметры и выбранные пути сохраняются локально. Задания, код и журнал не сохраняются автоматически.")).small().weak());
