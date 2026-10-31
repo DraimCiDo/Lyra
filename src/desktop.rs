@@ -356,6 +356,28 @@ impl Desktop {
                 {
                     args.extend(["--file".into(), file.into()]);
                 }
+                if !self.prefs.active_skill.is_empty() {
+                    let manifest = self
+                        .prefs
+                        .skill_manifest
+                        .as_ref()
+                        .ok_or_else(|| io::Error::other("Укажите манифест ECC Skills."))?;
+                    let pack = if manifest.file_name().is_some_and(|name| name == "SKILL.md") {
+                        crate::skills::SkillPack::load_markdown(manifest)?
+                    } else {
+                        crate::skills::SkillPack::load(manifest)?
+                    };
+                    crate::agent_runtime::skill_instructions(
+                        Some(&pack),
+                        &[self.prefs.active_skill.clone()],
+                    )?;
+                    args.extend([
+                        "--skills".into(),
+                        manifest.as_os_str().into(),
+                        "--skill".into(),
+                        self.prefs.active_skill.clone().into(),
+                    ]);
+                }
                 if self.prefs.subagents {
                     args.push("--subagents".into());
                 }
