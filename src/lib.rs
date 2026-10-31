@@ -6,6 +6,7 @@ pub mod inference;
 pub mod knowledge;
 pub mod model_gateway;
 pub mod project;
+pub mod skills;
 pub mod workspace;
 
 use clap::{Parser, Subcommand};
