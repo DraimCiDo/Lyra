@@ -132,7 +132,7 @@ impl ModelBackend for OpenAiCompatibleBackend {
                     "API credential is not configured",
                 )
             })?;
-            if secret.is_empty() || secret.contains(['\r', '\n']) {
+            if secret.is_empty() || secret.contains('\r') || secret.contains('\n') {
                 return Err(io::Error::new(
                     io::ErrorKind::InvalidInput,
                     "Invalid API credential",
