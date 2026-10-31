@@ -400,7 +400,7 @@ mod tests {
         let mut chat = Chat::default();
         chat.sent("Создай плагин Paper".into());
         chat.finish("Какая версия Minecraft?".into());
-        let request = chat.request("1.21.11").unwrap();
+        let request = chat.request("1.21.11", preferences::Optimization::Balanced).unwrap();
         let data: serde_json::Value = serde_json::from_str(&request).unwrap();
         assert_eq!(data["conversation"][0]["content"], "Создай плагин Paper");
         assert_eq!(
@@ -455,7 +455,7 @@ mod tests {
             chat.sent("task".into());
             chat.finish("answer".into());
         }
-        assert!(chat.request("next").is_err());
+        assert!(chat.request("next", preferences::Optimization::Balanced).is_err());
         assert_eq!(chat.messages.len(), MESSAGE_COUNT);
     }
 }
@@ -467,11 +467,20 @@ mod optimization_tests {
     fn safe_preserves_full_history_and_aggressive_keeps_recent() {
         let mut chat = Chat::default();
         for n in 0..10 {
-            chat.messages.push(Message { user: n % 2 == 0, text: format!("unique_turn_{n}") });
+            chat.messages.push(Message {
+                user: n % 2 == 0,
+                text: format!("unique_turn_{n}"),
+            });
         }
-        let safe = chat.request("new task", preferences::Optimization::Safe).unwrap();
-        let balanced = chat.request("new task", preferences::Optimization::Balanced).unwrap();
-        let aggressive = chat.request("new task", preferences::Optimization::Aggressive).unwrap();
+        let safe = chat
+            .request("new task", preferences::Optimization::Safe)
+            .unwrap();
+        let balanced = chat
+            .request("new task", preferences::Optimization::Balanced)
+            .unwrap();
+        let aggressive = chat
+            .request("new task", preferences::Optimization::Aggressive)
+            .unwrap();
         assert!(safe.contains("unique_turn_0"));
         assert!(balanced.contains("unique_turn_0"));
         assert!(!aggressive.contains("unique_turn_0"));
