@@ -637,7 +637,37 @@ impl Desktop {
                                 Err(error)=>self.fail(error),
                             }
                         }
-                        ui.label(RichText::new(l.text("Проверка не отправляет запросы в сеть. Облачные модели пока доступны через CLI chat.")).small().weak());
+                        ui.separator();
+                        ui.checkbox(&mut self.prefs.cloud_chat, "Разрешить HTTP-запросы из чата");
+                        if let Some(path) = &self.prefs.provider_registry {
+                            let available = (|| -> io::Result<Vec<crate::provider_http::ProviderConfig>> {
+                                use std::io::Read;
+                                let mut bytes = Vec::new();
+                                std::fs::File::open(path)?.take(64 * 1024 + 1).read_to_end(&mut bytes)?;
+                                crate::provider_http::parse_registry(&bytes)
+                            })();
+                            if let Ok(configs) = available {
+                                let selected = format!("{} / {}", self.prefs.cloud_provider, self.prefs.cloud_model);
+                                egui::ComboBox::from_id_salt("cloud-model")
+                                    .selected_text(selected)
+                                    .show_ui(ui, |ui| {
+                                        for config in &configs {
+                                            let provider = &config.descriptor.provider;
+                                            let model = &config.descriptor.model;
+                                            if ui.selectable_label(
+                                                self.prefs.cloud_provider == *provider && self.prefs.cloud_model == *model,
+                                                format!("{provider} / {model}"),
+                                            ).clicked() {
+                                                self.prefs.cloud_provider = provider.clone();
+                                                self.prefs.cloud_model = model.clone();
+                                            }
+                                        }
+                                    });
+                            } else {
+                                ui.label("Не удалось загрузить реестр провайдеров.");
+                            }
+                        }
+                        ui.label(RichText::new("Только выбранная модель; без автоматического переключения в облако.").small().weak());
                     }).response,
                     SettingsPage::Model=>ui.add_enabled_ui(self.job.is_none(),|ui|{
                         let title=self.prefs.model.as_ref().and_then(|p|p.file_name())
