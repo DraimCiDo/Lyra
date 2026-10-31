@@ -11,6 +11,7 @@ Upstream revision/license audit is P00 and remains pending.
 | Source | Feature family | Lyra destination | Status | Acceptance |
 | --- | --- | --- | --- | --- |
 | ECC | Agents, orchestration, worktrees | Agent Runtime | planned | P07 |
+| ECC | Validated JSON skill packs and CLI inspection | src/skills.rs / lyra skills | implemented; unverified | Unit tests / Windows CI |
 | ECC | Skills, selective install | Skills Registry | planned | P06 |
 | ECC | Rules, commands, language packs | Rules/Commands | planned | P06/P12 |
 | ECC | Hooks | Event Bus | planned | P08 |
