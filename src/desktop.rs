@@ -104,6 +104,8 @@ fn configure(ctx: &egui::Context) {
 #[derive(Clone, Copy, PartialEq)]
 enum SettingsPage {
     Model,
+    #[cfg(feature = "gateway-http")]
+    Providers,
     Context,
     Workers,
     Appearance,
@@ -112,8 +114,10 @@ enum SettingsPage {
     Knowledge,
 }
 impl SettingsPage {
-    const ALL: [Self; 7] = [
+    const ALL: [Self; 7 + cfg!(feature = "gateway-http") as usize] = [
         Self::Model,
+        #[cfg(feature = "gateway-http")]
+        Self::Providers,
         Self::Context,
         Self::Workers,
         Self::Appearance,
@@ -124,6 +128,8 @@ impl SettingsPage {
     fn title(self) -> &'static str {
         match self {
             Self::Model => "Модель и ресурсы",
+            #[cfg(feature = "gateway-http")]
+            Self::Providers => "HTTP-провайдеры",
             Self::Context => "Контекст проекта",
             Self::Workers => "Помощники",
             Self::Appearance => "Оформление",
@@ -135,6 +141,8 @@ impl SettingsPage {
     fn icon(self) -> Icon {
         match self {
             Self::Model => Icon::Cpu,
+            #[cfg(feature = "gateway-http")]
+            Self::Providers => Icon::Model,
             Self::Context => Icon::Folder,
             Self::Workers => Icon::Workers,
             Self::Appearance => Icon::Palette,
@@ -562,6 +570,36 @@ impl Desktop {
                 match self.settings_page{
                     SettingsPage::Knowledge=>ui.vertical(|ui|self.knowledge_settings(ui)).response,
                     SettingsPage::Updates=>ui.vertical(|ui| self.update_settings(ui)).response,
+                    #[cfg(feature = "gateway-http")]
+                    SettingsPage::Providers=>ui.add_enabled_ui(self.job.is_none(),|ui|{
+                        ui.label(l.text("Файл реестра HTTP-провайдеров (JSON)"));
+                        ui.label(RichText::new(l.text("Сохраняется только путь. API-ключи должны находиться в переменных окружения.")).small().weak());
+                        let mut path = self.prefs.provider_registry.as_ref()
+                            .map(|p|p.display().to_string()).unwrap_or_default();
+                        if ui.add(egui::TextEdit::singleline(&mut path)
+                            .desired_width(f32::INFINITY).hint_text("C:\\providers.json")).changed(){
+                            self.prefs.provider_registry=if path.trim().is_empty(){None}else{Some(PathBuf::from(path.trim()))};
+                        }
+                        if ui.button(l.text("Проверить реестр")).clicked(){
+                            let result=(||->io::Result<usize>{
+                                use std::io::Read;
+                                let path=self.prefs.provider_registry.as_ref()
+                                    .ok_or_else(||io::Error::other("Укажите путь к JSON."))?;
+                                let mut bytes=Vec::new();
+                                std::fs::File::open(path)?.take(64*1024+1).read_to_end(&mut bytes)?;
+                                let configs=crate::provider_http::parse_registry(&bytes)?;
+                                for config in &configs{
+                                    crate::provider_http::OpenAiCompatibleBackend::new(config.clone())?;
+                                }
+                                Ok(configs.len())
+                            })();
+                            match result{
+                                Ok(count)=>{self.message=format!("Реестр проверен: {count} провайдеров.");self.error=false;}
+                                Err(error)=>self.fail(error),
+                            }
+                        }
+                        ui.label(RichText::new(l.text("Проверка не отправляет запросы в сеть. Облачные модели пока доступны через CLI chat.")).small().weak());
+                    }).response,
                     SettingsPage::Model=>ui.add_enabled_ui(self.job.is_none(),|ui|{
                         let title=self.prefs.model.as_ref().and_then(|p|p.file_name())
                             .map(|s|s.to_string_lossy().into_owned()).unwrap_or_else(||l.text("Выбрать…").into());
