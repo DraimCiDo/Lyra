@@ -136,6 +136,22 @@ pub fn config_path() -> Option<PathBuf> {
 mod tests {
     use super::*;
     #[test]
+    fn provider_registry_path_roundtrip_and_legacy_settings() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("settings.json");
+        let prefs = Preferences {
+            provider_registry: Some(PathBuf::from("C:/Lyra/providers.json")),
+            ..Preferences::default()
+        };
+        prefs.save(&path).unwrap();
+        assert_eq!(Preferences::load(&path).unwrap(), prefs);
+        let mut legacy = serde_json::to_value(&prefs).unwrap();
+        legacy.as_object_mut().unwrap().remove("provider_registry");
+        std::fs::write(&path, serde_json::to_vec(&legacy).unwrap()).unwrap();
+        assert_eq!(Preferences::load(&path).unwrap().provider_registry, None);
+    }
+
+    #[test]
     fn preferences_roundtrip_overwrite_and_reject_bad_data() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("settings.json");
