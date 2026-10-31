@@ -17,10 +17,18 @@ pub enum Optimization {
 }
 impl Optimization {
     pub fn from_slider(value: u32) -> Self {
-        match value { 0 => Self::Safe, 2 => Self::Aggressive, _ => Self::Balanced }
+        match value {
+            0 => Self::Safe,
+            2 => Self::Aggressive,
+            _ => Self::Balanced,
+        }
     }
     pub fn slider(self) -> u32 {
-        match self { Self::Safe => 0, Self::Balanced => 1, Self::Aggressive => 2 }
+        match self {
+            Self::Safe => 0,
+            Self::Balanced => 1,
+            Self::Aggressive => 2,
+        }
     }
 }
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
