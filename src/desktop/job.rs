@@ -56,18 +56,18 @@ impl ProgressParser {
 
     fn finish_line(&mut self, state: &Arc<Mutex<ProgressSnapshot>>) {
         let line = String::from_utf8_lossy(&self.line);
-        if let Some(event) = line.trim().strip_prefix(PROGRESS_PREFIX) {
-            if let Ok(mut snapshot) = state.lock() {
-                match event {
-                    "load" => snapshot.stage = ProgressStage::Loading,
-                    "context" => snapshot.stage = ProgressStage::Context,
-                    "generate" => snapshot.stage = ProgressStage::Generating,
-                    _ => {
-                        if let Some(value) = event.strip_prefix("tokens=")
-                            && let Ok(tokens) = value.parse::<u32>()
-                        {
-                            snapshot.generated_tokens = tokens;
-                        }
+        if let Some(event) = line.trim().strip_prefix(PROGRESS_PREFIX)
+            && let Ok(mut snapshot) = state.lock()
+        {
+            match event {
+                "load" => snapshot.stage = ProgressStage::Loading,
+                "context" => snapshot.stage = ProgressStage::Context,
+                "generate" => snapshot.stage = ProgressStage::Generating,
+                _ => {
+                    if let Some(value) = event.strip_prefix("tokens=")
+                        && let Ok(tokens) = value.parse::<u32>()
+                    {
+                        snapshot.generated_tokens = tokens;
                     }
                 }
             }
