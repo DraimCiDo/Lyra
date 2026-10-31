@@ -25,6 +25,12 @@ pub struct GenerateArgs {
     pub model: PathBuf,
     #[arg(long)]
     pub prompt: String,
+    /// Optional ECC skill manifest (JSON or SKILL.md)
+    #[arg(long)]
+    pub skills: Option<PathBuf>,
+    /// Explicit skill IDs to apply to this generation
+    #[arg(long = "skill")]
+    pub selected_skills: Vec<String>,
     /// Общее окно: prompt + шаблон + ответ
     #[arg(long, default_value_t=2048, value_parser=clap::value_parser!(u32).range(128..=32768))]
     pub context: u32,
