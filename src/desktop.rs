@@ -290,7 +290,10 @@ impl Desktop {
                     request_path.into_os_string(),
                 ]);
                 if !self.prefs.active_skill.is_empty() {
-                    let manifest = self.prefs.skill_manifest.as_ref()
+                    let manifest = self
+                        .prefs
+                        .skill_manifest
+                        .as_ref()
                         .ok_or_else(|| io::Error::other("Укажите манифест ECC Skills."))?;
                     let pack = if manifest.file_name().is_some_and(|name| name == "SKILL.md") {
                         crate::skills::SkillPack::load_markdown(manifest)?
@@ -301,8 +304,10 @@ impl Desktop {
                         return Err(io::Error::other("Выбранный ECC Skill не найден."));
                     }
                     args.extend([
-                        "--skills".into(), manifest.as_os_str().into(),
-                        "--skill".into(), self.prefs.active_skill.clone().into(),
+                        "--skills".into(),
+                        manifest.as_os_str().into(),
+                        "--skill".into(),
+                        self.prefs.active_skill.clone().into(),
                     ]);
                 }
                 Some(Duration::from_secs(100))
