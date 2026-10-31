@@ -55,6 +55,45 @@ pub fn complete(
     Ok(response)
 }
 
+/// Local GGUF adapter: the same prepared messages feed the existing llama.cpp session.
+/// No cloud credentials or network access are involved.
+pub fn complete_gguf(
+    args: &crate::inference::GenerateArgs,
+    request: &Request,
+    pack: Option<&SkillPack>,
+    selected_ids: &[String],
+) -> io::Result<Response> {
+    let prepared = prepare_request(request, pack, selected_ids)?;
+    if prepared.require_tools {
+        return Err(io::Error::new(io::ErrorKind::Unsupported, "Local tool calls are not supported by this adapter"));
+    }
+    let mut system = String::new();
+    let mut conversation = String::new();
+    for message in &prepared.messages {
+        match message.role {
+            Role::System | Role::Developer => {
+                system.push_str(&message.content);
+                system.push_str("\n\n");
+            }
+            Role::User | Role::Assistant => {
+                conversation.push_str(if message.role == Role::User { "User: " } else { "Assistant: " });
+                conversation.push_str(&message.content);
+                conversation.push('\n');
+            }
+            Role::Tool => return Err(io::Error::new(io::ErrorKind::Unsupported, "Tool messages are unsupported")),
+        }
+    }
+    if conversation.trim().is_empty() || prepared.max_output_tokens != args.max_tokens {
+        return Err(io::Error::new(io::ErrorKind::InvalidInput, "Invalid local request or output budget"));
+    }
+    let mut bytes = Vec::new();
+    crate::inference::with_session(args, |session| {
+        session.complete_with_system(&conversation, if system.is_empty() { None } else { Some(&system) }, None, &mut bytes)
+    })?;
+    let text = String::from_utf8(bytes).map_err(|_| io::Error::new(io::ErrorKind::InvalidData, "Invalid GGUF output"))?;
+    Ok(Response { provider: "local".into(), model: args.model.display().to_string(), text, usage: Default::default() })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
