@@ -5,7 +5,13 @@ use std::io;
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
-pub enum Role { System, Developer, User, Assistant, Tool }
+pub enum Role {
+    System,
+    Developer,
+    User,
+    Assistant,
+    Tool,
+}
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -63,13 +69,24 @@ pub trait ModelBackend {
 
 pub fn validate_request(model: &ModelDescriptor, request: &Request) -> io::Result<()> {
     if request.messages.is_empty() || request.messages.iter().all(|m| m.content.trim().is_empty()) {
-        return Err(io::Error::new(io::ErrorKind::InvalidInput, "Empty model request"));
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "Empty model request",
+        ));
     }
-    if request.max_output_tokens == 0 || request.max_output_tokens > model.capabilities.max_context_tokens {
-        return Err(io::Error::new(io::ErrorKind::InvalidInput, "Invalid output budget"));
+    if request.max_output_tokens == 0
+        || request.max_output_tokens > model.capabilities.max_context_tokens
+    {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "Invalid output budget",
+        ));
     }
     if request.require_tools && !model.capabilities.tool_calls {
-        return Err(io::Error::new(io::ErrorKind::Unsupported, "Model does not support tools"));
+        return Err(io::Error::new(
+            io::ErrorKind::Unsupported,
+            "Model does not support tools",
+        ));
     }
     Ok(())
 }
@@ -81,10 +98,13 @@ pub fn select_priority<'a>(
     allowed_providers: &[String],
     request: &Request,
 ) -> io::Result<&'a ModelDescriptor> {
-    models.iter().find(|model| {
-        allowed_providers.iter().any(|p| p == &model.provider)
-            && validate_request(model, request).is_ok()
-    }).ok_or_else(|| io::Error::new(io::ErrorKind::NotFound, "No permitted compatible model"))
+    models
+        .iter()
+        .find(|model| {
+            allowed_providers.iter().any(|p| p == &model.provider)
+                && validate_request(model, request).is_ok()
+        })
+        .ok_or_else(|| io::Error::new(io::ErrorKind::NotFound, "No permitted compatible model"))
 }
 
 #[cfg(test)]
@@ -92,14 +112,25 @@ mod tests {
     use super::*;
     fn model(provider: &str, tools: bool) -> ModelDescriptor {
         ModelDescriptor {
-            provider: provider.into(), model: "test".into(),
-            capabilities: ModelCapabilities { tool_calls: tools, vision: false,
-                prompt_cache: false, max_context_tokens: 4096 },
+            provider: provider.into(),
+            model: "test".into(),
+            capabilities: ModelCapabilities {
+                tool_calls: tools,
+                vision: false,
+                prompt_cache: false,
+                max_context_tokens: 4096,
+            },
         }
     }
     fn request() -> Request {
-        Request { messages: vec![Message { role: Role::User, content: "fix bug".into() }],
-            max_output_tokens: 256, require_tools: true }
+        Request {
+            messages: vec![Message {
+                role: Role::User,
+                content: "fix bug".into(),
+            }],
+            max_output_tokens: 256,
+            require_tools: true,
+        }
     }
     #[test]
     fn route_never_uses_unapproved_cloud() {
