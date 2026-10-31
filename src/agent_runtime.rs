@@ -56,6 +56,23 @@ pub fn prepare_request(
     Ok(prepared)
 }
 
+/// Return the same validated skill guidance used by model requests for task workers.
+pub fn skill_instructions(pack: Option<&SkillPack>, selected_ids: &[String]) -> io::Result<String> {
+    if selected_ids.is_empty() {
+        return Ok(String::new());
+    }
+    let request = Request {
+        messages: vec![Message {
+            role: Role::User,
+            content: "task".into(),
+        }],
+        max_output_tokens: 1,
+        require_tools: false,
+    };
+    let prepared = prepare_request(&request, pack, selected_ids)?;
+    Ok(prepared.messages[0].content.clone())
+}
+
 /// All backends use the same validated request and response contract.
 pub fn complete(
     backend: &mut dyn ModelBackend,
