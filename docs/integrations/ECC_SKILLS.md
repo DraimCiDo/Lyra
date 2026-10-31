@@ -41,3 +41,12 @@ lyra chat --provider-config providers.json --allow approved-provider --prompt "R
 A missing or duplicate selected skill fails before the model request. Skills
 are not automatically discovered or activated. Local GGUF requests do not
 automatically switch to cloud providers.
+
+### Desktop integration
+
+When built with `desktop,gateway-http`, Desktop HTTP provider settings also
+accept a skill manifest path (`skills.json` or `SKILL.md`). Select a skill
+from the validated manifest or choose **Без навыка**. The selected skill is
+injected into HTTP chat requests by the shared runtime; it is never executed
+as a script. The local project task workflow still uses its existing agent
+pipeline and does not yet consume this Desktop skill selection.
