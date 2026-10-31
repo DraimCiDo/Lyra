@@ -155,8 +155,9 @@ pub fn run(cli: Cli, output: &mut impl Write) -> io::Result<()> {
                     "Local chat request exceeds 256 KiB",
                 ));
             }
-            let request: model_gateway::Request = serde_json::from_slice(&bytes)
-                .map_err(|_| io::Error::new(io::ErrorKind::InvalidData, "Invalid local chat request"))?;
+            let request: model_gateway::Request = serde_json::from_slice(&bytes).map_err(|_| {
+                io::Error::new(io::ErrorKind::InvalidData, "Invalid local chat request")
+            })?;
             let pack = generate
                 .skills
                 .as_ref()
