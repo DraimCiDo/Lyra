@@ -286,6 +286,67 @@ mod tests {
         server.join().unwrap();
     }
 
+
+    #[test]
+    fn http_503_falls_back_to_explicitly_approved_provider() {
+        use crate::model_gateway::Role;
+        use crate::routing::{RoutingPolicy, complete_with_fallback};
+        use std::io::{Read, Write};
+        use std::net::TcpListener;
+
+        fn serve_once(status: &str, body: &'static str) -> (String, std::thread::JoinHandle<()>) {
+            let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+            let endpoint = format!("http://{}/v1/chat/completions", listener.local_addr().unwrap());
+            let status = status.to_owned();
+            let thread = std::thread::spawn(move || {
+                let (mut stream, _) = listener.accept().unwrap();
+                stream
+                    .set_read_timeout(Some(Duration::from_secs(5)))
+                    .unwrap();
+                let mut request = [0u8; 4096];
+                let size = stream.read(&mut request).unwrap();
+                assert!(String::from_utf8_lossy(&request[..size]).starts_with("POST "));
+                write!(
+                    stream,
+                    "HTTP/1.1 {status}\\r\\nContent-Type: application/json\\r\\nContent-Length: {}\\r\\nConnection: close\\r\\n\\r\\n{body}",
+                    body.len()
+                )
+                .unwrap();
+            });
+            (endpoint, thread)
+        }
+
+        let (primary_url, primary_server) = serve_once("503 Service Unavailable", "{}");
+        let (secondary_url, secondary_server) = serve_once(
+            "200 OK",
+            r#"{"choices":[{"message":{"content":"fallback succeeded"}}]}"#,
+        );
+        let mut primary = OpenAiCompatibleBackend::new(config(&primary_url)).unwrap();
+        let mut secondary_config = config(&secondary_url);
+        secondary_config.descriptor.provider = "backup".into();
+        let mut secondary = OpenAiCompatibleBackend::new(secondary_config).unwrap();
+        let response = complete_with_fallback(
+            &mut [&mut primary, &mut secondary],
+            &RoutingPolicy {
+                allowed_providers: vec!["local".into(), "backup".into()],
+                max_attempts: 2,
+            },
+            &Request {
+                messages: vec![Message {
+                    role: Role::User,
+                    content: "Hello".into(),
+                }],
+                max_output_tokens: 128,
+                require_tools: false,
+            },
+        )
+        .unwrap();
+        assert_eq!(response.provider, "backup");
+        assert_eq!(response.text, "fallback succeeded");
+        primary_server.join().unwrap();
+        secondary_server.join().unwrap();
+    }
+
     #[test]
     fn rejects_invalid_credential_env_name() {
         let mut cfg = config("https://example.com/v1/chat/completions");
