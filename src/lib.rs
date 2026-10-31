@@ -6,6 +6,8 @@ pub mod inference;
 pub mod knowledge;
 pub mod model_gateway;
 pub mod project;
+#[cfg(feature = "gateway-http")]
+pub mod provider_http;
 pub mod routing;
 pub mod skills;
 pub mod workspace;
@@ -38,6 +40,18 @@ pub enum Command {
     Apply(agent::ApplyArgs),
     /// Сгенерировать ответ локальной моделью (не исполняет сгенерированный код)
     Generate(inference::GenerateArgs),
+    /// Выполнить Chat Completions через явно разрешённый HTTP-провайдер
+    #[cfg(feature = "gateway-http")]
+    Chat {
+        #[arg(long)]
+        provider_config: std::path::PathBuf,
+        #[arg(long = "allow", required = true)]
+        allowed_providers: Vec<String>,
+        #[arg(long)]
+        prompt: String,
+        #[arg(long, default_value_t = 256)]
+        max_output_tokens: u32,
+    },
     /// Проверить маршрутизацию моделей без отправки данных провайдерам
     Route {
         #[arg(long)]
@@ -73,6 +87,48 @@ pub fn run(cli: Cli, output: &mut impl Write) -> io::Result<()> {
         Command::Task(args) => agent::task(args, output),
         Command::Apply(args) => agent::apply(args, output),
         Command::Generate(args) => inference::generate(&args, output),
+        #[cfg(feature = "gateway-http")]
+        Command::Chat {
+            provider_config,
+            allowed_providers,
+            prompt,
+            max_output_tokens,
+        } => {
+            use crate::model_gateway::ModelBackend;
+            use std::io::Read;
+            let mut bytes = Vec::new();
+            std::fs::File::open(provider_config)?
+                .take(64 * 1024 + 1)
+                .read_to_end(&mut bytes)?;
+            if bytes.len() > 64 * 1024 {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    "Provider configuration exceeds 64 KiB",
+                ));
+            }
+            let config: provider_http::ProviderConfig =
+                serde_json::from_slice(&bytes).map_err(io::Error::other)?;
+            if !allowed_providers
+                .iter()
+                .any(|provider| provider == &config.descriptor.provider)
+            {
+                return Err(io::Error::new(
+                    io::ErrorKind::PermissionDenied,
+                    "Provider was not explicitly allowed",
+                ));
+            }
+            let request = model_gateway::Request {
+                messages: vec![model_gateway::Message {
+                    role: model_gateway::Role::User,
+                    content: prompt,
+                }],
+                max_output_tokens,
+                require_tools: false,
+            };
+            let mut backend = provider_http::OpenAiCompatibleBackend::new(config)?;
+            let response = backend.complete(&request)?;
+            writeln!(output, "{}", response.text)
+        }
         Command::Route {
             models,
             allowed_providers,
