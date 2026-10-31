@@ -62,9 +62,9 @@ pub fn run(cli: Cli, output: &mut impl Write) -> io::Result<()> {
         Command::Skills { manifest, id } => {
             let pack = skills::SkillPack::load(&manifest)?;
             if let Some(id) = id {
-                let skill = pack.find(&id).ok_or_else(|| {
-                    io::Error::new(io::ErrorKind::NotFound, "Skill not found")
-                })?;
+                let skill = pack
+                    .find(&id)
+                    .ok_or_else(|| io::Error::new(io::ErrorKind::NotFound, "Skill not found"))?;
                 writeln!(output, "{}", skill.instructions)
             } else {
                 for skill in &pack.skills {
