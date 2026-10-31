@@ -37,6 +37,13 @@ pub enum Command {
     Apply(agent::ApplyArgs),
     /// Сгенерировать ответ локальной моделью (не исполняет сгенерированный код)
     Generate(inference::GenerateArgs),
+    /// Просмотреть проверенный набор навыков ECC-совместимого формата JSON
+    Skills {
+        #[arg(long)]
+        manifest: std::path::PathBuf,
+        #[arg(long)]
+        id: Option<String>,
+    },
     /// Показать характеристики компьютера, на котором запущена Lyra
     Doctor {
         /// Вывести JSON (схема v1), пригодный для подбора локальной модели
@@ -52,6 +59,20 @@ pub fn run(cli: Cli, output: &mut impl Write) -> io::Result<()> {
         Command::Task(args) => agent::task(args, output),
         Command::Apply(args) => agent::apply(args, output),
         Command::Generate(args) => inference::generate(&args, output),
+        Command::Skills { manifest, id } => {
+            let pack = skills::SkillPack::load(&manifest)?;
+            if let Some(id) = id {
+                let skill = pack.find(&id).ok_or_else(|| {
+                    io::Error::new(io::ErrorKind::NotFound, "Skill not found")
+                })?;
+                writeln!(output, "{}", skill.instructions)
+            } else {
+                for skill in &pack.skills {
+                    writeln!(output, "{}: {}", skill.id, skill.description)?;
+                }
+                Ok(())
+            }
+        }
         Command::Doctor { json } => {
             let report = doctor::collect()?;
             doctor::write_report(&report, json, output)
