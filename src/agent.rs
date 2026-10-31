@@ -535,7 +535,9 @@ mod skill_adapter_tests {
 
     #[test]
     fn ecc_guidance_reaches_researcher_coder_and_reviewer_without_changing_roles() {
-        let mut capture = Capture { prompts: Vec::new() };
+        let mut capture = Capture {
+            prompts: Vec::new(),
+        };
         let guidance = "Check Rust ownership and propose precise edits";
         {
             let mut model = SkilledModel {
@@ -567,7 +569,9 @@ mod skill_adapter_tests {
 
     #[test]
     fn unselected_skill_does_not_modify_task_envelope() {
-        let mut capture = Capture { prompts: Vec::new() };
+        let mut capture = Capture {
+            prompts: Vec::new(),
+        };
         let mut model = SkilledModel {
             inner: &mut capture,
             guidance: "",
@@ -614,7 +618,10 @@ fn cloud_task_model(args: &TaskArgs) -> io::Result<Option<CloudTaskModel>> {
         return Ok(None);
     };
     if args.allowed_providers.is_empty() {
-        return Err(io::Error::new(io::ErrorKind::PermissionDenied, "Cloud task requires --allow PROVIDER"));
+        return Err(io::Error::new(
+            io::ErrorKind::PermissionDenied,
+            "Cloud task requires --allow PROVIDER",
+        ));
     }
     let mut bytes = Vec::new();
     std::fs::File::open(path)?
@@ -625,10 +632,18 @@ fn cloud_task_model(args: &TaskArgs) -> io::Result<Option<CloudTaskModel>> {
         .into_iter()
         .find(|config| {
             args.allowed_providers.contains(&config.descriptor.provider)
-                && args.cloud_model.as_ref().is_none_or(|model| model == &config.descriptor.model)
+                && args
+                    .cloud_model
+                    .as_ref()
+                    .is_none_or(|model| model == &config.descriptor.model)
                 && config.descriptor.capabilities.max_context_tokens >= args.max_tokens
         })
-        .ok_or_else(|| io::Error::new(io::ErrorKind::NotFound, "No permitted compatible cloud model"))?;
+        .ok_or_else(|| {
+            io::Error::new(
+                io::ErrorKind::NotFound,
+                "No permitted compatible cloud model",
+            )
+        })?;
     Ok(Some(CloudTaskModel {
         backend: crate::provider_http::OpenAiCompatibleBackend::new(config)?,
         max_tokens: args.max_tokens,
@@ -682,7 +697,12 @@ pub fn task(args: TaskArgs, output: &mut impl Write) -> io::Result<()> {
         }
         return Ok(());
     }
-    let model_path = args.model.ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "Specify --model or --provider-config"))?;
+    let model_path = args.model.ok_or_else(|| {
+        io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "Specify --model or --provider-config",
+        )
+    })?;
     let config = GenerateArgs {
         model: model_path,
         prompt: "task session".into(),
