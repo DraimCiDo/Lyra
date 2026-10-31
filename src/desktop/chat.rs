@@ -16,8 +16,7 @@ struct Message {
     text: String,
 }
 impl Chat {
-    #[cfg(feature = "gateway-http")]
-    pub(super) fn cloud_request(
+    pub(super) fn model_request(
         &self,
         latest: &str,
         tokens: u32,
@@ -119,22 +118,26 @@ impl Desktop {
         self.message = "Готова к локальной работе".into();
     }
 
+    fn chat_operation(&self) -> Operation {
+        match self.chat_mode {
+            ChatMode::Chat => {
+                #[cfg(feature = "gateway-http")]
+                if self.prefs.cloud_chat {
+                    return Operation::CloudChat;
+                }
+                Operation::LocalChat
+            }
+            ChatMode::Task => Operation::Task,
+            ChatMode::Project => Operation::ProjectPlan,
+        }
+    }
+
     pub(super) fn submit_chat(&mut self, ctx: &egui::Context) -> io::Result<()> {
         let text = self.task.trim().to_owned();
         let request = self.chat.request(&text)?;
         self.request_task = request.clone();
-        let operation = if cfg!(feature = "gateway-http") && self.prefs.cloud_chat {
-            #[cfg(feature = "gateway-http")]
-            {
-                Operation::CloudChat
-            }
-            #[cfg(not(feature = "gateway-http"))]
-            {
-                Operation::Task
-            }
-        } else if self.prefs.repo.is_some() {
-            Operation::Task
-        } else {
+        let operation = self.chat_operation();
+        if operation == Operation::ProjectPlan {
             self.draft.task = request;
             let user_context = self
                 .chat
@@ -152,8 +155,7 @@ impl Desktop {
             } else {
                 latest
             };
-            Operation::ProjectPlan
-        };
+        }
         self.start(operation, ctx)?;
         // Only consume the composer after a worker has actually started.
         self.chat.sent(text);
@@ -289,6 +291,16 @@ impl Desktop {
                 }
             });
         });
+        ui.add_enabled_ui(self.job.is_none(), |ui| {
+            ui.horizontal(|ui| {
+                ui.selectable_value(&mut self.chat_mode, ChatMode::Chat, "Чат");
+                ui.selectable_value(&mut self.chat_mode, ChatMode::Task, "Задача");
+                ui.selectable_value(&mut self.chat_mode, ChatMode::Project, "Новый проект");
+            });
+        });
+        if self.chat_mode == ChatMode::Task && self.prefs.repo.is_none() {
+            ui.label(RichText::new("Для выполнения задачи выбери папку проекта.").small().weak());
+        }
         #[cfg(feature = "gateway-http")]
         ui.horizontal(|ui| {
             ui.checkbox(&mut self.prefs.cloud_chat, "HTTP Gateway");
@@ -414,7 +426,34 @@ impl Desktop {
                                 .weak(),
                         );
                     } else {
-                        let ready = self.prefs.model.is_some() && !self.task.trim().is_empty();
+                        let model_ready = match self.chat_mode {
+                            ChatMode::Chat => {
+                                #[cfg(feature = "gateway-http")]
+                                if self.prefs.cloud_chat {
+                                    true
+                                } else {
+                                    self.prefs.model.is_some()
+                                }
+                                #[cfg(not(feature = "gateway-http"))]
+                                {
+                                    self.prefs.model.is_some()
+                                }
+                            }
+                            ChatMode::Task => {
+                                #[cfg(feature = "gateway-http")]
+                                if self.prefs.cloud_task {
+                                    true
+                                } else {
+                                    self.prefs.model.is_some()
+                                }
+                                #[cfg(not(feature = "gateway-http"))]
+                                {
+                                    self.prefs.model.is_some()
+                                }
+                            }
+                            ChatMode::Project => self.prefs.model.is_some(),
+                        };
+                        let ready = model_ready && !self.task.trim().is_empty();
                         let clicked = ui
                             .add_enabled(
                                 ready,
@@ -448,13 +487,12 @@ impl Desktop {
 #[cfg(test)]
 mod tests {
     use super::*;
-    #[cfg(feature = "gateway-http")]
     #[test]
-    fn cloud_request_preserves_roles_and_latest_user_message() {
+    fn model_request_preserves_roles_and_latest_user_message() {
         let mut chat = Chat::default();
         chat.sent("First".into());
         chat.finish("Answer".into());
-        let request = chat.cloud_request("Follow-up", 256).unwrap();
+        let request = chat.model_request("Follow-up", 256).unwrap();
         assert_eq!(request.messages.len(), 3);
         assert_eq!(request.messages[0].role, crate::model_gateway::Role::User);
         assert_eq!(
@@ -463,7 +501,7 @@ mod tests {
         );
         assert_eq!(request.messages[2].content, "Follow-up");
         assert_eq!(request.max_output_tokens, 256);
-        assert!(chat.cloud_request(" ", 256).is_err());
+        assert!(chat.model_request(" ", 256).is_err());
     }
 
     #[test]
@@ -513,12 +551,33 @@ mod tests {
         let mut app = Desktop::default();
         app.chat.sent("Создай Paper плагин для 1.20.6".into());
         app.chat.finish("Предлагаю вместо этого 1.21.10".into());
+        app.chat_mode = ChatMode::Project;
         app.task = "Используй 1.21.11".into();
         assert!(app.submit_chat(&egui::Context::default()).is_err()); // No model selected.
         assert_eq!(app.draft.version, "1.21.11");
         assert!(app.draft.task.contains("1.20.6"));
         assert_eq!(app.chat.messages.len(), 2);
     }
+    #[test]
+    fn conversation_routing_requires_explicit_task_or_project_mode() {
+        let mut app = Desktop::default();
+        assert!(matches!(app.chat_operation(), Operation::LocalChat));
+        app.prefs.repo = Some("example".into());
+        assert!(matches!(app.chat_operation(), Operation::LocalChat));
+        app.chat_mode = ChatMode::Task;
+        assert!(matches!(app.chat_operation(), Operation::Task));
+        app.chat_mode = ChatMode::Project;
+        assert!(matches!(app.chat_operation(), Operation::ProjectPlan));
+        #[cfg(feature = "gateway-http")]
+        {
+            app.chat_mode = ChatMode::Chat;
+            app.prefs.cloud_chat = true;
+            assert!(matches!(app.chat_operation(), Operation::CloudChat));
+            app.prefs.cloud_chat = false;
+            assert!(matches!(app.chat_operation(), Operation::LocalChat));
+        }
+    }
+
     #[test]
     fn full_conversation_rejects_another_turn_without_dropping_history() {
         let mut chat = Chat::default();
