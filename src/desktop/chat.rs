@@ -17,7 +17,7 @@ struct Message {
 }
 impl Chat {
     #[cfg(feature = "gateway-http")]
-    fn cloud_request(&self, latest: &str, tokens: u32) -> io::Result<crate::model_gateway::Request> {
+    pub(super) fn cloud_request(&self, latest: &str, tokens: u32) -> io::Result<crate::model_gateway::Request> {
         if latest.trim().is_empty() {
             return Err(io::Error::new(io::ErrorKind::InvalidInput, "Пустой запрос."));
         }
