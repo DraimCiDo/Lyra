@@ -97,7 +97,31 @@ pub fn run(cli: Cli, output: &mut impl Write) -> io::Result<()> {
         Command::Docs(args) => knowledge::run(args, output),
         Command::Task(args) => agent::task(args, output),
         Command::Apply(args) => agent::apply(args, output),
-        Command::Generate(args) => inference::generate(&args, output),
+        Command::Generate(args) => {
+            if args.selected_skills.is_empty() && args.skills.is_none() {
+                inference::generate(&args, output)
+            } else {
+                let pack = args.skills.as_ref().map(|path| {
+                    if path.file_name().is_some_and(|name| name == "SKILL.md") {
+                        skills::SkillPack::load_markdown(path)
+                    } else {
+                        skills::SkillPack::load(path)
+                    }
+                }).transpose()?;
+                let request = model_gateway::Request {
+                    messages: vec![model_gateway::Message {
+                        role: model_gateway::Role::User,
+                        content: args.prompt.clone(),
+                    }],
+                    max_output_tokens: args.max_tokens,
+                    require_tools: false,
+                };
+                let response = agent_runtime::complete_gguf(
+                    &args, &request, pack.as_ref(), &args.selected_skills,
+                )?;
+                write!(output, "{}", response.text)
+            }
+        },
         #[cfg(feature = "gateway-http")]
         Command::Chat {
             provider_config,
