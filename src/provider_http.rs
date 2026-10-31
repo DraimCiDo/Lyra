@@ -308,7 +308,7 @@ mod tests {
                 assert!(String::from_utf8_lossy(&request[..size]).starts_with("POST "));
                 write!(
                     stream,
-                    "HTTP/1.1 {status}\\r\\nContent-Type: application/json\\r\\nContent-Length: {}\\r\\nConnection: close\\r\\n\\r\\n{body}",
+                    "HTTP/1.1 {status}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
                     body.len()
                 )
                 .unwrap();
