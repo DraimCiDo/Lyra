@@ -567,6 +567,64 @@ mod skill_adapter_tests {
         }
     }
 
+    #[cfg(feature = "gateway-http")]
+    #[test]
+    fn cloud_task_sends_role_envelope_and_rejects_invalid_provider_response() {
+        use crate::model_gateway::{ModelCapabilities, ModelDescriptor};
+        use crate::provider_http::{OpenAiCompatibleBackend, ProviderConfig};
+        use std::io::{Read, Write};
+        use std::net::TcpListener;
+        use std::time::Duration;
+
+        for (status, body, expected_error) in [
+            ("200 OK", r#"{"choices":[{"message":{"content":"{\"tool\":\"finish\",\"summary\":\"ok\"}"}}]}"#, None),
+            ("401 Unauthorized", "{}", Some(io::ErrorKind::PermissionDenied)),
+            ("503 Service Unavailable", "{}", Some(io::ErrorKind::TimedOut)),
+            ("200 OK", r#"{"choices":[]}"#, Some(io::ErrorKind::InvalidData)),
+        ] {
+            let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+            let address = listener.local_addr().unwrap();
+            let thread = std::thread::spawn(move || {
+                let (mut stream, _) = listener.accept().unwrap();
+                stream.set_read_timeout(Some(Duration::from_secs(5))).unwrap();
+                let mut request = [0u8; 8192];
+                let size = stream.read(&mut request).unwrap();
+                let request_text = String::from_utf8_lossy(&request[..size]);
+                assert!(request_text.contains("POST /v1/chat/completions"));
+                write!(
+                    stream,
+                    "HTTP/1.1 {status}\\r\\nContent-Type: application/json\\r\\nContent-Length: {}\\r\\nConnection: close\\r\\n\\r\\n{body}",
+                    body.len()
+                )
+                .unwrap();
+            });
+            let config = ProviderConfig {
+                descriptor: ModelDescriptor {
+                    provider: "mock".into(),
+                    model: "mock-model".into(),
+                    capabilities: ModelCapabilities {
+                        tool_calls: false,
+                        vision: false,
+                        prompt_cache: false,
+                        max_context_tokens: 4096,
+                    },
+                },
+                endpoint: format!("http://{address}/v1/chat/completions"),
+                api_key_env: None,
+            };
+            let mut model = CloudTaskModel {
+                backend: OpenAiCompatibleBackend::new(config).unwrap(),
+                max_tokens: 128,
+            };
+            let result = model.respond(r#"{"role":"coder","task":"inspect"}"#);
+            match expected_error {
+                Some(kind) => assert_eq!(result.unwrap_err().kind(), kind),
+                None => assert!(result.unwrap().contains("finish")),
+            }
+            thread.join().unwrap();
+        }
+    }
+
     #[test]
     fn unselected_skill_does_not_modify_task_envelope() {
         let mut capture = Capture {
