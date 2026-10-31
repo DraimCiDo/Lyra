@@ -65,7 +65,7 @@ jobs:
         run: cargo fmt --all -- --check
       - name: Diagnose lockfile drift
         run: |
-          cargo update --offline
+          cargo metadata --format-version 1 --no-deps | Out-Null
           git diff -- Cargo.lock
       - name: Clippy
         run: cargo clippy --workspace --all-targets --features desktop --locked -- -D warnings
