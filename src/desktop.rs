@@ -289,6 +289,22 @@ impl Desktop {
                     "--request-file".into(),
                     request_path.into_os_string(),
                 ]);
+                if !self.prefs.active_skill.is_empty() {
+                    let manifest = self.prefs.skill_manifest.as_ref()
+                        .ok_or_else(|| io::Error::other("Укажите манифест ECC Skills."))?;
+                    let pack = if manifest.file_name().is_some_and(|name| name == "SKILL.md") {
+                        crate::skills::SkillPack::load_markdown(manifest)?
+                    } else {
+                        crate::skills::SkillPack::load(manifest)?
+                    };
+                    if pack.find(&self.prefs.active_skill).is_none() {
+                        return Err(io::Error::other("Выбранный ECC Skill не найден."));
+                    }
+                    args.extend([
+                        "--skills".into(), manifest.as_os_str().into(),
+                        "--skill".into(), self.prefs.active_skill.clone().into(),
+                    ]);
+                }
                 Some(Duration::from_secs(100))
             }
             Operation::Task => {
@@ -686,6 +702,46 @@ impl Desktop {
                                     });
                             } else {
                                 ui.label("Не удалось загрузить реестр провайдеров.");
+                            }
+                        }
+                        ui.separator();
+                        ui.label("ECC Skills · JSON-манифест или SKILL.md");
+                        let mut manifest_path = self.prefs.skill_manifest.as_ref()
+                            .map(|path| path.display().to_string()).unwrap_or_default();
+                        if ui.add(egui::TextEdit::singleline(&mut manifest_path)
+                            .desired_width(f32::INFINITY).hint_text("skills.json")).changed() {
+                            self.prefs.skill_manifest = if manifest_path.trim().is_empty() {
+                                None
+                            } else {
+                                Some(PathBuf::from(manifest_path.trim()))
+                            };
+                        }
+                        if let Some(path) = &self.prefs.skill_manifest {
+                            let pack = if path.file_name().is_some_and(|name| name == "SKILL.md") {
+                                crate::skills::SkillPack::load_markdown(path)
+                            } else {
+                                crate::skills::SkillPack::load(path)
+                            };
+                            match pack {
+                                Ok(pack) => {
+                                    egui::ComboBox::from_id_salt("ecc-active-skill")
+                                        .selected_text(if self.prefs.active_skill.is_empty() {
+                                            "Без навыка"
+                                        } else {
+                                            &self.prefs.active_skill
+                                        })
+                                        .show_ui(ui, |ui| {
+                                            ui.selectable_value(&mut self.prefs.active_skill, String::new(), "Без навыка");
+                                            for skill in &pack.skills {
+                                                ui.selectable_value(
+                                                    &mut self.prefs.active_skill,
+                                                    skill.id.clone(),
+                                                    &skill.id,
+                                                );
+                                            }
+                                        });
+                                }
+                                Err(_) => { ui.label("Не удалось загрузить ECC Skills."); }
                             }
                         }
                         ui.label(RichText::new("Только выбранная модель; без автоматического переключения в облако.").small().weak());
