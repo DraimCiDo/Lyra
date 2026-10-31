@@ -109,6 +109,15 @@ pub fn context_budget(prompt_tokens: usize, max_tokens: u32, context: u32) -> io
     Ok(())
 }
 
+// Machine-readable status events stay on stderr; generated answer text stays on stdout.
+fn progress_event(value: &str) {
+    let _ = writeln!(io::stderr().lock(), "LYRA_PROGRESS:{value}");
+}
+
+fn progress_tokens(count: u32) {
+    let _ = writeln!(io::stderr().lock(), "LYRA_PROGRESS:tokens={count}");
+}
+
 fn check(cancelled: &AtomicBool, started: Instant, timeout: Duration) -> io::Result<()> {
     if cancelled.load(Ordering::Relaxed) {
         return Err(io::Error::new(
@@ -150,10 +159,12 @@ pub fn with_session<T>(
             "CUDA-устройство недоступно; CPU fallback не выполняется.",
         ));
     }
+    progress_event("load");
     let params = LlamaModelParams::default().with_n_gpu_layers(args.gpu_layers);
     let model = LlamaModel::load_from_file(&backend, &args.model, &params)
         .map_err(|e| fail(format!("Не удалось загрузить GGUF: {e}")))?;
     check(&cancelled, started, timeout)?;
+    progress_event("context");
     if args.context > model.n_ctx_train() {
         return Err(fail(format!(
             "context {} превышает обученное окно модели {}.",
@@ -261,6 +272,7 @@ impl Session<'_> {
                 .decode(&mut batch)
                 .map_err(|e| fail(e.to_string()))?;
         }
+        progress_event("generate");
         let mut sampler = if let Some(grammar) = grammar {
             LlamaSampler::chain_simple([
                 LlamaSampler::grammar(model, grammar, "root").map_err(|e| fail(e.to_string()))?,
@@ -287,6 +299,9 @@ impl Session<'_> {
             output.write_all(text.as_bytes())?;
             output.flush()?;
             count += 1;
+            if count == 1 || count % 8 == 0 {
+                progress_tokens(count);
+            }
             if index + 1 < args.max_tokens {
                 batch.clear();
                 batch
@@ -297,6 +312,7 @@ impl Session<'_> {
                     .map_err(|e| fail(e.to_string()))?;
             }
         }
+        progress_tokens(count);
         let mut tail = String::with_capacity(16);
         let (result, _, _) = decoder.decode_to_string(&[], &mut tail, true);
         if result != encoding_rs::CoderResult::InputEmpty {
