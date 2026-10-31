@@ -153,7 +153,6 @@ mod tests {
         assert!(invalid.validate().is_err());
     }
 
-
     #[test]
     fn imports_ecc_style_skill_markdown_without_execution() {
         let dir = tempfile::tempdir().unwrap();
