@@ -63,6 +63,10 @@ jobs:
           "LIBCLANG_PATH=$clang" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
       - name: Format
         run: cargo fmt --all -- --check
+      - name: Diagnose lockfile drift
+        run: |
+          cargo update --offline
+          git diff -- Cargo.lock
       - name: Clippy
         run: cargo clippy --workspace --all-targets --features desktop --locked -- -D warnings
       - name: Tests
