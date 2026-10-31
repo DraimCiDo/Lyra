@@ -1,0 +1,14 @@
+{
+  "descriptor": {
+    "provider": "local",
+    "model": "replace-with-your-model",
+    "capabilities": {
+      "tool_calls": false,
+      "vision": false,
+      "prompt_cache": false,
+      "max_context_tokens": 4096
+    }
+  },
+  "endpoint": "http://127.0.0.1:1234/v1/chat/completions",
+  "api_key_env": null
+}
