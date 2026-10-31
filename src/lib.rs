@@ -1,4 +1,5 @@
 pub mod agent;
+pub mod agent_runtime;
 #[cfg(feature = "desktop")]
 pub mod desktop;
 pub mod doctor;
@@ -57,6 +58,10 @@ pub enum Command {
         max_output_tokens: u32,
         #[arg(long, default_value_t = 1)]
         max_attempts: usize,
+        #[arg(long)]
+        skills: Option<std::path::PathBuf>,
+        #[arg(long = "skill")]
+        selected_skills: Vec<String>,
     },
     /// Проверить маршрутизацию моделей без отправки данных провайдерам
     Route {
@@ -102,6 +107,8 @@ pub fn run(cli: Cli, output: &mut impl Write) -> io::Result<()> {
             model,
             max_output_tokens,
             max_attempts,
+            skills,
+            selected_skills,
         } => {
             use std::io::Read;
             let mut bytes = Vec::new();
@@ -132,6 +139,14 @@ pub fn run(cli: Cli, output: &mut impl Write) -> io::Result<()> {
                     require_tools: false,
                 }
             };
+            let pack = skills.as_ref().map(|path| {
+                if path.file_name().is_some_and(|name| name == "SKILL.md") {
+                    skills::SkillPack::load_markdown(path)
+                } else {
+                    skills::SkillPack::load(path)
+                }
+            }).transpose()?;
+            let request = agent_runtime::prepare_request(&request, pack.as_ref(), &selected_skills)?;
             let mut backends: Vec<provider_http::OpenAiCompatibleBackend> = configs
                 .into_iter()
                 .map(provider_http::OpenAiCompatibleBackend::new)
