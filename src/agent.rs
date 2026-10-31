@@ -527,7 +527,7 @@ struct CloudTaskModel {
 #[cfg(feature = "gateway-http")]
 impl Model for CloudTaskModel {
     fn respond(&mut self, prompt: &str) -> io::Result<String> {
-        use crate::model_gateway::{Message, ModelBackend, Request, Role};
+        use crate::model_gateway::{Message, Request, Role};
         let request = Request {
             messages: vec![
                 Message {
