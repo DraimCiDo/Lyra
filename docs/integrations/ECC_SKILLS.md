@@ -48,5 +48,16 @@ When built with `desktop,gateway-http`, Desktop HTTP provider settings also
 accept a skill manifest path (`skills.json` or `SKILL.md`). Select a skill
 from the validated manifest or choose **Без навыка**. The selected skill is
 injected into HTTP chat requests by the shared runtime; it is never executed
-as a script. The local project task workflow still uses its existing agent
-pipeline and does not yet consume this Desktop skill selection.
+as a script. The local project task workflow now consumes the same Desktop skill selection.
+The skill guidance is injected into each local agent role's task envelope
+(researcher, coder, reviewer) without granting new file or shell permissions.
+
+### Local project task
+
+```sh
+lyra task --repo ./project --model ./model.gguf --task-file task.txt --skills skills.json --skill rust-review
+```
+
+The task pipeline retains its existing constrained JSON tool grammar and
+proposal-only editing. Skill guidance does not override read-only agent roles
+or permit unapproved writes.
