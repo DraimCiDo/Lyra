@@ -17,20 +17,38 @@ struct Message {
 }
 impl Chat {
     #[cfg(feature = "gateway-http")]
-    pub(super) fn cloud_request(&self, latest: &str, tokens: u32) -> io::Result<crate::model_gateway::Request> {
+    pub(super) fn cloud_request(
+        &self,
+        latest: &str,
+        tokens: u32,
+    ) -> io::Result<crate::model_gateway::Request> {
         if latest.trim().is_empty() {
-            return Err(io::Error::new(io::ErrorKind::InvalidInput, "Пустой запрос."));
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "Пустой запрос.",
+            ));
         }
-        let mut messages: Vec<crate::model_gateway::Message> = self.messages.iter()
+        let mut messages: Vec<crate::model_gateway::Message> = self
+            .messages
+            .iter()
             .map(|message| crate::model_gateway::Message {
-                role: if message.user { crate::model_gateway::Role::User } else { crate::model_gateway::Role::Assistant },
+                role: if message.user {
+                    crate::model_gateway::Role::User
+                } else {
+                    crate::model_gateway::Role::Assistant
+                },
                 content: message.text.clone(),
-            }).collect();
+            })
+            .collect();
         messages.push(crate::model_gateway::Message {
             role: crate::model_gateway::Role::User,
             content: latest.to_owned(),
         });
-        Ok(crate::model_gateway::Request { messages, max_output_tokens: tokens, require_tools: false })
+        Ok(crate::model_gateway::Request {
+            messages,
+            max_output_tokens: tokens,
+            require_tools: false,
+        })
     }
 
     fn request(&self, text: &str) -> io::Result<String> {
@@ -107,9 +125,13 @@ impl Desktop {
         self.request_task = request.clone();
         let operation = if cfg!(feature = "gateway-http") && self.prefs.cloud_chat {
             #[cfg(feature = "gateway-http")]
-            { Operation::CloudChat }
+            {
+                Operation::CloudChat
+            }
             #[cfg(not(feature = "gateway-http"))]
-            { Operation::Task }
+            {
+                Operation::Task
+            }
         } else if self.prefs.repo.is_some() {
             Operation::Task
         } else {
@@ -271,8 +293,15 @@ impl Desktop {
         ui.horizontal(|ui| {
             ui.checkbox(&mut self.prefs.cloud_chat, "HTTP Gateway");
             if self.prefs.cloud_chat {
-                ui.label(format!("{} / {}", self.prefs.cloud_provider, self.prefs.cloud_model));
-                ui.label(RichText::new("Запросы отправляются выбранному провайдеру").small().weak());
+                ui.label(format!(
+                    "{} / {}",
+                    self.prefs.cloud_provider, self.prefs.cloud_model
+                ));
+                ui.label(
+                    RichText::new("Запросы отправляются выбранному провайдеру")
+                        .small()
+                        .weak(),
+                );
             } else {
                 ui.label(RichText::new("Локальный GGUF").small().weak());
             }
@@ -428,7 +457,10 @@ mod tests {
         let request = chat.cloud_request("Follow-up", 256).unwrap();
         assert_eq!(request.messages.len(), 3);
         assert_eq!(request.messages[0].role, crate::model_gateway::Role::User);
-        assert_eq!(request.messages[1].role, crate::model_gateway::Role::Assistant);
+        assert_eq!(
+            request.messages[1].role,
+            crate::model_gateway::Role::Assistant
+        );
         assert_eq!(request.messages[2].content, "Follow-up");
         assert_eq!(request.max_output_tokens, 256);
         assert!(chat.cloud_request(" ", 256).is_err());
