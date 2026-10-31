@@ -51,7 +51,8 @@ pub fn action_grammar(files: &[String], read_only: bool) -> io::Result<String> {
 
 #[derive(Debug, Args)]
 pub struct TaskArgs {
-    #[arg(long, conflicts_with = "provider_config")]
+    #[arg(long)]
+    #[cfg_attr(feature = "gateway-http", arg(conflicts_with = "provider_config"))]
     pub model: Option<PathBuf>,
     /// Opt-in HTTP provider registry for remote task inference
     #[cfg(feature = "gateway-http")]
