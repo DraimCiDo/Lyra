@@ -20,6 +20,52 @@ pub struct ProviderConfig {
     pub api_key_env: Option<String>,
 }
 
+/// Parse a bounded provider registry and reject ambiguous backend identities.
+pub fn parse_registry(bytes: &[u8]) -> io::Result<Vec<ProviderConfig>> {
+    use std::collections::HashSet;
+
+    if bytes.len() > 64 * 1024 {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "Provider configuration exceeds 64 KiB",
+        ));
+    }
+    let configs: Vec<ProviderConfig> = if bytes
+        .iter()
+        .copied()
+        .find(|byte| !byte.is_ascii_whitespace())
+        == Some(b'[')
+    {
+        serde_json::from_slice(bytes).map_err(|_| {
+            io::Error::new(io::ErrorKind::InvalidData, "Invalid provider configuration")
+        })?
+    } else {
+        vec![serde_json::from_slice(bytes).map_err(|_| {
+            io::Error::new(io::ErrorKind::InvalidData, "Invalid provider configuration")
+        })?]
+    };
+    if configs.is_empty() || configs.len() > 32 {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "Expected between 1 and 32 providers",
+        ));
+    }
+    let mut seen = HashSet::new();
+    for config in &configs {
+        let identity = (
+            config.descriptor.provider.as_str(),
+            config.descriptor.model.as_str(),
+        );
+        if !seen.insert(identity) {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "Duplicate provider and model in registry",
+            ));
+        }
+    }
+    Ok(configs)
+}
+
 pub struct OpenAiCompatibleBackend {
     config: ProviderConfig,
     client: Client,
