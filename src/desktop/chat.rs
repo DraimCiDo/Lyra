@@ -104,22 +104,20 @@ impl Chat {
 
 /// Keep conversation content readable on wide displays instead of stretching every line.
 fn conversation_width(available: f32) -> f32 {
-    available.max(1.0).min(820.0)
+    available.clamp(1.0, 820.0)
 }
 
 /// User bubbles grow with the message but never occupy the entire conversation width.
 /// UTF-8 character counts are only a visual estimate; egui wraps the actual text.
 fn user_bubble_width(text: &str, available: f32) -> f32 {
-    let cap = (available * 0.76).min(560.0).max(1.0);
+    let cap = (available * 0.76).clamp(1.0, 560.0);
     let longest_line = text
         .lines()
         .map(|line| line.chars().count())
         .max()
         .unwrap_or(0)
         .min(256);
-    (longest_line as f32 * 7.8 + 32.0)
-        .max(100.0_f32.min(cap))
-        .min(cap)
+    (longest_line as f32 * 7.8 + 32.0).clamp(100.0_f32.min(cap), cap)
 }
 
 fn show_conversation_message(
@@ -131,7 +129,10 @@ fn show_conversation_message(
     if message.user {
         let bubble_width = user_bubble_width(&message.text, column_width);
         ui.horizontal(|ui| {
-            ui.add_space((column_width - bubble_width).max(0.0));
+            let offset = (column_width - bubble_width - ui.spacing().item_spacing.x).max(0.0);
+            if offset > 0.0 {
+                ui.add_space(offset);
+            }
             ui.allocate_ui_with_layout(
                 egui::vec2(bubble_width, 0.0),
                 egui::Layout::top_down(egui::Align::Min),
@@ -496,7 +497,12 @@ impl Desktop {
                 let available = ui.available_width();
                 let column_width = conversation_width(available);
                 ui.horizontal(|ui| {
-                    ui.add_space(((available - column_width) / 2.0).max(0.0));
+                    let offset = ((available - column_width) / 2.0
+                        - ui.spacing().item_spacing.x)
+                        .max(0.0);
+                    if offset > 0.0 {
+                        ui.add_space(offset);
+                    }
                     ui.vertical(|ui| {
                         ui.set_min_width(column_width);
                         if self.chat.messages.is_empty() {
@@ -554,9 +560,13 @@ impl Desktop {
             });
         ui.add_space(5.0);
         let composer_width = conversation_width(ui.available_width());
-        let composer_offset = ((ui.available_width() - composer_width) / 2.0).max(0.0);
         ui.horizontal(|ui| {
-            ui.add_space(composer_offset);
+            let offset = ((ui.available_width() - composer_width) / 2.0
+                - ui.spacing().item_spacing.x)
+                .max(0.0);
+            if offset > 0.0 {
+                ui.add_space(offset);
+            }
             ui.allocate_ui_with_layout(
                 egui::vec2(composer_width, 0.0),
                 egui::Layout::top_down(egui::Align::Min),
