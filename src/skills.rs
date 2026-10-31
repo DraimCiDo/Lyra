@@ -62,10 +62,16 @@ impl SkillPack {
             .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))?;
         let normalized = source.replace("\r\n", "\n");
         let rest = normalized.strip_prefix("---\n").ok_or_else(|| {
-            io::Error::new(io::ErrorKind::InvalidData, "SKILL.md must start with YAML frontmatter")
+            io::Error::new(
+                io::ErrorKind::InvalidData,
+                "SKILL.md must start with YAML frontmatter",
+            )
         })?;
         let (frontmatter, instructions) = rest.split_once("\n---\n").ok_or_else(|| {
-            io::Error::new(io::ErrorKind::InvalidData, "Unterminated SKILL.md frontmatter")
+            io::Error::new(
+                io::ErrorKind::InvalidData,
+                "Unterminated SKILL.md frontmatter",
+            )
         })?;
         let mut id = None;
         let mut description = None;
@@ -163,7 +169,10 @@ mod tests {
         )
         .unwrap();
         let pack = SkillPack::load_markdown(&path).unwrap();
-        assert_eq!(pack.find("rust-review").unwrap().instructions, "# Steps\nCheck tests.");
+        assert_eq!(
+            pack.find("rust-review").unwrap().instructions,
+            "# Steps\nCheck tests."
+        );
         std::fs::write(&path, "---\nname: ../bad\ndescription: Unsafe\n---\nhello").unwrap();
         assert!(SkillPack::load_markdown(&path).is_err());
     }
