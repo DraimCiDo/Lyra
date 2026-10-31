@@ -102,28 +102,7 @@ pub fn run(cli: Cli, output: &mut impl Write) -> io::Result<()> {
             std::fs::File::open(provider_config)?
                 .take(64 * 1024 + 1)
                 .read_to_end(&mut bytes)?;
-            if bytes.len() > 64 * 1024 {
-                return Err(io::Error::new(
-                    io::ErrorKind::InvalidData,
-                    "Provider configuration exceeds 64 KiB",
-                ));
-            }
-            let configs: Vec<provider_http::ProviderConfig> = if bytes
-                .iter()
-                .copied()
-                .find(|byte| !byte.is_ascii_whitespace())
-                == Some(b'[')
-            {
-                serde_json::from_slice(&bytes).map_err(io::Error::other)?
-            } else {
-                vec![serde_json::from_slice(&bytes).map_err(io::Error::other)?]
-            };
-            if configs.is_empty() || configs.len() > 32 {
-                return Err(io::Error::new(
-                    io::ErrorKind::InvalidData,
-                    "Expected between 1 and 32 providers",
-                ));
-            }
+            let configs = provider_http::parse_registry(&bytes)?;
             let request = model_gateway::Request {
                 messages: vec![model_gateway::Message {
                     role: model_gateway::Role::User,
