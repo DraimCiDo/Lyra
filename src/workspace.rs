@@ -382,7 +382,27 @@ impl Workspace {
                 drop(staged);
                 self.new_path(&edit.path)?;
                 // Atomic no-clobber publication on NTFS/Unix. Fail safely on filesystems without hard links.
-                self.dir.hard_link(&temp, &self.dir, &edit.path)
+                #[cfg(windows)]
+                {
+                    // Windows can deny hard-link creation through directory handles.
+                    // CREATE_NEW retains no-clobber semantics for the destination.
+                    let mut destination = OpenOptions::new();
+                    destination.write(true).create_new(true);
+                    let mut published = self.dir.open_with(&edit.path, &destination)?;
+                    if let Err(error) = published
+                        .write_all(edit.replacement.as_bytes())
+                        .and_then(|()| published.sync_all())
+                    {
+                        drop(published);
+                        let _ = self.dir.remove_file(&edit.path);
+                        return Err(error);
+                    }
+                    Ok(())
+                }
+                #[cfg(not(windows))]
+                {
+                    self.dir.hard_link(&temp, &self.dir, &edit.path)
+                }
             })();
             let _ = self.dir.remove_file(&temp);
             return result;
