@@ -252,24 +252,42 @@ impl Desktop {
             #[cfg(feature = "gateway-http")]
             Operation::CloudChat => {
                 use std::io::Read;
-                let registry = self.prefs.provider_registry.as_ref()
+                let registry = self
+                    .prefs
+                    .provider_registry
+                    .as_ref()
                     .ok_or_else(|| io::Error::other("Укажите реестр HTTP-провайдеров."))?;
                 let mut bytes = Vec::new();
-                std::fs::File::open(registry)?.take(64 * 1024 + 1).read_to_end(&mut bytes)?;
+                std::fs::File::open(registry)?
+                    .take(64 * 1024 + 1)
+                    .read_to_end(&mut bytes)?;
                 let configs = crate::provider_http::parse_registry(&bytes)?;
-                let selected = configs.iter().find(|config|
-                    config.descriptor.provider == self.prefs.cloud_provider
-                    && config.descriptor.model == self.prefs.cloud_model
-                ).ok_or_else(|| io::Error::other("Выбранная модель отсутствует в реестре."))?;
+                let selected = configs
+                    .iter()
+                    .find(|config| {
+                        config.descriptor.provider == self.prefs.cloud_provider
+                            && config.descriptor.model == self.prefs.cloud_model
+                    })
+                    .ok_or_else(|| io::Error::other("Выбранная модель отсутствует в реестре."))?;
                 crate::provider_http::OpenAiCompatibleBackend::new(selected.clone())?;
-                let request = self.chat.cloud_request(self.task.trim(), self.prefs.tokens)?;
+                let request = self
+                    .chat
+                    .cloud_request(self.task.trim(), self.prefs.tokens)?;
                 let request_path = temp.path().join("chat-request.json");
-                std::fs::write(&request_path, serde_json::to_vec(&request).map_err(io::Error::other)?)?;
+                std::fs::write(
+                    &request_path,
+                    serde_json::to_vec(&request).map_err(io::Error::other)?,
+                )?;
                 args.extend([
-                    "chat".into(), "--provider-config".into(), registry.as_os_str().into(),
-                    "--allow".into(), self.prefs.cloud_provider.clone().into(),
-                    "--model".into(), self.prefs.cloud_model.clone().into(),
-                    "--request-file".into(), request_path.into_os_string(),
+                    "chat".into(),
+                    "--provider-config".into(),
+                    registry.as_os_str().into(),
+                    "--allow".into(),
+                    self.prefs.cloud_provider.clone().into(),
+                    "--model".into(),
+                    self.prefs.cloud_model.clone().into(),
+                    "--request-file".into(),
+                    request_path.into_os_string(),
                 ]);
                 Some(Duration::from_secs(100))
             }
@@ -414,7 +432,10 @@ impl Desktop {
             Operation::CloudChat => {
                 if result.code == Some(0) {
                     match String::from_utf8(result.stdout) {
-                        Ok(text) => { self.message = text.trim_end().to_owned(); self.error = false; }
+                        Ok(text) => {
+                            self.message = text.trim_end().to_owned();
+                            self.error = false;
+                        }
                         Err(_) => self.fail("Некорректная кодировка ответа HTTP-провайдера."),
                     }
                 } else {
