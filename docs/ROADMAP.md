@@ -73,6 +73,8 @@ fallback разрешены к реализации; сейчас их нали�
 мастер убран. Добавлен Vue/TypeScript профиль, без browser preview или обещаний
 равенства другой модели. [План и проверки](plans/0009-chat-web.md).
 
+Полная программа интеграции ECC и OmniRoute: [план 0010](plans/0010-unified-ecc-omniroute.md), [матрица покрытия](integrations/PARITY.md).
+
 ## Расширение платформы (решение 2026-10-31)
 
 1. Model Backend API: единый контракт для локальных и облачных моделей, streaming,
