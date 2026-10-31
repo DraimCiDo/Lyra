@@ -242,6 +242,52 @@ mod tests {
         );
     }
 
+
+    #[test]
+    fn localhost_chat_parses_text_and_usage() {
+        use std::io::{Read, Write};
+        use std::net::TcpListener;
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let address = listener.local_addr().unwrap();
+        let server = std::thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            stream
+                .set_read_timeout(Some(Duration::from_secs(5)))
+                .unwrap();
+            let mut request = [0u8; 4096];
+            let size = stream.read(&mut request).unwrap();
+            let head = String::from_utf8_lossy(&request[..size]);
+            assert!(head.starts_with("POST /v1/chat/completions HTTP/1.1"));
+            let body = r#"{"choices":[{"message":{"content":"Hello from local model"}}],"usage":{"prompt_tokens":12,"completion_tokens":4,"prompt_tokens_details":{"cached_tokens":2}}}"#;
+            write!(
+                stream,
+                "HTTP/1.1 200 OK\\r\\nContent-Type: application/json\\r\\nContent-Length: {}\\r\\nConnection: close\\r\\n\\r\\n{}",
+                body.len(),
+                body
+            )
+            .unwrap();
+        });
+        let mut backend = OpenAiCompatibleBackend::new(config(&format!(
+            "http://{address}/v1/chat/completions"
+        )))
+        .unwrap();
+        let response = backend
+            .complete(&Request {
+                messages: vec![Message {
+                    role: crate::model_gateway::Role::User,
+                    content: "Hi".into(),
+                }],
+                max_output_tokens: 128,
+                require_tools: false,
+            })
+            .unwrap();
+        assert_eq!(response.text, "Hello from local model");
+        assert_eq!(response.usage.input_tokens, 12);
+        assert_eq!(response.usage.output_tokens, 4);
+        assert_eq!(response.usage.cached_input_tokens, 2);
+        server.join().unwrap();
+    }
+
     #[test]
     fn rejects_invalid_credential_env_name() {
         let mut cfg = config("https://example.com/v1/chat/completions");
