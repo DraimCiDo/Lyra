@@ -505,6 +505,66 @@ impl<M: Model> Model for SkilledModel<'_, M> {
     }
 }
 
+#[cfg(test)]
+mod skill_adapter_tests {
+    use super::*;
+
+    struct Capture {
+        prompts: Vec<String>,
+    }
+
+    impl Model for Capture {
+        fn respond(&mut self, prompt: &str) -> io::Result<String> {
+            self.prompts.push(prompt.to_owned());
+            Ok(r#"{"tool":"finish","summary":"reviewed"}"#.into())
+        }
+    }
+
+    #[test]
+    fn ecc_guidance_reaches_researcher_coder_and_reviewer_without_changing_roles() {
+        let mut capture = Capture { prompts: Vec::new() };
+        let guidance = "Check Rust ownership and propose precise edits";
+        {
+            let mut model = SkilledModel {
+                inner: &mut capture,
+                guidance,
+            };
+            for role in ["researcher", "coder", "reviewer"] {
+                let prompt = serde_json::json!({
+                    "role": role,
+                    "read_only": role != "coder",
+                    "files": ["src/lib.rs"]
+                })
+                .to_string();
+                model.respond(&prompt).unwrap();
+            }
+        }
+        assert_eq!(capture.prompts.len(), 3);
+        for (prompt, role) in capture
+            .prompts
+            .iter()
+            .zip(["researcher", "coder", "reviewer"])
+        {
+            let value: serde_json::Value = serde_json::from_str(prompt).unwrap();
+            assert_eq!(value["role"], role);
+            assert_eq!(value["read_only"], role != "coder");
+            assert_eq!(value["ecc_skill_guidance"], guidance);
+        }
+    }
+
+    #[test]
+    fn unselected_skill_does_not_modify_task_envelope() {
+        let mut capture = Capture { prompts: Vec::new() };
+        let mut model = SkilledModel {
+            inner: &mut capture,
+            guidance: "",
+        };
+        let prompt = r#"{"role":"coder","files":[]}"#;
+        model.respond(prompt).unwrap();
+        assert_eq!(capture.prompts[0], prompt);
+    }
+}
+
 pub fn task(args: TaskArgs, output: &mut impl Write) -> io::Result<()> {
     let task = limited_file(&args.task_file, 16384)?;
     if task.trim().is_empty() || (args.subagents && args.max_calls < 3) {
