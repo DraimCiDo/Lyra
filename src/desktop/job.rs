@@ -5,7 +5,7 @@ use std::{
     io::{self, Read},
     process::{Command, Stdio},
     sync::{
-        Arc,
+        Arc, Mutex,
         atomic::{AtomicBool, Ordering},
         mpsc,
     },
@@ -16,6 +16,65 @@ use tempfile::TempDir;
 
 pub const OUTPUT_LIMIT: usize = 2 * 1024 * 1024;
 const LOG_LIMIT: usize = 64 * 1024;
+const PREVIEW_LIMIT: usize = 64 * 1024;
+const PROGRESS_PREFIX: &str = "LYRA_PROGRESS:";
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum ProgressStage {
+    #[default]
+    Starting,
+    Loading,
+    Context,
+    Generating,
+}
+
+#[derive(Clone, Debug, Default)]
+pub struct ProgressSnapshot {
+    pub stage: ProgressStage,
+    pub generated_tokens: u32,
+    pub preview: String,
+}
+
+#[derive(Default)]
+struct ProgressParser {
+    line: Vec<u8>,
+}
+
+impl ProgressParser {
+    fn feed(&mut self, chunk: &[u8], state: &Arc<Mutex<ProgressSnapshot>>) {
+        for &byte in chunk {
+            if byte == b'\n' {
+                self.finish_line(state);
+            } else if self.line.len() < 2048 {
+                self.line.push(byte);
+            } else {
+                // Ignore oversized native diagnostic lines without unbounded allocation.
+                self.line.clear();
+            }
+        }
+    }
+
+    fn finish_line(&mut self, state: &Arc<Mutex<ProgressSnapshot>>) {
+        let line = String::from_utf8_lossy(&self.line);
+        if let Some(event) = line.trim().strip_prefix(PROGRESS_PREFIX) {
+            if let Ok(mut snapshot) = state.lock() {
+                match event {
+                    "load" => snapshot.stage = ProgressStage::Loading,
+                    "context" => snapshot.stage = ProgressStage::Context,
+                    "generate" => snapshot.stage = ProgressStage::Generating,
+                    _ => {
+                        if let Some(value) = event.strip_prefix("tokens=")
+                            && let Ok(tokens) = value.parse::<u32>()
+                        {
+                            snapshot.generated_tokens = tokens;
+                        }
+                    }
+                }
+            }
+        }
+        self.line.clear();
+    }
+}
 
 pub struct ResultData {
     pub code: Option<i32>,
@@ -27,6 +86,7 @@ pub struct ResultData {
 
 pub struct Job {
     cancel: Arc<AtomicBool>,
+    progress: Arc<Mutex<ProgressSnapshot>>,
     receiver: mpsc::Receiver<io::Result<ResultData>>,
     thread: Option<JoinHandle<()>>,
     pub started: Instant,
@@ -62,23 +122,33 @@ impl Job {
         command.current_dir(temp.path());
         let cancel = Arc::new(AtomicBool::new(false));
         let flag = cancel.clone();
+        let progress = Arc::new(Mutex::new(ProgressSnapshot::default()));
+        let worker_progress = progress.clone();
         let (sender, receiver) = mpsc::sync_channel(1);
         let started = Instant::now();
         let thread = thread::Builder::new()
             .name("lyra-worker".into())
             .spawn(move || {
                 let _temp = temp; // Removed only after worker and pipe readers have terminated.
-                let result = capture(command, flag, deadline);
+                let result = capture_live(command, flag, deadline, Some(worker_progress));
                 let _ = sender.send(result);
                 repaint();
             })?;
         Ok(Self {
             cancel,
+            progress,
             receiver,
             thread: Some(thread),
             started,
             cancellable,
         })
+    }
+
+    pub fn progress(&self) -> ProgressSnapshot {
+        self.progress
+            .lock()
+            .map(|state| state.clone())
+            .unwrap_or_default()
     }
 
     pub fn cancel(&self) {
@@ -107,7 +177,16 @@ impl Drop for Job {
     }
 }
 
-fn read_output(mut reader: impl Read, limit: usize, tail: bool) -> io::Result<(Vec<u8>, bool)> {
+fn read_output(reader: impl Read, limit: usize, tail: bool) -> io::Result<(Vec<u8>, bool)> {
+    read_output_observed(reader, limit, tail, |_| {})
+}
+
+fn read_output_observed(
+    mut reader: impl Read,
+    limit: usize,
+    tail: bool,
+    mut observe: impl FnMut(&[u8]),
+) -> io::Result<(Vec<u8>, bool)> {
     let mut bytes = VecDeque::new();
     let mut chunk = [0; 8192];
     let mut truncated = false;
@@ -116,6 +195,7 @@ fn read_output(mut reader: impl Read, limit: usize, tail: bool) -> io::Result<(V
         if count == 0 {
             break;
         }
+        observe(&chunk[..count]);
         if tail {
             bytes.extend(&chunk[..count]);
             if bytes.len() > limit {
@@ -132,9 +212,18 @@ fn read_output(mut reader: impl Read, limit: usize, tail: bool) -> io::Result<(V
 }
 
 fn capture(
+    command: Command,
+    cancel: Arc<AtomicBool>,
+    deadline: Option<Duration>,
+) -> io::Result<ResultData> {
+    capture_live(command, cancel, deadline, None)
+}
+
+fn capture_live(
     mut command: Command,
     cancel: Arc<AtomicBool>,
     deadline: Option<Duration>,
+    progress: Option<Arc<Mutex<ProgressSnapshot>>>,
 ) -> io::Result<ResultData> {
     let started = Instant::now();
     let mut child = command
@@ -150,9 +239,21 @@ fn capture(
         .stderr
         .take()
         .ok_or_else(|| io::Error::other("Нет stderr worker."))?;
+    let out_progress = progress.clone();
     let out_thread = match thread::Builder::new()
         .name("lyra-stdout".into())
-        .spawn(move || read_output(stdout, OUTPUT_LIMIT, false))
+        .spawn(move || {
+            let mut preview_bytes = Vec::new();
+            read_output_observed(stdout, OUTPUT_LIMIT, false, |chunk| {
+                if let Some(state) = &out_progress {
+                    let keep = chunk.len().min(PREVIEW_LIMIT.saturating_sub(preview_bytes.len()));
+                    preview_bytes.extend_from_slice(&chunk[..keep]);
+                    if let Ok(mut snapshot) = state.lock() {
+                        snapshot.preview = String::from_utf8_lossy(&preview_bytes).into_owned();
+                    }
+                }
+            })
+        })
     {
         Ok(thread) => thread,
         Err(error) => {
@@ -163,7 +264,14 @@ fn capture(
     };
     let err_thread = match thread::Builder::new()
         .name("lyra-stderr".into())
-        .spawn(move || read_output(stderr, LOG_LIMIT, true))
+        .spawn(move || {
+            let mut parser = ProgressParser::default();
+            read_output_observed(stderr, LOG_LIMIT, true, |chunk| {
+                if let Some(state) = &progress {
+                    parser.feed(chunk, state);
+                }
+            })
+        })
     {
         Ok(thread) => thread,
         Err(error) => {
@@ -223,6 +331,22 @@ fn capture(
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn progress_parser_handles_split_lines_and_ignores_native_logs() {
+        let state = Arc::new(Mutex::new(ProgressSnapshot::default()));
+        let mut parser = ProgressParser::default();
+        parser.feed(b"native: LOAD\nLYRA_PROG", &state);
+        assert_eq!(state.lock().unwrap().stage, ProgressStage::Starting);
+        parser.feed(b"RESS:load\nLYRA_PROGRESS:context\n", &state);
+        assert_eq!(state.lock().unwrap().stage, ProgressStage::Context);
+        parser.feed(b"LYRA_PROGRESS:generate\nLYRA_PROGRESS:tokens=24\n", &state);
+        let value = state.lock().unwrap().clone();
+        assert_eq!(value.stage, ProgressStage::Generating);
+        assert_eq!(value.generated_tokens, 24);
+        parser.feed(b"LYRA_PROGRESS:tokens=invalid\n", &state);
+        assert_eq!(state.lock().unwrap().generated_tokens, 24);
+    }
+
     #[test]
     fn bounded_pipes_keep_json_prefix_and_log_tail() {
         let data = b"0123456789";
