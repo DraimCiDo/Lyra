@@ -38,6 +38,19 @@ pub enum Command {
     Apply(agent::ApplyArgs),
     /// Сгенерировать ответ локальной моделью (не исполняет сгенерированный код)
     Generate(inference::GenerateArgs),
+    /// Проверить маршрутизацию моделей без отправки данных провайдерам
+    Route {
+        #[arg(long)]
+        models: std::path::PathBuf,
+        #[arg(long = "allow", required = true)]
+        allowed_providers: Vec<String>,
+        #[arg(long)]
+        prompt: String,
+        #[arg(long, default_value_t = 256)]
+        max_output_tokens: u32,
+        #[arg(long)]
+        require_tools: bool,
+    },
     /// Просмотреть проверенный набор навыков ECC-совместимого формата JSON
     Skills {
         #[arg(long)]
@@ -60,6 +73,38 @@ pub fn run(cli: Cli, output: &mut impl Write) -> io::Result<()> {
         Command::Task(args) => agent::task(args, output),
         Command::Apply(args) => agent::apply(args, output),
         Command::Generate(args) => inference::generate(&args, output),
+        Command::Route {
+            models,
+            allowed_providers,
+            prompt,
+            max_output_tokens,
+            require_tools,
+        } => {
+            use std::io::Read;
+            let mut bytes = Vec::new();
+            std::fs::File::open(models)?
+                .take(64 * 1024 + 1)
+                .read_to_end(&mut bytes)?;
+            if bytes.len() > 64 * 1024 {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    "Model registry exceeds 64 KiB",
+                ));
+            }
+            let descriptors: Vec<model_gateway::ModelDescriptor> =
+                serde_json::from_slice(&bytes).map_err(io::Error::other)?;
+            let request = model_gateway::Request {
+                messages: vec![model_gateway::Message {
+                    role: model_gateway::Role::User,
+                    content: prompt,
+                }],
+                max_output_tokens,
+                require_tools,
+            };
+            let selected =
+                model_gateway::select_priority(&descriptors, &allowed_providers, &request)?;
+            writeln!(output, "{}/{}", selected.provider, selected.model)
+        }
         Command::Skills { manifest, id } => {
             let pack = skills::SkillPack::load(&manifest)?;
             if let Some(id) = id {
