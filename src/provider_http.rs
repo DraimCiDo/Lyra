@@ -396,6 +396,46 @@ mod tests {
     }
 
     #[test]
+    fn registry_accepts_single_and_array_configs() {
+        let one = serde_json::to_vec(&serde_json::json!({
+            "descriptor": {
+                "provider": "local",
+                "model": "test",
+                "capabilities": {
+                    "tool_calls": false,
+                    "vision": false,
+                    "prompt_cache": false,
+                    "max_context_tokens": 4096
+                }
+            },
+            "endpoint": "http://127.0.0.1:1234/v1/chat/completions",
+            "api_key_env": null
+        }))
+        .unwrap();
+        assert_eq!(parse_registry(&one).unwrap().len(), 1);
+        let array = format!("[{},{}]", String::from_utf8_lossy(&one), String::from_utf8_lossy(&one).replace("\"local\"", "\"backup\""));
+        assert_eq!(parse_registry(array.as_bytes()).unwrap().len(), 2);
+        let duplicate = format!("[{},{}]", String::from_utf8_lossy(&one), String::from_utf8_lossy(&one));
+        assert_eq!(
+            parse_registry(duplicate.as_bytes()).unwrap_err().kind(),
+            io::ErrorKind::InvalidData
+        );
+    }
+
+    #[test]
+    fn registry_rejects_invalid_and_oversized_inputs() {
+        for bytes in [
+            &b"[]"[..],
+            &b"null"[..],
+            &b"{not json}"[..],
+            &b"[{}]"[..],
+        ] {
+            assert!(parse_registry(bytes).is_err());
+        }
+        assert!(parse_registry(&vec![b' '; 64 * 1024 + 1]).is_err());
+    }
+
+    #[test]
     fn rejects_invalid_credential_env_name() {
         let mut cfg = config("https://example.com/v1/chat/completions");
         cfg.api_key_env = Some("BAD-NAME".into());
