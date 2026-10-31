@@ -155,7 +155,11 @@ fn show_local_progress(
                         ui.label(RichText::new(label).strong());
                     });
                     if matches!(stage, ProgressStage::Context | ProgressStage::Generating) {
-                        ui.label(RichText::new("✓ Модель загружена").small().color(colors.muted));
+                        ui.label(
+                            RichText::new("✓ Модель загружена")
+                                .small()
+                                .color(colors.muted),
+                        );
                     }
                     if stage == ProgressStage::Generating {
                         ui.label(
