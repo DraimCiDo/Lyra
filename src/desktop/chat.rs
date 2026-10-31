@@ -459,3 +459,23 @@ mod tests {
         assert_eq!(chat.messages.len(), MESSAGE_COUNT);
     }
 }
+
+#[cfg(test)]
+mod optimization_tests {
+    use super::*;
+    #[test]
+    fn safe_preserves_full_history_and_aggressive_keeps_recent() {
+        let mut chat = Chat::default();
+        for n in 0..10 {
+            chat.messages.push(Message { user: n % 2 == 0, text: format!("unique_turn_{n}") });
+        }
+        let safe = chat.request("new task", preferences::Optimization::Safe).unwrap();
+        let balanced = chat.request("new task", preferences::Optimization::Balanced).unwrap();
+        let aggressive = chat.request("new task", preferences::Optimization::Aggressive).unwrap();
+        assert!(safe.contains("unique_turn_0"));
+        assert!(balanced.contains("unique_turn_0"));
+        assert!(!aggressive.contains("unique_turn_0"));
+        assert!(aggressive.contains("unique_turn_9"));
+        assert!(aggressive.contains("new task"));
+    }
+}
