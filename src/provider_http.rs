@@ -286,7 +286,6 @@ mod tests {
         server.join().unwrap();
     }
 
-
     #[test]
     fn http_503_falls_back_to_explicitly_approved_provider() {
         use crate::model_gateway::Role;
