@@ -296,7 +296,10 @@ mod tests {
 
         fn serve_once(status: &str, body: &'static str) -> (String, std::thread::JoinHandle<()>) {
             let listener = TcpListener::bind("127.0.0.1:0").unwrap();
-            let endpoint = format!("http://{}/v1/chat/completions", listener.local_addr().unwrap());
+            let endpoint = format!(
+                "http://{}/v1/chat/completions",
+                listener.local_addr().unwrap()
+            );
             let status = status.to_owned();
             let thread = std::thread::spawn(move || {
                 let (mut stream, _) = listener.accept().unwrap();
