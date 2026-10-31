@@ -331,20 +331,30 @@ impl Desktop {
                 #[cfg(feature = "gateway-http")]
                 if self.prefs.cloud_task {
                     use std::io::Read;
-                    let registry = self.prefs.provider_registry.as_ref()
+                    let registry = self
+                        .prefs
+                        .provider_registry
+                        .as_ref()
                         .ok_or_else(|| io::Error::other("Укажите реестр HTTP-провайдеров."))?;
                     if self.prefs.cloud_provider.is_empty() || self.prefs.cloud_model.is_empty() {
-                        return Err(io::Error::other("Выберите облачную модель в настройках провайдеров."));
+                        return Err(io::Error::other(
+                            "Выберите облачную модель в настройках провайдеров.",
+                        ));
                     }
                     let mut bytes = Vec::new();
                     std::fs::File::open(registry)?
                         .take(64 * 1024 + 1)
                         .read_to_end(&mut bytes)?;
                     let configs = crate::provider_http::parse_registry(&bytes)?;
-                    let selected = configs.into_iter().find(|config| {
-                        config.descriptor.provider == self.prefs.cloud_provider
-                            && config.descriptor.model == self.prefs.cloud_model
-                    }).ok_or_else(|| io::Error::other("Облачная модель отсутствует в реестре."))?;
+                    let selected = configs
+                        .into_iter()
+                        .find(|config| {
+                            config.descriptor.provider == self.prefs.cloud_provider
+                                && config.descriptor.model == self.prefs.cloud_model
+                        })
+                        .ok_or_else(|| {
+                            io::Error::other("Облачная модель отсутствует в реестре.")
+                        })?;
                     crate::provider_http::OpenAiCompatibleBackend::new(selected)?;
                     args.extend([
                         "--provider-config".into(),
@@ -355,13 +365,19 @@ impl Desktop {
                         self.prefs.cloud_model.clone().into(),
                     ]);
                 } else {
-                    let model = self.prefs.model.as_ref()
+                    let model = self
+                        .prefs
+                        .model
+                        .as_ref()
                         .ok_or_else(|| io::Error::other("Выберите GGUF-модель."))?;
                     args.extend(["--model".into(), model.as_os_str().into()]);
                 }
                 #[cfg(not(feature = "gateway-http"))]
                 {
-                    let model = self.prefs.model.as_ref()
+                    let model = self
+                        .prefs
+                        .model
+                        .as_ref()
                         .ok_or_else(|| io::Error::other("Выберите GGUF-модель."))?;
                     args.extend(["--model".into(), model.as_os_str().into()]);
                 }
