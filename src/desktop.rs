@@ -369,7 +369,7 @@ impl Desktop {
                     };
                     crate::agent_runtime::skill_instructions(
                         Some(&pack),
-                        &[self.prefs.active_skill.clone()],
+                        std::slice::from_ref(&self.prefs.active_skill),
                     )?;
                     args.extend([
                         "--skills".into(),
