@@ -177,6 +177,7 @@ impl Drop for Job {
     }
 }
 
+#[cfg(test)]
 fn read_output(reader: impl Read, limit: usize, tail: bool) -> io::Result<(Vec<u8>, bool)> {
     read_output_observed(reader, limit, tail, |_| {})
 }
@@ -211,6 +212,7 @@ fn read_output_observed(
     Ok((bytes.into(), truncated))
 }
 
+#[cfg(test)]
 fn capture(
     command: Command,
     cancel: Arc<AtomicBool>,
