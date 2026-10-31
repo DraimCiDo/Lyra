@@ -262,7 +262,7 @@ impl Desktop {
                     && config.descriptor.model == self.prefs.cloud_model
                 ).ok_or_else(|| io::Error::other("Выбранная модель отсутствует в реестре."))?;
                 crate::provider_http::OpenAiCompatibleBackend::new(selected.clone())?;
-                let request = self.chat.cloud_request(&self.request_task, self.prefs.tokens)?;
+                let request = self.chat.cloud_request(self.task.trim(), self.prefs.tokens)?;
                 let request_path = temp.path().join("chat-request.json");
                 std::fs::write(&request_path, serde_json::to_vec(&request)?)?;
                 args.extend([
