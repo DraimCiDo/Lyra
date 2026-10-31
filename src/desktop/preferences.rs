@@ -18,6 +18,7 @@ pub struct Preferences {
     pub preview_updates: bool,
     pub repo: Option<PathBuf>,
     pub model: Option<PathBuf>,
+    pub provider_registry: Option<PathBuf>,
     pub documentation: Option<PathBuf>,
     pub files: String,
     pub subagents: bool,
@@ -38,6 +39,7 @@ impl Default for Preferences {
             preview_updates: env!("CARGO_PKG_VERSION").contains('-'),
             repo: None,
             model: None,
+            provider_registry: None,
             documentation: None,
             files: String::new(),
             subagents: false,
@@ -60,7 +62,7 @@ impl Preferences {
             && (1..=3600).contains(&self.timeout)
             && self.files.len() <= 32768
             && self.files.lines().filter(|l| !l.trim().is_empty()).count() <= 32
-            && [&self.repo, &self.model, &self.documentation]
+            && [&self.repo, &self.model, &self.documentation, &self.provider_registry]
                 .into_iter()
                 .all(|p| p.as_ref().is_none_or(|p| p.as_os_str().len() <= 4096))
     }
@@ -156,5 +158,6 @@ mod tests {
         let json = serde_json::to_value(p).unwrap();
         assert!(json.get("task").is_none());
         assert!(json.get("report").is_none());
+        assert!(json.get("api_key").is_none());
     }
 }
