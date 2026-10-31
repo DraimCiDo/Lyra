@@ -265,7 +265,9 @@ impl Desktop {
                     .model
                     .as_ref()
                     .ok_or_else(|| io::Error::other("Выберите локальную GGUF-модель."))?;
-                let request = self.chat.model_request(self.task.trim(), self.prefs.tokens)?;
+                let request = self
+                    .chat
+                    .model_request(self.task.trim(), self.prefs.tokens)?;
                 let request_path = temp.path().join("local-chat-request.json");
                 std::fs::write(
                     &request_path,
