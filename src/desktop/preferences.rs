@@ -19,6 +19,9 @@ pub struct Preferences {
     pub repo: Option<PathBuf>,
     pub model: Option<PathBuf>,
     pub provider_registry: Option<PathBuf>,
+    pub cloud_chat: bool,
+    pub cloud_provider: String,
+    pub cloud_model: String,
     pub documentation: Option<PathBuf>,
     pub files: String,
     pub subagents: bool,
@@ -40,6 +43,9 @@ impl Default for Preferences {
             repo: None,
             model: None,
             provider_registry: None,
+            cloud_chat: false,
+            cloud_provider: String::new(),
+            cloud_model: String::new(),
             documentation: None,
             files: String::new(),
             subagents: false,
@@ -60,6 +66,8 @@ impl Preferences {
             && (!self.subagents || self.calls >= 3)
             && (1..=256).contains(&self.threads)
             && (1..=3600).contains(&self.timeout)
+            && self.cloud_provider.len() <= 128
+            && self.cloud_model.len() <= 256
             && self.files.len() <= 32768
             && self.files.lines().filter(|l| !l.trim().is_empty()).count() <= 32
             && [
