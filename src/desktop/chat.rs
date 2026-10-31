@@ -419,6 +419,21 @@ impl Desktop {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[cfg(feature = "gateway-http")]
+    #[test]
+    fn cloud_request_preserves_roles_and_latest_user_message() {
+        let mut chat = Chat::default();
+        chat.sent("First".into());
+        chat.finish("Answer".into());
+        let request = chat.cloud_request("Follow-up", 256).unwrap();
+        assert_eq!(request.messages.len(), 3);
+        assert_eq!(request.messages[0].role, crate::model_gateway::Role::User);
+        assert_eq!(request.messages[1].role, crate::model_gateway::Role::Assistant);
+        assert_eq!(request.messages[2].content, "Follow-up");
+        assert_eq!(request.max_output_tokens, 256);
+        assert!(chat.cloud_request(" ", 256).is_err());
+    }
+
     #[test]
     fn followup_keeps_the_original_request_and_questions_without_silent_truncation() {
         let mut chat = Chat::default();
