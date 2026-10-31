@@ -183,7 +183,11 @@ pub fn run(cli: Cli, output: &mut impl Write) -> io::Result<()> {
             writeln!(output, "{}/{}", selected.provider, selected.model)
         }
         Command::Skills { manifest, id } => {
-            let pack = skills::SkillPack::load(&manifest)?;
+            let pack = if manifest.file_name().is_some_and(|name| name == "SKILL.md") {
+                skills::SkillPack::load_markdown(&manifest)?
+            } else {
+                skills::SkillPack::load(&manifest)?
+            };
             if let Some(id) = id {
                 let skill = pack
                     .find(&id)
