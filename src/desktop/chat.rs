@@ -497,9 +497,8 @@ impl Desktop {
                 let available = ui.available_width();
                 let column_width = conversation_width(available);
                 ui.horizontal(|ui| {
-                    let offset = ((available - column_width) / 2.0
-                        - ui.spacing().item_spacing.x)
-                        .max(0.0);
+                    let offset =
+                        ((available - column_width) / 2.0 - ui.spacing().item_spacing.x).max(0.0);
                     if offset > 0.0 {
                         ui.add_space(offset);
                     }
