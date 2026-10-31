@@ -1,0 +1,22 @@
+[
+  {
+    "provider": "local",
+    "model": "example-gguf",
+    "capabilities": {
+      "tool_calls": false,
+      "vision": false,
+      "prompt_cache": false,
+      "max_context_tokens": 4096
+    }
+  },
+  {
+    "provider": "cloud",
+    "model": "example-cloud-model",
+    "capabilities": {
+      "tool_calls": true,
+      "vision": false,
+      "prompt_cache": false,
+      "max_context_tokens": 8192
+    }
+  }
+]
