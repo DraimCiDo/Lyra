@@ -5,9 +5,9 @@ use crate::model_gateway::{
 };
 use reqwest::blocking::Client;
 use reqwest::header::{AUTHORIZATION, CONTENT_TYPE};
-use std::net::IpAddr;
 use serde::{Deserialize, Serialize};
 use std::io;
+use std::net::IpAddr;
 use std::time::Duration;
 
 #[derive(Clone, Debug, Deserialize)]
@@ -28,9 +28,9 @@ pub struct OpenAiCompatibleBackend {
 impl OpenAiCompatibleBackend {
     pub fn new(config: ProviderConfig) -> io::Result<Self> {
         let url = reqwest::Url::parse(&config.endpoint).map_err(io::Error::other)?;
-        let loopback = url
-            .host_str()
-            .is_some_and(|host| host == "localhost" || host.parse::<IpAddr>().is_ok_and(|ip| ip.is_loopback()));
+        let loopback = url.host_str().is_some_and(|host| {
+            host == "localhost" || host.parse::<IpAddr>().is_ok_and(|ip| ip.is_loopback())
+        });
         if url.scheme() != "https" && !(url.scheme() == "http" && loopback) {
             return Err(io::Error::new(
                 io::ErrorKind::PermissionDenied,
@@ -242,7 +242,6 @@ mod tests {
         );
     }
 
-
     #[test]
     fn localhost_chat_parses_text_and_usage() {
         use std::io::{Read, Write};
@@ -267,10 +266,9 @@ mod tests {
             )
             .unwrap();
         });
-        let mut backend = OpenAiCompatibleBackend::new(config(&format!(
-            "http://{address}/v1/chat/completions"
-        )))
-        .unwrap();
+        let mut backend =
+            OpenAiCompatibleBackend::new(config(&format!("http://{address}/v1/chat/completions")))
+                .unwrap();
         let response = backend
             .complete(&Request {
                 messages: vec![Message {
