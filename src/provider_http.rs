@@ -146,7 +146,7 @@ impl ModelBackend for OpenAiCompatibleBackend {
             max_tokens: request.max_output_tokens,
             stream: false,
         };
-        let response = http.json(&body).send().map_err(map_transport_error)?;
+        let mut response = http.json(&body).send().map_err(map_transport_error)?;
         let status = response.status();
         if !status.is_success() {
             let kind = if status.as_u16() == 429 || status.is_server_error() {
@@ -162,7 +162,11 @@ impl ModelBackend for OpenAiCompatibleBackend {
             ));
         }
         // Cap response size before JSON parsing to avoid unbounded allocation.
-        let bytes = response.bytes().map_err(map_transport_error)?;
+        use std::io::Read;
+        let mut bytes = Vec::new();
+        response
+            .take(8 * 1024 * 1024 + 1)
+            .read_to_end(&mut bytes)?;
         if bytes.len() > 8 * 1024 * 1024 {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidData,
@@ -227,9 +231,18 @@ mod tests {
 
     #[test]
     fn rejects_insecure_remote_endpoints_and_embedded_credentials() {
-        assert!(OpenAiCompatibleBackend::new(config("http://example.com/v1/chat/completions")).is_err());
-        assert!(OpenAiCompatibleBackend::new(config("https://u:p@example.com/v1/chat/completions")).is_err());
-        assert!(OpenAiCompatibleBackend::new(config("http://127.0.0.1:1234/v1/chat/completions")).is_ok());
+        assert!(
+            OpenAiCompatibleBackend::new(config("http://example.com/v1/chat/completions"))
+                .is_err()
+        );
+        assert!(
+            OpenAiCompatibleBackend::new(config("https://u:p@example.com/v1/chat/completions"))
+                .is_err()
+        );
+        assert!(
+            OpenAiCompatibleBackend::new(config("http://127.0.0.1:1234/v1/chat/completions"))
+                .is_ok()
+        );
     }
 
     #[test]
