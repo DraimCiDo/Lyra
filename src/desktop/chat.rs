@@ -102,6 +102,79 @@ impl Chat {
     }
 }
 
+/// Keep conversation content readable on wide displays instead of stretching every line.
+fn conversation_width(available: f32) -> f32 {
+    available.max(1.0).min(820.0)
+}
+
+/// User bubbles grow with the message but never occupy the entire conversation width.
+/// UTF-8 character counts are only a visual estimate; egui wraps the actual text.
+fn user_bubble_width(text: &str, available: f32) -> f32 {
+    let cap = (available * 0.76).min(560.0).max(1.0);
+    let longest_line = text
+        .lines()
+        .map(|line| line.chars().count())
+        .max()
+        .unwrap_or(0)
+        .min(256);
+    (longest_line as f32 * 7.8 + 32.0)
+        .max(100.0_f32.min(cap))
+        .min(cap)
+}
+
+fn show_conversation_message(
+    ui: &mut egui::Ui,
+    message: &Message,
+    colors: theme::Colors,
+    column_width: f32,
+) {
+    if message.user {
+        let bubble_width = user_bubble_width(&message.text, column_width);
+        ui.horizontal(|ui| {
+            ui.add_space((column_width - bubble_width).max(0.0));
+            ui.allocate_ui_with_layout(
+                egui::vec2(bubble_width, 0.0),
+                egui::Layout::top_down(egui::Align::Min),
+                |ui| {
+                    ui.set_min_width(bubble_width);
+                    egui::Frame::new()
+                        .fill(colors.input)
+                        .corner_radius(16)
+                        .inner_margin(egui::Margin::symmetric(14, 10))
+                        .show(ui, |ui| {
+                            ui.set_min_width((bubble_width - 28.0).max(1.0));
+                            ui.set_max_width((bubble_width - 28.0).max(1.0));
+                            ui.add(
+                                egui::Label::new(
+                                    RichText::new(&message.text).color(colors.text),
+                                )
+                                .selectable(true)
+                                .wrap(),
+                            );
+                        });
+                },
+            );
+        });
+    } else {
+        ui.horizontal(|ui| {
+            ui.add(
+                Icon::Sparkles
+                    .image(colors.accent)
+                    .fit_to_exact_size(egui::vec2(19.0, 19.0)),
+            );
+            ui.vertical(|ui| {
+                ui.set_width((column_width - 36.0).max(1.0));
+                ui.label(RichText::new("Lyra").strong().color(colors.accent));
+                ui.add(
+                    egui::Label::new(RichText::new(&message.text).color(colors.text))
+                        .selectable(true)
+                        .wrap(),
+                );
+            });
+        });
+    }
+}
+
 impl Desktop {
     pub(super) fn reset_chat(&mut self) {
         self.chat = Chat::default();
@@ -331,63 +404,66 @@ impl Desktop {
             .auto_shrink([false, false])
             .stick_to_bottom(true)
             .show(ui, |ui| {
-                ui.set_min_width(ui.available_width());
-                if self.chat.messages.is_empty() {
-                    ui.add_space((height * 0.18).min(42.0));
-                    ui.vertical_centered(|ui| {
-                        ui.add(
-                            Icon::Sparkles
-                                .image(c.accent)
-                                .fit_to_exact_size(egui::vec2(28.0, 28.0)),
-                        );
-                        ui.label(RichText::new(l.text("Что сделаем?")).size(24.0).strong());
-                    });
-                }
-                for message in &self.chat.messages {
-                    ui.add_space(6.0);
-                    let label = if message.user { l.text("Вы") } else { "Lyra" };
-                    egui::Frame::new()
-                        .fill(if message.user { c.input } else { c.card })
-                        .corner_radius(10)
-                        .inner_margin(10)
-                        .show(ui, |ui| {
-                            ui.set_min_width((ui.available_width() - 2.0).max(0.0));
-                            ui.label(RichText::new(label).small().strong().color(c.accent));
-                            ui.add(egui::Label::new(&message.text).selectable(true).wrap());
-                        });
-                }
-                if self.chat.pending {
-                    ui.add_space(8.0);
-                    ui.label(RichText::new(l.text(&self.message)).color(c.accent));
-                }
-                if self.draft.plan.is_some() {
-                    self.project_result(ui);
-                }
-                if self.report.is_some() {
-                    ui.add_space(6.0);
-                    egui::CollapsingHeader::new(l.text("Файлы и предложения"))
-                        .default_open(false)
-                        .show(ui, |ui| self.changes(ui));
-                }
-                if !self.log.is_empty()
-                    || self
-                        .report
-                        .as_ref()
-                        .is_some_and(|report| !report.events.is_empty())
-                {
-                    egui::CollapsingHeader::new(l.text("Журнал")).show(ui, |ui| {
-                        ui.add(Icon::Log.image(c.muted));
-                        if let Some(report) = &self.report {
-                            for event in &report.events {
-                                ui.label(format!(
-                                    "{} · {} · {} · {}",
-                                    event.call, event.role, event.tool, event.outcome
-                                ));
-                            }
+                let available = ui.available_width();
+                let column_width = conversation_width(available);
+                ui.horizontal(|ui| {
+                    ui.add_space(((available - column_width) / 2.0).max(0.0));
+                    ui.vertical(|ui| {
+                        ui.set_min_width(column_width);
+                        if self.chat.messages.is_empty() {
+                            ui.add_space((height * 0.18).min(42.0));
+                            ui.vertical_centered(|ui| {
+                                ui.add(
+                                    Icon::Sparkles
+                                        .image(c.accent)
+                                        .fit_to_exact_size(egui::vec2(28.0, 28.0)),
+                                );
+                                ui.label(
+                                    RichText::new(l.text("Что сделаем?")).size(24.0).strong(),
+                                );
+                            });
                         }
-                        selectable_code(ui, &self.log, c.muted);
+                        for message in &self.chat.messages {
+                            ui.add_space(14.0);
+                            show_conversation_message(ui, message, c, column_width);
+                        }
+                        if self.chat.pending {
+                            ui.add_space(14.0);
+                            ui.horizontal(|ui| {
+                                ui.add(Icon::Sparkles.image(c.accent));
+                                ui.label(RichText::new(l.text(&self.message)).color(c.muted));
+                            });
+                        }
+                        if self.draft.plan.is_some() {
+                            self.project_result(ui);
+                        }
+                        if self.report.is_some() {
+                            ui.add_space(8.0);
+                            egui::CollapsingHeader::new(l.text("Файлы и предложения"))
+                                .default_open(false)
+                                .show(ui, |ui| self.changes(ui));
+                        }
+                        if !self.log.is_empty()
+                            || self
+                                .report
+                                .as_ref()
+                                .is_some_and(|report| !report.events.is_empty())
+                        {
+                            egui::CollapsingHeader::new(l.text("Журнал")).show(ui, |ui| {
+                                ui.add(Icon::Log.image(c.muted));
+                                if let Some(report) = &self.report {
+                                    for event in &report.events {
+                                        ui.label(format!(
+                                            "{} · {} · {} · {}",
+                                            event.call, event.role, event.tool, event.outcome
+                                        ));
+                                    }
+                                }
+                                selectable_code(ui, &self.log, c.muted);
+                            });
+                        }
                     });
-                }
+                });
             });
         ui.add_space(5.0);
         card(c).inner_margin(9).show(ui, |ui| {
@@ -491,6 +567,16 @@ impl Desktop {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn chat_layout_caps_long_messages_and_keeps_short_bubbles_compact() {
+        assert_eq!(conversation_width(1600.0), 820.0);
+        assert_eq!(conversation_width(520.0), 520.0);
+        assert!(user_bubble_width("Привет", 820.0) < 180.0);
+        assert!(user_bubble_width(&"очень длинный текст ".repeat(100), 820.0) <= 560.0);
+        assert!(user_bubble_width("a".repeat(400).as_str(), 400.0) <= 304.0);
+        assert!(user_bubble_width("Привет\\nмир", 400.0) < 200.0);
+    }
+
     #[test]
     fn model_request_preserves_roles_and_latest_user_message() {
         let mut chat = Chat::default();
