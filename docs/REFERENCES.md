@@ -90,3 +90,15 @@ Tree-sitter, автоматический граф, dashboard и pipeline AI-п�
   лицензии MIT/Apache-2.0 сохранены в `third_party/llama-cpp-rs`.
 - [ggml-org tinyllamas](https://huggingface.co/ggml-org/models/tree/main/tinyllamas):
   небольшой тестовый GGUF для CPU smoke, не модель кодинга и не часть поставки.
+
+## Новые архитектурные ориентиры (решение 2026-10-31)
+
+- [OmniRoute](https://github.com/cheaper-inference/OmniRoute): gateway, адаптеры
+  моделей, маршрутизация, квоты и fallback. Реализация и лицензии проверяются
+  отдельно перед переносом кода.
+- [Everything Claude Code (ECC)](https://github.com/affaan-m/ECC): skills,
+  rules, hooks, память и агентные workflow. Совместимость форматов и лицензии
+  проверяются перед интеграцией.
+
+Предыдущее решение «только локальная модель» является историческим: с 2026-10-31
+допускаются внешние API при явном выборе пользователя и контроле передачи данных.
