@@ -16,6 +16,23 @@ struct Message {
     text: String,
 }
 impl Chat {
+    #[cfg(feature = "gateway-http")]
+    fn cloud_request(&self, latest: &str, tokens: u32) -> io::Result<crate::model_gateway::Request> {
+        if latest.trim().is_empty() {
+            return Err(io::Error::new(io::ErrorKind::InvalidInput, "Пустой запрос."));
+        }
+        let mut messages: Vec<crate::model_gateway::Message> = self.messages.iter()
+            .map(|message| crate::model_gateway::Message {
+                role: if message.user { crate::model_gateway::Role::User } else { crate::model_gateway::Role::Assistant },
+                content: message.text.clone(),
+            }).collect();
+        messages.push(crate::model_gateway::Message {
+            role: crate::model_gateway::Role::User,
+            content: latest.to_owned(),
+        });
+        Ok(crate::model_gateway::Request { messages, max_output_tokens: tokens, require_tools: false })
+    }
+
     fn request(&self, text: &str) -> io::Result<String> {
         if text.trim().is_empty() || self.messages.len() + 2 > MESSAGE_COUNT {
             return Err(io::Error::other(
@@ -88,7 +105,12 @@ impl Desktop {
         let text = self.task.trim().to_owned();
         let request = self.chat.request(&text)?;
         self.request_task = request.clone();
-        let operation = if self.prefs.repo.is_some() {
+        let operation = if cfg!(feature = "gateway-http") && self.prefs.cloud_chat {
+            #[cfg(feature = "gateway-http")]
+            { Operation::CloudChat }
+            #[cfg(not(feature = "gateway-http"))]
+            { Operation::Task }
+        } else if self.prefs.repo.is_some() {
             Operation::Task
         } else {
             self.draft.task = request;
@@ -244,6 +266,16 @@ impl Desktop {
                     self.reset_chat();
                 }
             });
+        });
+        #[cfg(feature = "gateway-http")]
+        ui.horizontal(|ui| {
+            ui.checkbox(&mut self.prefs.cloud_chat, "HTTP Gateway");
+            if self.prefs.cloud_chat {
+                ui.label(format!("{} / {}", self.prefs.cloud_provider, self.prefs.cloud_model));
+                ui.label(RichText::new("Запросы отправляются выбранному провайдеру").small().weak());
+            } else {
+                ui.label(RichText::new("Локальный GGUF").small().weak());
+            }
         });
         ui.add_space(5.0);
         let reserve = if self.error { 132.0 } else { 110.0 };
