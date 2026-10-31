@@ -593,7 +593,7 @@ mod skill_adapter_tests {
                 assert!(request_text.contains("POST /v1/chat/completions"));
                 write!(
                     stream,
-                    "HTTP/1.1 {status}\\r\\nContent-Type: application/json\\r\\nContent-Length: {}\\r\\nConnection: close\\r\\n\\r\\n{body}",
+                    "HTTP/1.1 {status}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
                     body.len()
                 )
                 .unwrap();
