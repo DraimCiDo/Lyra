@@ -153,9 +153,17 @@ impl SettingsPage {
     }
 }
 
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum ChatMode {
+    Chat,
+    Task,
+    Project,
+}
+
 #[derive(Clone, Copy, PartialEq)]
 enum Operation {
     Task,
+    LocalChat,
     #[cfg(feature = "gateway-http")]
     CloudChat,
     Apply(usize),
@@ -168,6 +176,7 @@ enum Operation {
 
 struct Desktop {
     chat: chat::Chat,
+    chat_mode: ChatMode,
     draft: projects::ProjectDraft,
     request_task: String,
     knowledge_ui: projects::KnowledgeUi,
@@ -203,6 +212,7 @@ impl Default for Desktop {
     fn default() -> Self {
         Self {
             chat: chat::Chat::default(),
+            chat_mode: ChatMode::Chat,
             draft: projects::ProjectDraft::default(),
             request_task: String::new(),
             knowledge_ui: projects::KnowledgeUi::default(),
@@ -249,6 +259,59 @@ impl Desktop {
         let temp = tempfile::Builder::new().prefix("lyra-desktop-").tempdir()?;
         let mut args: Vec<OsString> = Vec::new();
         let deadline = match operation {
+            Operation::LocalChat => {
+                let model = self
+                    .prefs
+                    .model
+                    .as_ref()
+                    .ok_or_else(|| io::Error::other("Выберите локальную GGUF-модель."))?;
+                let request = self.chat.model_request(self.task.trim(), self.prefs.tokens)?;
+                let request_path = temp.path().join("local-chat-request.json");
+                std::fs::write(
+                    &request_path,
+                    serde_json::to_vec(&request).map_err(io::Error::other)?,
+                )?;
+                args.extend([
+                    "local-chat".into(),
+                    "--request-file".into(),
+                    request_path.into_os_string(),
+                    "--model".into(),
+                    model.as_os_str().into(),
+                    "--prompt".into(),
+                    "chat".into(),
+                ]);
+                for (flag, value) in [
+                    ("--context", self.prefs.context as u64),
+                    ("--max-tokens", self.prefs.tokens as u64),
+                    ("--threads", self.prefs.threads as u64),
+                    ("--timeout-secs", self.prefs.timeout),
+                ] {
+                    args.extend([flag.into(), value.to_string().into()]);
+                }
+                if !self.prefs.active_skill.is_empty() {
+                    let manifest = self
+                        .prefs
+                        .skill_manifest
+                        .as_ref()
+                        .ok_or_else(|| io::Error::other("Укажите манифест ECC Skills."))?;
+                    let pack = if manifest.file_name().is_some_and(|name| name == "SKILL.md") {
+                        crate::skills::SkillPack::load_markdown(manifest)?
+                    } else {
+                        crate::skills::SkillPack::load(manifest)?
+                    };
+                    crate::agent_runtime::skill_instructions(
+                        Some(&pack),
+                        std::slice::from_ref(&self.prefs.active_skill),
+                    )?;
+                    args.extend([
+                        "--skills".into(),
+                        manifest.as_os_str().into(),
+                        "--skill".into(),
+                        self.prefs.active_skill.clone().into(),
+                    ]);
+                }
+                Some(Duration::from_secs(self.prefs.timeout + 5))
+            }
             #[cfg(feature = "gateway-http")]
             Operation::CloudChat => {
                 use std::io::Read;
@@ -272,7 +335,7 @@ impl Desktop {
                 crate::provider_http::OpenAiCompatibleBackend::new(selected.clone())?;
                 let request = self
                     .chat
-                    .cloud_request(self.task.trim(), self.prefs.tokens)?;
+                    .model_request(self.task.trim(), self.prefs.tokens)?;
                 let request_path = temp.path().join("chat-request.json");
                 std::fs::write(
                     &request_path,
@@ -475,6 +538,7 @@ impl Desktop {
         self.error = false;
         self.message = match operation {
             Operation::Task => "Модель работает…",
+            Operation::LocalChat => "Локальная модель отвечает…",
             #[cfg(feature = "gateway-http")]
             Operation::CloudChat => "HTTP-провайдер отвечает…",
             Operation::Apply(_) => "Применение выбранной правки…",
@@ -517,6 +581,20 @@ impl Desktop {
         }
         let seconds = result.elapsed.as_secs_f32();
         match self.operation {
+            Operation::LocalChat => {
+                if result.code == Some(0) {
+                    match String::from_utf8(result.stdout) {
+                        Ok(text) if !text.trim().is_empty() => {
+                            self.message = text.trim().to_owned();
+                            self.error = false;
+                        }
+                        Ok(_) => self.fail("Локальная GGUF-модель вернула пустой ответ."),
+                        Err(_) => self.fail("Некорректная кодировка ответа локальной модели."),
+                    }
+                } else {
+                    self.fail("Локальная модель завершилась с ошибкой. Подробности — в журнале.");
+                }
+            }
             #[cfg(feature = "gateway-http")]
             Operation::CloudChat => {
                 if result.code == Some(0) {
