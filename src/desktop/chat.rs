@@ -400,7 +400,9 @@ mod tests {
         let mut chat = Chat::default();
         chat.sent("Создай плагин Paper".into());
         chat.finish("Какая версия Minecraft?".into());
-        let request = chat.request("1.21.11", preferences::Optimization::Balanced).unwrap();
+        let request = chat
+            .request("1.21.11", preferences::Optimization::Balanced)
+            .unwrap();
         let data: serde_json::Value = serde_json::from_str(&request).unwrap();
         assert_eq!(data["conversation"][0]["content"], "Создай плагин Paper");
         assert_eq!(
@@ -408,7 +410,9 @@ mod tests {
             "Какая версия Minecraft?"
         );
         assert_eq!(data["latest_user_request"], "1.21.11");
-        assert!(chat.request(&"я".repeat(REQUEST_BYTES), preferences::Optimization::Balanced).is_err());
+        assert!(chat
+            .request(&"я".repeat(REQUEST_BYTES), preferences::Optimization::Balanced)
+            .is_err());
         assert_eq!(chat.messages.len(), 2);
     }
     #[test]
