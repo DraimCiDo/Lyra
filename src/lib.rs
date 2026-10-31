@@ -109,7 +109,7 @@ pub fn run(cli: Cli, output: &mut impl Write) -> io::Result<()> {
                 ));
             }
             let configs: Vec<provider_http::ProviderConfig> =
-                if bytes.first() == Some(&b'[') {
+                if bytes.iter().copied().find(|byte| !byte.is_ascii_whitespace()) == Some(b'[') {
                     serde_json::from_slice(&bytes).map_err(io::Error::other)?
                 } else {
                     vec![serde_json::from_slice(&bytes).map_err(io::Error::other)?]
