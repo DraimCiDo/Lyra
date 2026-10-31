@@ -44,7 +44,6 @@ impl SkillPack {
         Ok(pack)
     }
 
-
     /// Import one Agent Skills / ECC SKILL.md as declarative instructions.
     /// No scripts, shell commands, or hooks are executed during import.
     pub fn load_markdown(path: &Path) -> io::Result<Self> {
@@ -61,23 +60,16 @@ impl SkillPack {
         }
         let source = std::str::from_utf8(&bytes)
             .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))?;
-        let mut lines = source.lines();
-        if lines.next() != Some("---") {
-            return Err(io::Error::new(
-                io::ErrorKind::InvalidData,
-                "SKILL.md must start with YAML frontmatter",
-            ));
-        }
+        let normalized = source.replace("\r\n", "\n");
+        let rest = normalized.strip_prefix("---\n").ok_or_else(|| {
+            io::Error::new(io::ErrorKind::InvalidData, "SKILL.md must start with YAML frontmatter")
+        })?;
+        let (frontmatter, instructions) = rest.split_once("\n---\n").ok_or_else(|| {
+            io::Error::new(io::ErrorKind::InvalidData, "Unterminated SKILL.md frontmatter")
+        })?;
         let mut id = None;
         let mut description = None;
-        let mut closed = false;
-        let mut offset = 4;
-        for line in lines {
-            offset += line.len() + 1;
-            if line == "---" {
-                closed = true;
-                break;
-            }
+        for line in frontmatter.lines() {
             if let Some((key, value)) = line.split_once(':') {
                 let value = value.trim().trim_matches('"').trim_matches('\'');
                 match key.trim() {
@@ -87,15 +79,6 @@ impl SkillPack {
                 }
             }
         }
-        if !closed {
-            return Err(io::Error::new(
-                io::ErrorKind::InvalidData,
-                "Unterminated SKILL.md frontmatter",
-            ));
-        }
-        let instructions = source.get(offset..).ok_or_else(|| {
-            io::Error::new(io::ErrorKind::InvalidData, "Invalid SKILL.md body")
-        })?;
         let pack = Self {
             schema_version: 1,
             skills: vec![Skill {
@@ -184,6 +167,19 @@ mod tests {
         assert_eq!(pack.find("rust-review").unwrap().instructions, "# Steps\nCheck tests.");
         std::fs::write(&path, "---\nname: ../bad\ndescription: Unsafe\n---\nhello").unwrap();
         assert!(SkillPack::load_markdown(&path).is_err());
+    }
+
+    #[test]
+    fn imports_crlf_skill_without_losing_body() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("SKILL.md");
+        std::fs::write(
+            &path,
+            "---\r\nname: rust-review\r\ndescription: Review Rust\r\n---\r\n# Steps\r\nCheck tests.",
+        )
+        .unwrap();
+        let pack = SkillPack::load_markdown(&path).unwrap();
+        assert_eq!(pack.skills[0].instructions, "# Steps\nCheck tests.");
     }
 
     #[test]
