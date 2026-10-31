@@ -41,6 +41,13 @@ pub enum Command {
     Apply(agent::ApplyArgs),
     /// Сгенерировать ответ локальной моделью (не исполняет сгенерированный код)
     Generate(inference::GenerateArgs),
+    /// Локальный диалог GGUF с сохранением истории ролей, без задач и файлов проекта
+    LocalChat {
+        #[arg(long)]
+        request_file: std::path::PathBuf,
+        #[command(flatten)]
+        generate: inference::GenerateArgs,
+    },
     /// Выполнить Chat Completions через явно разрешённый HTTP-провайдер
     #[cfg(feature = "gateway-http")]
     Chat {
@@ -132,6 +139,42 @@ pub fn run(cli: Cli, output: &mut impl Write) -> io::Result<()> {
                 )?;
                 write!(output, "{}", response.text)
             }
+        }
+        Command::LocalChat {
+            request_file,
+            generate,
+        } => {
+            use std::io::Read;
+            let mut bytes = Vec::new();
+            std::fs::File::open(request_file)?
+                .take(256 * 1024 + 1)
+                .read_to_end(&mut bytes)?;
+            if bytes.len() > 256 * 1024 {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    "Local chat request exceeds 256 KiB",
+                ));
+            }
+            let request: model_gateway::Request = serde_json::from_slice(&bytes)
+                .map_err(|_| io::Error::new(io::ErrorKind::InvalidData, "Invalid local chat request"))?;
+            let pack = generate
+                .skills
+                .as_ref()
+                .map(|path| {
+                    if path.file_name().is_some_and(|name| name == "SKILL.md") {
+                        skills::SkillPack::load_markdown(path)
+                    } else {
+                        skills::SkillPack::load(path)
+                    }
+                })
+                .transpose()?;
+            let response = agent_runtime::complete_gguf(
+                &generate,
+                &request,
+                pack.as_ref(),
+                &generate.selected_skills,
+            )?;
+            write!(output, "{}", response.text)
         }
         #[cfg(feature = "gateway-http")]
         Command::Chat {
