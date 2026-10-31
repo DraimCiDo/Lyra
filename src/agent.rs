@@ -64,6 +64,12 @@ pub struct TaskArgs {
     /// Локальный document pack; inference не выполняет сетевые запросы
     #[arg(long)]
     pub docs: Option<PathBuf>,
+    /// ECC skill pack (JSON or SKILL.md)
+    #[arg(long)]
+    pub skills: Option<PathBuf>,
+    /// Explicit ECC skills for all task roles
+    #[arg(long = "skill")]
+    pub selected_skills: Vec<String>,
     /// Два read-only подагента: исследователь до кодера, ревьюер после
     #[arg(long)]
     pub subagents: bool,
@@ -482,6 +488,22 @@ fn limited_file(path: &std::path::Path, limit: usize) -> io::Result<String> {
     Ok(text)
 }
 
+struct SkilledSession<'a, 'b> {
+    session: &'a mut Session<'b>,
+    guidance: &'a str,
+}
+
+impl Model for SkilledSession<'_, '_> {
+    fn respond(&mut self, prompt: &str) -> io::Result<String> {
+        if self.guidance.is_empty() {
+            return self.session.respond(prompt);
+        }
+        let mut envelope: serde_json::Value = serde_json::from_str(prompt).map_err(io::Error::other)?;
+        envelope["ecc_skill_guidance"] = serde_json::Value::String(self.guidance.to_owned());
+        self.session.respond(&envelope.to_string())
+    }
+}
+
 pub fn task(args: TaskArgs, output: &mut impl Write) -> io::Result<()> {
     let task = limited_file(&args.task_file, 16384)?;
     if task.trim().is_empty() || (args.subagents && args.max_calls < 3) {
@@ -494,9 +516,19 @@ pub fn task(args: TaskArgs, output: &mut impl Write) -> io::Result<()> {
         Some(path) => crate::knowledge::Pack::load(path)?,
         None => crate::knowledge::Pack::empty(),
     };
+    let skill_pack = args.skills.as_ref().map(|path| {
+        if path.file_name().is_some_and(|name| name == "SKILL.md") {
+            crate::skills::SkillPack::load_markdown(path)
+        } else {
+            crate::skills::SkillPack::load(path)
+        }
+    }).transpose()?;
+    let skill_guidance = crate::agent_runtime::skill_instructions(skill_pack.as_ref(), &args.selected_skills)?;
     let config = GenerateArgs {
         model: args.model,
         prompt: "task session".into(),
+        skills: None,
+        selected_skills: Vec::new(),
         context: args.context,
         max_tokens: args.max_tokens,
         threads: args.threads,
@@ -506,8 +538,9 @@ pub fn task(args: TaskArgs, output: &mut impl Write) -> io::Result<()> {
     };
     inference::with_session(&config, |session| {
         let mut session = *session;
+        let mut model = SkilledSession { session: &mut session, guidance: &skill_guidance };
         let report = execute_with_docs(
-            &mut session,
+            &mut model,
             &mut workspace,
             &task,
             args.subagents,
