@@ -4,6 +4,7 @@ pub mod desktop;
 pub mod doctor;
 pub mod inference;
 pub mod knowledge;
+pub mod model_gateway;
 pub mod project;
 pub mod workspace;
 
