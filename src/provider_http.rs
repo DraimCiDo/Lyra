@@ -27,9 +27,9 @@ pub struct OpenAiCompatibleBackend {
 impl OpenAiCompatibleBackend {
     pub fn new(config: ProviderConfig) -> io::Result<Self> {
         let url = reqwest::Url::parse(&config.endpoint).map_err(io::Error::other)?;
-        let loopback = url.host_str().is_some_and(|host| {
-            host == "localhost" || host == "127.0.0.1" || host == "[::1]"
-        });
+        let loopback = url
+            .host_str()
+            .is_some_and(|host| host == "localhost" || host == "127.0.0.1" || host == "[::1]");
         if url.scheme() != "https" && !(url.scheme() == "http" && loopback) {
             return Err(io::Error::new(
                 io::ErrorKind::PermissionDenied,
@@ -42,8 +42,7 @@ impl OpenAiCompatibleBackend {
                 "Credentials and fragments in endpoint URLs are forbidden",
             ));
         }
-        if config.descriptor.provider.trim().is_empty()
-            || config.descriptor.model.trim().is_empty()
+        if config.descriptor.provider.trim().is_empty() || config.descriptor.model.trim().is_empty()
         {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidInput,
@@ -51,10 +50,7 @@ impl OpenAiCompatibleBackend {
             ));
         }
         if config.api_key_env.as_ref().is_some_and(|name| {
-            name.is_empty()
-                || !name
-                    .bytes()
-                    .all(|b| b.is_ascii_alphanumeric() || b == b'_')
+            name.is_empty() || !name.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'_')
         }) {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidInput,
@@ -130,7 +126,10 @@ impl ModelBackend for OpenAiCompatibleBackend {
             .header(CONTENT_TYPE, "application/json");
         if let Some(name) = &self.config.api_key_env {
             let secret = std::env::var(name).map_err(|_| {
-                io::Error::new(io::ErrorKind::PermissionDenied, "API credential is not configured")
+                io::Error::new(
+                    io::ErrorKind::PermissionDenied,
+                    "API credential is not configured",
+                )
             })?;
             if secret.is_empty() || secret.contains(['\r', '\n']) {
                 return Err(io::Error::new(
@@ -164,9 +163,7 @@ impl ModelBackend for OpenAiCompatibleBackend {
         // Cap response size before JSON parsing to avoid unbounded allocation.
         use std::io::Read;
         let mut bytes = Vec::new();
-        response
-            .take(8 * 1024 * 1024 + 1)
-            .read_to_end(&mut bytes)?;
+        response.take(8 * 1024 * 1024 + 1).read_to_end(&mut bytes)?;
         if bytes.len() > 8 * 1024 * 1024 {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidData,
@@ -232,8 +229,7 @@ mod tests {
     #[test]
     fn rejects_insecure_remote_endpoints_and_embedded_credentials() {
         assert!(
-            OpenAiCompatibleBackend::new(config("http://example.com/v1/chat/completions"))
-                .is_err()
+            OpenAiCompatibleBackend::new(config("http://example.com/v1/chat/completions")).is_err()
         );
         assert!(
             OpenAiCompatibleBackend::new(config("https://u:p@example.com/v1/chat/completions"))
