@@ -120,6 +120,72 @@ fn user_bubble_width(text: &str, available: f32) -> f32 {
     (longest_line as f32 * 7.8 + 32.0).clamp(100.0_f32.min(cap), cap)
 }
 
+/// Display only observable runtime activity; this is not model chain-of-thought.
+fn show_local_progress(
+    ui: &mut egui::Ui,
+    snapshot: &job::ProgressSnapshot,
+    elapsed: Duration,
+    colors: theme::Colors,
+    column_width: f32,
+) {
+    use job::ProgressStage;
+    let stage = snapshot.stage;
+    ui.horizontal(|ui| {
+        ui.add(
+            Icon::Sparkles
+                .image(colors.accent)
+                .fit_to_exact_size(egui::vec2(19.0, 19.0)),
+        );
+        ui.vertical(|ui| {
+            ui.set_width((column_width - 36.0).max(1.0));
+            ui.label(RichText::new("Lyra").strong().color(colors.accent));
+            egui::Frame::new()
+                .fill(colors.card)
+                .corner_radius(10)
+                .inner_margin(10)
+                .show(ui, |ui| {
+                    ui.horizontal(|ui| {
+                        ui.add(egui::Spinner::new().size(15.0));
+                        let label = match stage {
+                            ProgressStage::Starting => "Запускаю локальную модель…",
+                            ProgressStage::Loading => "Загружаю модель GGUF…",
+                            ProgressStage::Context => "Подготавливаю контекст диалога…",
+                            ProgressStage::Generating => "Генерирую ответ…",
+                        };
+                        ui.label(RichText::new(label).strong());
+                    });
+                    if matches!(stage, ProgressStage::Context | ProgressStage::Generating) {
+                        ui.label(RichText::new("✓ Модель загружена").small().color(colors.muted));
+                    }
+                    if stage == ProgressStage::Generating {
+                        ui.label(
+                            RichText::new("✓ Контекст обработан")
+                                .small()
+                                .color(colors.muted),
+                        );
+                    }
+                    ui.label(
+                        RichText::new(format!(
+                            "{} с · {} токенов",
+                            elapsed.as_secs(),
+                            snapshot.generated_tokens
+                        ))
+                        .small()
+                        .color(colors.muted),
+                    );
+                });
+            if !snapshot.preview.is_empty() {
+                ui.add_space(8.0);
+                ui.add(
+                    egui::Label::new(RichText::new(&snapshot.preview).color(colors.text))
+                        .selectable(true)
+                        .wrap(),
+                );
+            }
+        });
+    });
+}
+
 fn show_conversation_message(
     ui: &mut egui::Ui,
     message: &Message,
@@ -521,10 +587,22 @@ impl Desktop {
                         }
                         if self.chat.pending {
                             ui.add_space(14.0);
-                            ui.horizontal(|ui| {
-                                ui.add(Icon::Sparkles.image(c.accent));
-                                ui.label(RichText::new(l.text(&self.message)).color(c.muted));
-                            });
+                            if self.operation == Operation::LocalChat {
+                                if let Some(worker) = &self.job {
+                                    show_local_progress(
+                                        ui,
+                                        &worker.progress(),
+                                        worker.started.elapsed(),
+                                        c,
+                                        column_width,
+                                    );
+                                }
+                            } else {
+                                ui.horizontal(|ui| {
+                                    ui.add(Icon::Sparkles.image(c.accent));
+                                    ui.label(RichText::new(l.text(&self.message)).color(c.muted));
+                                });
+                            }
                         }
                         if self.draft.plan.is_some() {
                             self.project_result(ui);
