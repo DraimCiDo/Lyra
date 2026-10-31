@@ -126,6 +126,8 @@ fn one_loaded_model_serves_independent_contexts_and_json_grammar() {
     let args = GenerateArgs {
         model: path.into(),
         prompt: "Once upon a time".into(),
+        skills: None,
+        selected_skills: Vec::new(),
         context: 128,
         max_tokens: 16,
         threads: 2,
