@@ -577,16 +577,34 @@ mod skill_adapter_tests {
         use std::time::Duration;
 
         for (status, body, expected_error) in [
-            ("200 OK", r#"{"choices":[{"message":{"content":"{\"tool\":\"finish\",\"summary\":\"ok\"}"}}]}"#, None),
-            ("401 Unauthorized", "{}", Some(io::ErrorKind::PermissionDenied)),
-            ("503 Service Unavailable", "{}", Some(io::ErrorKind::TimedOut)),
-            ("200 OK", r#"{"choices":[]}"#, Some(io::ErrorKind::InvalidData)),
+            (
+                "200 OK",
+                r#"{"choices":[{"message":{"content":"{\\"tool\\":\\"finish\\",\\"summary\\":\\"ok\\"}"}}]}"#,
+                None,
+            ),
+            (
+                "401 Unauthorized",
+                "{}",
+                Some(io::ErrorKind::PermissionDenied),
+            ),
+            (
+                "503 Service Unavailable",
+                "{}",
+                Some(io::ErrorKind::TimedOut),
+            ),
+            (
+                "200 OK",
+                r#"{"choices":[]}"#,
+                Some(io::ErrorKind::InvalidData),
+            ),
         ] {
             let listener = TcpListener::bind("127.0.0.1:0").unwrap();
             let address = listener.local_addr().unwrap();
             let thread = std::thread::spawn(move || {
                 let (mut stream, _) = listener.accept().unwrap();
-                stream.set_read_timeout(Some(Duration::from_secs(5))).unwrap();
+                stream
+                    .set_read_timeout(Some(Duration::from_secs(5)))
+                    .unwrap();
                 let mut request = [0u8; 8192];
                 let size = stream.read(&mut request).unwrap();
                 let request_text = String::from_utf8_lossy(&request[..size]);
