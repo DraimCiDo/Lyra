@@ -158,11 +158,8 @@ mod tests {
             allowed_providers: vec!["local".into()],
             max_attempts: 2,
         };
-        let result = complete_with_fallback(
-            &mut [&mut primary, &mut secondary],
-            &policy,
-            &request(),
-        );
+        let result =
+            complete_with_fallback(&mut [&mut primary, &mut secondary], &policy, &request());
         assert!(result.is_err());
         assert_eq!(primary.calls, 1);
         assert_eq!(secondary.calls, 0);
@@ -170,12 +167,9 @@ mod tests {
             allowed_providers: vec!["local".into(), "cloud".into()],
             max_attempts: 2,
         };
-        let response = complete_with_fallback(
-            &mut [&mut primary, &mut secondary],
-            &policy,
-            &request(),
-        )
-        .unwrap();
+        let response =
+            complete_with_fallback(&mut [&mut primary, &mut secondary], &policy, &request())
+                .unwrap();
         assert_eq!(response.provider, "cloud");
         assert_eq!(secondary.calls, 1);
     }
@@ -188,24 +182,20 @@ mod tests {
             allowed_providers: vec!["local".into(), "cloud".into()],
             max_attempts: 2,
         };
-        assert!(complete_with_fallback(
-            &mut [&mut primary, &mut secondary],
-            &policy,
-            &request(),
-        )
-        .is_err());
+        assert!(
+            complete_with_fallback(&mut [&mut primary, &mut secondary], &policy, &request(),)
+                .is_err()
+        );
         assert_eq!(secondary.calls, 0);
     }
 
     #[test]
     fn empty_allowlist_never_invokes_backend() {
         let mut backend = Stub::new("cloud", None);
-        assert!(complete_with_fallback(
-            &mut [&mut backend],
-            &RoutingPolicy::default(),
-            &request(),
-        )
-        .is_err());
+        assert!(
+            complete_with_fallback(&mut [&mut backend], &RoutingPolicy::default(), &request(),)
+                .is_err()
+        );
         assert_eq!(backend.calls, 0);
     }
 }
