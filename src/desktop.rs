@@ -593,6 +593,24 @@ impl Desktop {
                         ui.label(RichText::new(l.text("Пусто — ограниченный индекс проекта. Секретные и служебные файлы исключаются движком.")).small().weak());
                         ui.add(egui::TextEdit::multiline(&mut self.prefs.files).desired_rows(6).desired_width(f32::INFINITY).char_limit(32768).hint_text("src/lib.rs\nCargo.toml"));
                         ui.label(format!("{} / 32",self.prefs.files.lines().filter(|s|!s.trim().is_empty()).count()));
+                        ui.separator();
+                        ui.label(RichText::new(l.text("Оптимизация контекста")).strong());
+                        let mut level = self.prefs.optimization.slider();
+                        ui.add(egui::Slider::new(&mut level, 0..=2)
+                            .step_by(1.0)
+                            .custom_formatter(|v, _| match v.round() as u32 {
+                                0 => "Safe".to_owned(),
+                                2 => "Aggressive".to_owned(),
+                                _ => "Balanced".to_owned(),
+                            }));
+                        self.prefs.optimization = preferences::Optimization::from_slider(level);
+                        let description = match self.prefs.optimization {
+                            preferences::Optimization::Safe => "Полная история переписки, без сокращения.",
+                            preferences::Optimization::Balanced => "До 12 последних сообщений в запросе.",
+                            preferences::Optimization::Aggressive => "До 6 последних сообщений в запросе.",
+                        };
+                        ui.label(RichText::new(l.text(description)).small().weak());
+                        ui.label(RichText::new(l.text("Сокращается только история чата; исходники и ошибки не переписываются.")).small().weak());
                     }).response,
                     SettingsPage::Workers=>ui.add_enabled_ui(self.job.is_none(),|ui|{
                         icons::toggle(ui,&mut self.prefs.subagents,l.text("Исследователь и ревьюер"),self.prefs.animations,c.accent,c.on_accent);
