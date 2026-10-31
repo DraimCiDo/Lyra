@@ -177,12 +177,12 @@ mod tests {
         let path = dir.path().join("SKILL.md");
         std::fs::write(
             &path,
-            "---\\nname: rust-review\\ndescription: Review Rust changes\\n---\\n# Steps\\nCheck tests.\\n",
+            "---\nname: rust-review\ndescription: Review Rust changes\n---\n# Steps\nCheck tests.\n",
         )
         .unwrap();
         let pack = SkillPack::load_markdown(&path).unwrap();
-        assert_eq!(pack.find("rust-review").unwrap().instructions, "# Steps\\nCheck tests.");
-        std::fs::write(&path, "---\\nname: ../bad\\ndescription: Unsafe\\n---\\nhello").unwrap();
+        assert_eq!(pack.find("rust-review").unwrap().instructions, "# Steps\nCheck tests.");
+        std::fs::write(&path, "---\nname: ../bad\ndescription: Unsafe\n---\nhello").unwrap();
         assert!(SkillPack::load_markdown(&path).is_err());
     }
 
