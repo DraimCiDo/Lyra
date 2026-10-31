@@ -518,7 +518,6 @@ impl<M: Model> Model for SkilledModel<'_, M> {
     }
 }
 
-
 #[cfg(feature = "gateway-http")]
 struct CloudTaskModel {
     backend: crate::provider_http::OpenAiCompatibleBackend,
