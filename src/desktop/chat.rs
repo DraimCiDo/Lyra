@@ -396,7 +396,7 @@ impl Desktop {
             }
         });
         ui.add_space(5.0);
-        let reserve = if self.error { 132.0 } else { 110.0 };
+        let reserve = if self.error { 176.0 } else { 152.0 };
         let height = (ui.available_height() - reserve).max(100.0);
         egui::ScrollArea::vertical()
             .id_salt("conversation")
@@ -466,93 +466,105 @@ impl Desktop {
                 });
             });
         ui.add_space(5.0);
-        card(c).inner_margin(9).show(ui, |ui| {
-            let edit = egui::ScrollArea::vertical()
-                .id_salt("composer-scroll")
-                .min_scrolled_height(32.0)
-                .max_height(36.0)
-                .auto_shrink([false, false])
-                .show(ui, |ui| {
-                    ui.add_enabled(
-                        self.job.is_none(),
-                        egui::TextEdit::multiline(&mut self.task)
-                            .id_salt("chat-composer")
-                            .desired_rows(2)
-                            .desired_width(f32::INFINITY)
-                            .char_limit(16384)
-                            .frame(egui::Frame::NONE)
-                            .return_key(Some(egui::KeyboardShortcut::new(
-                                egui::Modifiers::SHIFT,
-                                egui::Key::Enter,
-                            )))
-                            .hint_text(l.text("Напиши, что нужно сделать…")),
-                    )
-                })
-                .inner;
-            let enter = edit.has_focus()
-                && ui.input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::Enter));
-            ui.horizontal(|ui| {
-                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    if let Some(job) = &self.job {
-                        if job.cancellable
-                            && icons::action(ui, Icon::Stop, l.text("Остановить"), c.error)
-                                .clicked()
-                        {
-                            job.cancel();
-                        }
-                        ui.label(
-                            RichText::new(format!("{:.0} s", job.started.elapsed().as_secs_f32()))
-                                .small()
-                                .weak(),
-                        );
-                    } else {
-                        let model_ready = match self.chat_mode {
-                            ChatMode::Chat => {
-                                #[cfg(feature = "gateway-http")]
-                                if self.prefs.cloud_chat {
-                                    true
-                                } else {
-                                    self.prefs.model.is_some()
-                                }
-                                #[cfg(not(feature = "gateway-http"))]
-                                {
-                                    self.prefs.model.is_some()
-                                }
-                            }
-                            ChatMode::Task => {
-                                #[cfg(feature = "gateway-http")]
-                                if self.prefs.cloud_task {
-                                    true
-                                } else {
-                                    self.prefs.model.is_some()
-                                }
-                                #[cfg(not(feature = "gateway-http"))]
-                                {
-                                    self.prefs.model.is_some()
-                                }
-                            }
-                            ChatMode::Project => self.prefs.model.is_some(),
-                        };
-                        let ready = model_ready && !self.task.trim().is_empty();
-                        let clicked = ui
-                            .add_enabled(
-                                ready,
-                                egui::Button::image_and_text(
-                                    Icon::ArrowUp.image(c.on_accent),
-                                    RichText::new(l.text("Отправить")).color(c.on_accent),
+        let composer_width = conversation_width(ui.available_width());
+        let composer_offset = ((ui.available_width() - composer_width) / 2.0).max(0.0);
+        ui.horizontal(|ui| {
+            ui.add_space(composer_offset);
+            ui.allocate_ui_with_layout(
+                egui::vec2(composer_width, 0.0),
+                egui::Layout::top_down(egui::Align::Min),
+                |ui| {
+                    ui.set_min_width(composer_width);
+                    card(c).inner_margin(12).show(ui, |ui| {
+                        let edit = egui::ScrollArea::vertical()
+                            .id_salt("composer-scroll")
+                            .min_scrolled_height(42.0)
+                            .max_height(96.0)
+                            .auto_shrink([false, false])
+                            .show(ui, |ui| {
+                                ui.add_enabled(
+                                    self.job.is_none(),
+                                    egui::TextEdit::multiline(&mut self.task)
+                                        .id_salt("chat-composer")
+                                        .desired_rows(3)
+                                        .desired_width(f32::INFINITY)
+                                        .char_limit(16384)
+                                        .frame(egui::Frame::NONE)
+                                        .return_key(Some(egui::KeyboardShortcut::new(
+                                            egui::Modifiers::SHIFT,
+                                            egui::Key::Enter,
+                                        )))
+                                        .hint_text(l.text("Напиши, что нужно сделать…")),
                                 )
-                                .fill(c.accent),
-                            )
-                            .clicked();
-                        if (clicked || enter && ready) && self.real_app {
-                            if let Err(e) = self.submit_chat(ui.ctx()) {
-                                self.fail(e);
-                            }
-                            edit.request_focus();
-                        }
-                    }
-                });
-            });
+                            })
+                            .inner;
+                        let enter = edit.has_focus()
+                            && ui.input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::Enter));
+                        ui.horizontal(|ui| {
+                            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                                if let Some(job) = &self.job {
+                                    if job.cancellable
+                                        && icons::action(ui, Icon::Stop, l.text("Остановить"), c.error)
+                                            .clicked()
+                                    {
+                                        job.cancel();
+                                    }
+                                    ui.label(
+                                        RichText::new(format!("{:.0} s", job.started.elapsed().as_secs_f32()))
+                                            .small()
+                                            .weak(),
+                                    );
+                                } else {
+                                    let model_ready = match self.chat_mode {
+                                        ChatMode::Chat => {
+                                            #[cfg(feature = "gateway-http")]
+                                            if self.prefs.cloud_chat {
+                                                true
+                                            } else {
+                                                self.prefs.model.is_some()
+                                            }
+                                            #[cfg(not(feature = "gateway-http"))]
+                                            {
+                                                self.prefs.model.is_some()
+                                            }
+                                        }
+                                        ChatMode::Task => {
+                                            #[cfg(feature = "gateway-http")]
+                                            if self.prefs.cloud_task {
+                                                true
+                                            } else {
+                                                self.prefs.model.is_some()
+                                            }
+                                            #[cfg(not(feature = "gateway-http"))]
+                                            {
+                                                self.prefs.model.is_some()
+                                            }
+                                        }
+                                        ChatMode::Project => self.prefs.model.is_some(),
+                                    };
+                                    let ready = model_ready && !self.task.trim().is_empty();
+                                    let clicked = ui
+                                        .add_enabled(
+                                            ready,
+                                            egui::Button::image_and_text(
+                                                Icon::ArrowUp.image(c.on_accent),
+                                                RichText::new(l.text("Отправить")).color(c.on_accent),
+                                            )
+                                            .fill(c.accent),
+                                        )
+                                        .clicked();
+                                    if (clicked || enter && ready) && self.real_app {
+                                        if let Err(e) = self.submit_chat(ui.ctx()) {
+                                            self.fail(e);
+                                        }
+                                        edit.request_focus();
+                                    }
+                                }
+                            });
+                        });
+                    });
+                },
+            );
         });
         if self.error {
             ui.add(
