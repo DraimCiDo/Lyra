@@ -5,6 +5,7 @@ use crate::model_gateway::{
 };
 use reqwest::blocking::Client;
 use reqwest::header::{AUTHORIZATION, CONTENT_TYPE};
+use std::net::IpAddr;
 use serde::{Deserialize, Serialize};
 use std::io;
 use std::time::Duration;
@@ -29,7 +30,7 @@ impl OpenAiCompatibleBackend {
         let url = reqwest::Url::parse(&config.endpoint).map_err(io::Error::other)?;
         let loopback = url
             .host_str()
-            .is_some_and(|host| host == "localhost" || host == "127.0.0.1" || host == "[::1]");
+            .is_some_and(|host| host == "localhost" || host.parse::<IpAddr>().is_ok_and(|ip| ip.is_loopback()));
         if url.scheme() != "https" && !(url.scheme() == "http" && loopback) {
             return Err(io::Error::new(
                 io::ErrorKind::PermissionDenied,
