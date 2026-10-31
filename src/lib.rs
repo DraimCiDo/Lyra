@@ -48,7 +48,11 @@ pub enum Command {
         provider_config: std::path::PathBuf,
         #[arg(long = "allow", required = true)]
         allowed_providers: Vec<String>,
-        #[arg(long, conflicts_with = "request_file", required_unless_present = "request_file")]
+        #[arg(
+            long,
+            conflicts_with = "request_file",
+            required_unless_present = "request_file"
+        )]
         prompt: Option<String>,
         #[arg(long, conflicts_with = "prompt")]
         request_file: Option<std::path::PathBuf>,
@@ -101,13 +105,17 @@ pub fn run(cli: Cli, output: &mut impl Write) -> io::Result<()> {
             if args.selected_skills.is_empty() && args.skills.is_none() {
                 inference::generate(&args, output)
             } else {
-                let pack = args.skills.as_ref().map(|path| {
-                    if path.file_name().is_some_and(|name| name == "SKILL.md") {
-                        skills::SkillPack::load_markdown(path)
-                    } else {
-                        skills::SkillPack::load(path)
-                    }
-                }).transpose()?;
+                let pack = args
+                    .skills
+                    .as_ref()
+                    .map(|path| {
+                        if path.file_name().is_some_and(|name| name == "SKILL.md") {
+                            skills::SkillPack::load_markdown(path)
+                        } else {
+                            skills::SkillPack::load(path)
+                        }
+                    })
+                    .transpose()?;
                 let request = model_gateway::Request {
                     messages: vec![model_gateway::Message {
                         role: model_gateway::Role::User,
@@ -117,11 +125,14 @@ pub fn run(cli: Cli, output: &mut impl Write) -> io::Result<()> {
                     require_tools: false,
                 };
                 let response = agent_runtime::complete_gguf(
-                    &args, &request, pack.as_ref(), &args.selected_skills,
+                    &args,
+                    &request,
+                    pack.as_ref(),
+                    &args.selected_skills,
                 )?;
                 write!(output, "{}", response.text)
             }
-        },
+        }
         #[cfg(feature = "gateway-http")]
         Command::Chat {
             provider_config,
@@ -149,10 +160,14 @@ pub fn run(cli: Cli, output: &mut impl Write) -> io::Result<()> {
                     .take(256 * 1024 + 1)
                     .read_to_end(&mut bytes)?;
                 if bytes.len() > 256 * 1024 {
-                    return Err(io::Error::new(io::ErrorKind::InvalidData, "Chat request exceeds 256 KiB"));
+                    return Err(io::Error::new(
+                        io::ErrorKind::InvalidData,
+                        "Chat request exceeds 256 KiB",
+                    ));
                 }
-                serde_json::from_slice::<model_gateway::Request>(&bytes)
-                    .map_err(|_| io::Error::new(io::ErrorKind::InvalidData, "Invalid chat request"))?
+                serde_json::from_slice::<model_gateway::Request>(&bytes).map_err(|_| {
+                    io::Error::new(io::ErrorKind::InvalidData, "Invalid chat request")
+                })?
             } else {
                 model_gateway::Request {
                     messages: vec![model_gateway::Message {
@@ -163,14 +178,18 @@ pub fn run(cli: Cli, output: &mut impl Write) -> io::Result<()> {
                     require_tools: false,
                 }
             };
-            let pack = skills.as_ref().map(|path| {
-                if path.file_name().is_some_and(|name| name == "SKILL.md") {
-                    skills::SkillPack::load_markdown(path)
-                } else {
-                    skills::SkillPack::load(path)
-                }
-            }).transpose()?;
-            let request = agent_runtime::prepare_request(&request, pack.as_ref(), &selected_skills)?;
+            let pack = skills
+                .as_ref()
+                .map(|path| {
+                    if path.file_name().is_some_and(|name| name == "SKILL.md") {
+                        skills::SkillPack::load_markdown(path)
+                    } else {
+                        skills::SkillPack::load(path)
+                    }
+                })
+                .transpose()?;
+            let request =
+                agent_runtime::prepare_request(&request, pack.as_ref(), &selected_skills)?;
             let mut backends: Vec<provider_http::OpenAiCompatibleBackend> = configs
                 .into_iter()
                 .map(provider_http::OpenAiCompatibleBackend::new)
