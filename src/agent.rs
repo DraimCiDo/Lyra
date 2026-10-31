@@ -498,7 +498,8 @@ impl Model for SkilledSession<'_, '_> {
         if self.guidance.is_empty() {
             return self.session.respond(prompt);
         }
-        let mut envelope: serde_json::Value = serde_json::from_str(prompt).map_err(io::Error::other)?;
+        let mut envelope: serde_json::Value =
+            serde_json::from_str(prompt).map_err(io::Error::other)?;
         envelope["ecc_skill_guidance"] = serde_json::Value::String(self.guidance.to_owned());
         self.session.respond(&envelope.to_string())
     }
@@ -516,14 +517,19 @@ pub fn task(args: TaskArgs, output: &mut impl Write) -> io::Result<()> {
         Some(path) => crate::knowledge::Pack::load(path)?,
         None => crate::knowledge::Pack::empty(),
     };
-    let skill_pack = args.skills.as_ref().map(|path| {
-        if path.file_name().is_some_and(|name| name == "SKILL.md") {
-            crate::skills::SkillPack::load_markdown(path)
-        } else {
-            crate::skills::SkillPack::load(path)
-        }
-    }).transpose()?;
-    let skill_guidance = crate::agent_runtime::skill_instructions(skill_pack.as_ref(), &args.selected_skills)?;
+    let skill_pack = args
+        .skills
+        .as_ref()
+        .map(|path| {
+            if path.file_name().is_some_and(|name| name == "SKILL.md") {
+                crate::skills::SkillPack::load_markdown(path)
+            } else {
+                crate::skills::SkillPack::load(path)
+            }
+        })
+        .transpose()?;
+    let skill_guidance =
+        crate::agent_runtime::skill_instructions(skill_pack.as_ref(), &args.selected_skills)?;
     let config = GenerateArgs {
         model: args.model,
         prompt: "task session".into(),
@@ -538,7 +544,10 @@ pub fn task(args: TaskArgs, output: &mut impl Write) -> io::Result<()> {
     };
     inference::with_session(&config, |session| {
         let mut session = *session;
-        let mut model = SkilledSession { session: &mut session, guidance: &skill_guidance };
+        let mut model = SkilledSession {
+            session: &mut session,
+            guidance: &skill_guidance,
+        };
         let report = execute_with_docs(
             &mut model,
             &mut workspace,
