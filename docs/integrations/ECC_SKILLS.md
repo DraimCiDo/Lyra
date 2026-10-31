@@ -18,3 +18,26 @@ hooks are **not** implemented.
 ECC is MIT-licensed. When distributing third-party ECC content, retain its
 license and attribution. This implementation is a native Rust adapter and does
 not vendor ECC's copyrighted skill files.
+
+## Skill-aware agent runtime
+
+The shared `agent_runtime` layer applies only explicitly selected skills.
+Instructions are prepended as a system message for OpenAI-compatible HTTP
+providers, or supplied as system context to the local GGUF chat template.
+Neither backend executes hooks or scripts from a skill.
+
+Local example:
+
+```sh
+lyra generate --model /models/coder.gguf --prompt "Review this code" --skills ./SKILL.md --skill rust-review
+```
+
+HTTP example:
+
+```sh
+lyra chat --provider-config providers.json --allow approved-provider --prompt "Review this code" --skills ./SKILL.md --skill rust-review
+```
+
+A missing or duplicate selected skill fails before the model request. Skills
+are not automatically discovered or activated. Local GGUF requests do not
+automatically switch to cloud providers.
