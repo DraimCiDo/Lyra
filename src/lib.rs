@@ -51,6 +51,8 @@ pub enum Command {
         prompt: String,
         #[arg(long, default_value_t = 256)]
         max_output_tokens: u32,
+        #[arg(long, default_value_t = 1)]
+        max_attempts: usize,
     },
     /// Проверить маршрутизацию моделей без отправки данных провайдерам
     Route {
@@ -93,8 +95,8 @@ pub fn run(cli: Cli, output: &mut impl Write) -> io::Result<()> {
             allowed_providers,
             prompt,
             max_output_tokens,
+            max_attempts,
         } => {
-            use crate::model_gateway::ModelBackend;
             use std::io::Read;
             let mut bytes = Vec::new();
             std::fs::File::open(provider_config)?
@@ -106,15 +108,16 @@ pub fn run(cli: Cli, output: &mut impl Write) -> io::Result<()> {
                     "Provider configuration exceeds 64 KiB",
                 ));
             }
-            let config: provider_http::ProviderConfig =
-                serde_json::from_slice(&bytes).map_err(io::Error::other)?;
-            if !allowed_providers
-                .iter()
-                .any(|provider| provider == &config.descriptor.provider)
-            {
+            let configs: Vec<provider_http::ProviderConfig> =
+                if bytes.first() == Some(&b'[') {
+                    serde_json::from_slice(&bytes).map_err(io::Error::other)?
+                } else {
+                    vec![serde_json::from_slice(&bytes).map_err(io::Error::other)?]
+                };
+            if configs.is_empty() || configs.len() > 32 {
                 return Err(io::Error::new(
-                    io::ErrorKind::PermissionDenied,
-                    "Provider was not explicitly allowed",
+                    io::ErrorKind::InvalidData,
+                    "Expected between 1 and 32 providers",
                 ));
             }
             let request = model_gateway::Request {
@@ -125,8 +128,22 @@ pub fn run(cli: Cli, output: &mut impl Write) -> io::Result<()> {
                 max_output_tokens,
                 require_tools: false,
             };
-            let mut backend = provider_http::OpenAiCompatibleBackend::new(config)?;
-            let response = backend.complete(&request)?;
+            let mut backends: Vec<provider_http::OpenAiCompatibleBackend> = configs
+                .into_iter()
+                .map(provider_http::OpenAiCompatibleBackend::new)
+                .collect::<io::Result<_>>()?;
+            let mut references: Vec<&mut dyn model_gateway::ModelBackend> = backends
+                .iter_mut()
+                .map(|backend| backend as &mut dyn model_gateway::ModelBackend)
+                .collect();
+            let response = routing::complete_with_fallback(
+                &mut references,
+                &routing::RoutingPolicy {
+                    allowed_providers,
+                    max_attempts,
+                },
+                &request,
+            )?;
             writeln!(output, "{}", response.text)
         }
         Command::Route {
