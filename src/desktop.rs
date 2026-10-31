@@ -318,11 +318,6 @@ impl Desktop {
                     .repo
                     .as_ref()
                     .ok_or_else(|| io::Error::other("Выберите папку проекта."))?;
-                let model = self
-                    .prefs
-                    .model
-                    .as_ref()
-                    .ok_or_else(|| io::Error::other("Выберите GGUF-модель."))?;
                 validate_task(&self.request_task, &self.prefs.files)?;
                 let task_path = temp.path().join("task.txt");
                 std::fs::write(&task_path, &self.request_task)?;
@@ -330,11 +325,46 @@ impl Desktop {
                     "task".into(),
                     "--repo".into(),
                     repo.as_os_str().into(),
-                    "--model".into(),
-                    model.as_os_str().into(),
                     "--task-file".into(),
                     task_path.into_os_string(),
                 ]);
+                #[cfg(feature = "gateway-http")]
+                if self.prefs.cloud_task {
+                    use std::io::Read;
+                    let registry = self.prefs.provider_registry.as_ref()
+                        .ok_or_else(|| io::Error::other("Укажите реестр HTTP-провайдеров."))?;
+                    if self.prefs.cloud_provider.is_empty() || self.prefs.cloud_model.is_empty() {
+                        return Err(io::Error::other("Выберите облачную модель в настройках провайдеров."));
+                    }
+                    let mut bytes = Vec::new();
+                    std::fs::File::open(registry)?
+                        .take(64 * 1024 + 1)
+                        .read_to_end(&mut bytes)?;
+                    let configs = crate::provider_http::parse_registry(&bytes)?;
+                    let selected = configs.into_iter().find(|config| {
+                        config.descriptor.provider == self.prefs.cloud_provider
+                            && config.descriptor.model == self.prefs.cloud_model
+                    }).ok_or_else(|| io::Error::other("Облачная модель отсутствует в реестре."))?;
+                    crate::provider_http::OpenAiCompatibleBackend::new(selected)?;
+                    args.extend([
+                        "--provider-config".into(),
+                        registry.as_os_str().into(),
+                        "--allow".into(),
+                        self.prefs.cloud_provider.clone().into(),
+                        "--cloud-model".into(),
+                        self.prefs.cloud_model.clone().into(),
+                    ]);
+                } else {
+                    let model = self.prefs.model.as_ref()
+                        .ok_or_else(|| io::Error::other("Выберите GGUF-модель."))?;
+                    args.extend(["--model".into(), model.as_os_str().into()]);
+                }
+                #[cfg(not(feature = "gateway-http"))]
+                {
+                    let model = self.prefs.model.as_ref()
+                        .ok_or_else(|| io::Error::other("Выберите GGUF-модель."))?;
+                    args.extend(["--model".into(), model.as_os_str().into()]);
+                }
                 for (flag, value) in [
                     ("--context", self.prefs.context as u64),
                     ("--max-tokens", self.prefs.tokens as u64),
@@ -703,6 +733,10 @@ impl Desktop {
                         }
                         ui.separator();
                         ui.checkbox(&mut self.prefs.cloud_chat, "Разрешить HTTP-запросы из чата");
+                        ui.checkbox(&mut self.prefs.cloud_task, "Разрешить облачную модель для задач проекта (Desktop Task)");
+                        if self.prefs.cloud_task {
+                            ui.label(RichText::new("При запуске задачи фрагменты исходного кода и задание отправляются выбранному провайдеру.").small().weak());
+                        }
                         if let Some(path) = &self.prefs.provider_registry {
                             let available = (|| -> io::Result<Vec<crate::provider_http::ProviderConfig>> {
                                 use std::io::Read;
