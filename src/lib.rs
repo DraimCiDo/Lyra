@@ -47,8 +47,12 @@ pub enum Command {
         provider_config: std::path::PathBuf,
         #[arg(long = "allow", required = true)]
         allowed_providers: Vec<String>,
+        #[arg(long, conflicts_with = "request_file", required_unless_present = "request_file")]
+        prompt: Option<String>,
+        #[arg(long, conflicts_with = "prompt")]
+        request_file: Option<std::path::PathBuf>,
         #[arg(long)]
-        prompt: String,
+        model: Option<String>,
         #[arg(long, default_value_t = 256)]
         max_output_tokens: u32,
         #[arg(long, default_value_t = 1)]
@@ -94,6 +98,8 @@ pub fn run(cli: Cli, output: &mut impl Write) -> io::Result<()> {
             provider_config,
             allowed_providers,
             prompt,
+            request_file,
+            model,
             max_output_tokens,
             max_attempts,
         } => {
@@ -102,14 +108,29 @@ pub fn run(cli: Cli, output: &mut impl Write) -> io::Result<()> {
             std::fs::File::open(provider_config)?
                 .take(64 * 1024 + 1)
                 .read_to_end(&mut bytes)?;
-            let configs = provider_http::parse_registry(&bytes)?;
-            let request = model_gateway::Request {
-                messages: vec![model_gateway::Message {
-                    role: model_gateway::Role::User,
-                    content: prompt,
-                }],
-                max_output_tokens,
-                require_tools: false,
+            let mut configs = provider_http::parse_registry(&bytes)?;
+            if let Some(model) = &model {
+                configs.retain(|config| &config.descriptor.model == model);
+            }
+            let request = if let Some(path) = request_file {
+                let mut bytes = Vec::new();
+                std::fs::File::open(path)?
+                    .take(256 * 1024 + 1)
+                    .read_to_end(&mut bytes)?;
+                if bytes.len() > 256 * 1024 {
+                    return Err(io::Error::new(io::ErrorKind::InvalidData, "Chat request exceeds 256 KiB"));
+                }
+                serde_json::from_slice::<model_gateway::Request>(&bytes)
+                    .map_err(|_| io::Error::new(io::ErrorKind::InvalidData, "Invalid chat request"))?
+            } else {
+                model_gateway::Request {
+                    messages: vec![model_gateway::Message {
+                        role: model_gateway::Role::User,
+                        content: prompt.unwrap_or_default(),
+                    }],
+                    max_output_tokens,
+                    require_tools: false,
+                }
             };
             let mut backends: Vec<provider_http::OpenAiCompatibleBackend> = configs
                 .into_iter()
