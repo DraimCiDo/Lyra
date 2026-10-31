@@ -413,11 +413,21 @@ mod tests {
         }))
         .unwrap();
         assert_eq!(parse_registry(&one).unwrap().len(), 1);
-        let array = format!("[{},{}]", String::from_utf8_lossy(&one), String::from_utf8_lossy(&one).replace("\"local\"", "\"backup\""));
-        assert_eq!(parse_registry(array.as_bytes()).unwrap().len(), 2);
-        let duplicate = format!("[{},{}]", String::from_utf8_lossy(&one), String::from_utf8_lossy(&one));
+        let mut backup: serde_json::Value = serde_json::from_slice(&one).unwrap();
+        backup["descriptor"]["provider"] = "backup".into();
+        let array = serde_json::to_vec(&serde_json::json!([
+            serde_json::from_slice::<serde_json::Value>(&one).unwrap(),
+            backup
+        ]))
+        .unwrap();
+        assert_eq!(parse_registry(&array).unwrap().len(), 2);
+        let duplicate = serde_json::to_vec(&serde_json::json!([
+            serde_json::from_slice::<serde_json::Value>(&one).unwrap(),
+            serde_json::from_slice::<serde_json::Value>(&one).unwrap()
+        ]))
+        .unwrap();
         assert_eq!(
-            parse_registry(duplicate.as_bytes()).unwrap_err().kind(),
+            parse_registry(&duplicate).unwrap_err().kind(),
             io::ErrorKind::InvalidData
         );
     }
