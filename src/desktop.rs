@@ -264,7 +264,7 @@ impl Desktop {
                 crate::provider_http::OpenAiCompatibleBackend::new(selected.clone())?;
                 let request = self.chat.cloud_request(self.task.trim(), self.prefs.tokens)?;
                 let request_path = temp.path().join("chat-request.json");
-                std::fs::write(&request_path, serde_json::to_vec(&request)?)?;
+                std::fs::write(&request_path, serde_json::to_vec(&request).map_err(io::Error::other)?)?;
                 args.extend([
                     "chat".into(), "--provider-config".into(), registry.as_os_str().into(),
                     "--allow".into(), self.prefs.cloud_provider.clone().into(),
