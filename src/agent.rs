@@ -579,7 +579,7 @@ mod skill_adapter_tests {
         for (status, body, expected_error) in [
             (
                 "200 OK",
-                r#"{"choices":[{"message":{"content":"{\\"tool\\":\\"finish\\",\\"summary\\":\\"ok\\"}"}}]}"#,
+                r#"{"choices":[{"message":{"content":"{\"tool\":\"finish\",\"summary\":\"ok\"}"}}]}"#,
                 None,
             ),
             (
