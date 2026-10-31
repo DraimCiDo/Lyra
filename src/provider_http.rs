@@ -434,12 +434,7 @@ mod tests {
 
     #[test]
     fn registry_rejects_invalid_and_oversized_inputs() {
-        for bytes in [
-            &b"[]"[..],
-            &b"null"[..],
-            &b"{not json}"[..],
-            &b"[{}]"[..],
-        ] {
+        for bytes in [&b"[]"[..], &b"null"[..], &b"{not json}"[..], &b"[{}]"[..]] {
             assert!(parse_registry(bytes).is_err());
         }
         assert!(parse_registry(&vec![b' '; 64 * 1024 + 1]).is_err());
