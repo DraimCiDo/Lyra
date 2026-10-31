@@ -28,3 +28,14 @@ cargo run --features gateway-http -- chat \
 ```
 
 The default `--max-attempts 1` disables fallback. Only transient transport failures, HTTP 429, and HTTP 5xx can trigger fallback. Authentication and invalid-request errors stop immediately. Allowlisting cloud providers explicitly permits sending the prompt to them; do not add cloud to the allowlist for confidential projects without authorization.
+
+## Provider registry validation
+
+Provider configuration accepts one JSON object or an array of 1–32 objects, up to
+64 KiB total. Each `provider` + `model` pair must be unique. Duplicate identities
+are rejected rather than silently skipped, preventing ambiguous fallback order.
+Malformed registry files fail before any HTTP request. Credentials remain
+environment-variable references, never JSON token values.
+
+The CI matrix runs both the default Desktop tests and explicit
+`desktop,gateway-http` Clippy/tests on Ubuntu and Windows.
