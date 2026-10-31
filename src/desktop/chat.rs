@@ -299,7 +299,11 @@ impl Desktop {
             });
         });
         if self.chat_mode == ChatMode::Task && self.prefs.repo.is_none() {
-            ui.label(RichText::new("Для выполнения задачи выбери папку проекта.").small().weak());
+            ui.label(
+                RichText::new("Для выполнения задачи выбери папку проекта.")
+                    .small()
+                    .weak(),
+            );
         }
         #[cfg(feature = "gateway-http")]
         ui.horizontal(|ui| {
