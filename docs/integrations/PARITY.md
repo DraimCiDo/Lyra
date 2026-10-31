@@ -19,7 +19,8 @@ Upstream revision/license audit is P00 and remains pending.
 | ECC | Instincts/continuous learning | Learning | planned | P09 |
 | ECC | Token optimization | Context Optimizer | planned | P04/P05 |
 | ECC | Security/verification/evals | Security/Verification | planned | P10 |
-| OmniRoute | Providers/model catalog | Model Gateway | planned | P01/P02 |
+| OmniRoute | Provider-neutral contracts and permission-safe priority selection | src/model_gateway.rs | implemented; unverified | P01 unit tests / Windows CI |
+| OmniRoute | Providers/model catalog | Model Gateway | planned | P02 |
 | OmniRoute | Routing/combo/auto | Router | planned | P03/P12 |
 | OmniRoute | Quotas, budget, fallback, resilience | Gateway Policy | planned | P03 |
 | OmniRoute | 12 compression engine categories | Context Optimizer | planned | P04/P05/P12 |
