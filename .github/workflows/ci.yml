@@ -67,6 +67,10 @@ jobs:
         run: cargo clippy --workspace --all-targets --features desktop --locked -- -D warnings
       - name: Tests
         run: cargo test --workspace --features desktop --locked
+      - name: Gateway Clippy (HTTP + Desktop)
+        run: cargo clippy --workspace --all-targets --features desktop,gateway-http --locked -- -D warnings
+      - name: Gateway tests (HTTP + Desktop)
+        run: cargo test --workspace --features desktop,gateway-http --locked
       - name: Explicit real CPU inference smoke (tiny GGUF)
         run: |
           $model = Join-Path $env:RUNNER_TEMP 'lyra-stories260K.gguf'
