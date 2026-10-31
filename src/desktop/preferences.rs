@@ -19,6 +19,8 @@ pub struct Preferences {
     pub repo: Option<PathBuf>,
     pub model: Option<PathBuf>,
     pub provider_registry: Option<PathBuf>,
+    pub skill_manifest: Option<PathBuf>,
+    pub active_skill: String,
     pub cloud_chat: bool,
     pub cloud_provider: String,
     pub cloud_model: String,
@@ -43,6 +45,8 @@ impl Default for Preferences {
             repo: None,
             model: None,
             provider_registry: None,
+            skill_manifest: None,
+            active_skill: String::new(),
             cloud_chat: false,
             cloud_provider: String::new(),
             cloud_model: String::new(),
@@ -66,6 +70,7 @@ impl Preferences {
             && (!self.subagents || self.calls >= 3)
             && (1..=256).contains(&self.threads)
             && (1..=3600).contains(&self.timeout)
+            && self.active_skill.len() <= 64
             && self.cloud_provider.len() <= 128
             && self.cloud_model.len() <= 256
             && self.files.len() <= 32768
@@ -75,6 +80,7 @@ impl Preferences {
                 &self.model,
                 &self.documentation,
                 &self.provider_registry,
+                &self.skill_manifest,
             ]
             .into_iter()
             .all(|p| p.as_ref().is_none_or(|p| p.as_os_str().len() <= 4096))
