@@ -16,7 +16,7 @@ struct Message {
     text: String,
 }
 impl Chat {
-    fn request(&self, text: &str) -> io::Result<String> {
+    fn request(&self, text: &str, optimization: preferences::Optimization) -> io::Result<String> {
         if text.trim().is_empty() || self.messages.len() + 2 > MESSAGE_COUNT {
             return Err(io::Error::other(
                 "Пустое сообщение или достигнут лимит переписки. Начни новый чат.",
@@ -31,7 +31,15 @@ impl Chat {
         let result = if self.messages.is_empty() {
             text.to_owned()
         } else {
-            let history: Vec<_> = self.messages.iter().map(|m| {
+            // Only omit entire older messages; never rewrite code, errors or patches.
+            // The latest user turn is always preserved verbatim.
+            let keep = match optimization {
+                preferences::Optimization::Safe => self.messages.len(),
+                preferences::Optimization::Balanced => 12,
+                preferences::Optimization::Aggressive => 6,
+            };
+            let start = self.messages.len().saturating_sub(keep);
+            let history: Vec<_> = self.messages[start..].iter().map(|m| {
                 serde_json::json!({"role":if m.user {"user"} else {"assistant"},"content":m.text})
             }).collect();
             serde_json::json!({"conversation":history,"latest_user_request":text,
@@ -86,7 +94,7 @@ impl Desktop {
 
     pub(super) fn submit_chat(&mut self, ctx: &egui::Context) -> io::Result<()> {
         let text = self.task.trim().to_owned();
-        let request = self.chat.request(&text)?;
+        let request = self.chat.request(&text, self.prefs.optimization)?;
         self.request_task = request.clone();
         let operation = if self.prefs.repo.is_some() {
             Operation::Task
