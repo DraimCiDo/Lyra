@@ -248,15 +248,16 @@ fn capture_live(
             let mut preview_bytes = Vec::new();
             read_output_observed(stdout, OUTPUT_LIMIT, false, |chunk| {
                 if let Some(state) = &out_progress {
-                    let keep = chunk.len().min(PREVIEW_LIMIT.saturating_sub(preview_bytes.len()));
+                    let keep = chunk
+                        .len()
+                        .min(PREVIEW_LIMIT.saturating_sub(preview_bytes.len()));
                     preview_bytes.extend_from_slice(&chunk[..keep]);
                     if let Ok(mut snapshot) = state.lock() {
                         snapshot.preview = String::from_utf8_lossy(&preview_bytes).into_owned();
                     }
                 }
             })
-        })
-    {
+        }) {
         Ok(thread) => thread,
         Err(error) => {
             let _ = child.kill();
@@ -273,8 +274,7 @@ fn capture_live(
                     parser.feed(chunk, state);
                 }
             })
-        })
-    {
+        }) {
         Ok(thread) => thread,
         Err(error) => {
             let _ = child.kill();
