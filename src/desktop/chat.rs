@@ -410,9 +410,13 @@ mod tests {
             "Какая версия Minecraft?"
         );
         assert_eq!(data["latest_user_request"], "1.21.11");
-        assert!(chat
-            .request(&"я".repeat(REQUEST_BYTES), preferences::Optimization::Balanced)
-            .is_err());
+        assert!(
+            chat.request(
+                &"я".repeat(REQUEST_BYTES),
+                preferences::Optimization::Balanced
+            )
+            .is_err()
+        );
         assert_eq!(chat.messages.len(), 2);
     }
     #[test]
@@ -459,7 +463,10 @@ mod tests {
             chat.sent("task".into());
             chat.finish("answer".into());
         }
-        assert!(chat.request("next", preferences::Optimization::Balanced).is_err());
+        assert!(
+            chat.request("next", preferences::Optimization::Balanced)
+                .is_err()
+        );
         assert_eq!(chat.messages.len(), MESSAGE_COUNT);
     }
 }
