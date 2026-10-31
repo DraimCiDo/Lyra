@@ -156,6 +156,8 @@ impl SettingsPage {
 #[derive(Clone, Copy, PartialEq)]
 enum Operation {
     Task,
+    #[cfg(feature = "gateway-http")]
+    CloudChat,
     Apply(usize),
     Doctor,
     ProjectPlan,
@@ -247,6 +249,30 @@ impl Desktop {
         let temp = tempfile::Builder::new().prefix("lyra-desktop-").tempdir()?;
         let mut args: Vec<OsString> = Vec::new();
         let deadline = match operation {
+            #[cfg(feature = "gateway-http")]
+            Operation::CloudChat => {
+                use std::io::Read;
+                let registry = self.prefs.provider_registry.as_ref()
+                    .ok_or_else(|| io::Error::other("Укажите реестр HTTP-провайдеров."))?;
+                let mut bytes = Vec::new();
+                std::fs::File::open(registry)?.take(64 * 1024 + 1).read_to_end(&mut bytes)?;
+                let configs = crate::provider_http::parse_registry(&bytes)?;
+                let selected = configs.iter().find(|config|
+                    config.descriptor.provider == self.prefs.cloud_provider
+                    && config.descriptor.model == self.prefs.cloud_model
+                ).ok_or_else(|| io::Error::other("Выбранная модель отсутствует в реестре."))?;
+                crate::provider_http::OpenAiCompatibleBackend::new(selected.clone())?;
+                let request = self.chat.cloud_request(&self.request_task, self.prefs.tokens)?;
+                let request_path = temp.path().join("chat-request.json");
+                std::fs::write(&request_path, serde_json::to_vec(&request)?)?;
+                args.extend([
+                    "chat".into(), "--provider-config".into(), registry.as_os_str().into(),
+                    "--allow".into(), self.prefs.cloud_provider.clone().into(),
+                    "--model".into(), self.prefs.cloud_model.clone().into(),
+                    "--request-file".into(), request_path.into_os_string(),
+                ]);
+                Some(Duration::from_secs(100))
+            }
             Operation::Task => {
                 let repo = self
                     .prefs
@@ -342,6 +368,8 @@ impl Desktop {
         self.error = false;
         self.message = match operation {
             Operation::Task => "Модель работает…",
+            #[cfg(feature = "gateway-http")]
+            Operation::CloudChat => "HTTP-провайдер отвечает…",
             Operation::Apply(_) => "Применение выбранной правки…",
             Operation::Doctor => "Сбор сведений о ПК…",
             Operation::ProjectPlan => "Готовлю план проекта…",
@@ -382,6 +410,17 @@ impl Desktop {
         }
         let seconds = result.elapsed.as_secs_f32();
         match self.operation {
+            #[cfg(feature = "gateway-http")]
+            Operation::CloudChat => {
+                if result.code == Some(0) {
+                    match String::from_utf8(result.stdout) {
+                        Ok(text) => { self.message = text.trim_end().to_owned(); self.error = false; }
+                        Err(_) => self.fail("Некорректная кодировка ответа HTTP-провайдера."),
+                    }
+                } else {
+                    self.fail("HTTP-запрос завершился ошибкой. Подробности — в журнале.");
+                }
+            }
             Operation::ProjectPlan
             | Operation::ProjectCreate
             | Operation::DocsFetch
