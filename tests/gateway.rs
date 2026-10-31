@@ -38,7 +38,14 @@ fn cli_rejects_zero_attempts_without_sending_a_request() {
         .arg("chat")
         .arg("--provider-config")
         .arg(&config)
-        .args(["--allow", "local", "--max-attempts", "0", "--prompt", "test"])
+        .args([
+            "--allow",
+            "local",
+            "--max-attempts",
+            "0",
+            "--prompt",
+            "test",
+        ])
         .output()
         .unwrap();
     assert!(!output.status.success());
