@@ -44,6 +44,75 @@ impl SkillPack {
         Ok(pack)
     }
 
+
+    /// Import one Agent Skills / ECC SKILL.md as declarative instructions.
+    /// No scripts, shell commands, or hooks are executed during import.
+    pub fn load_markdown(path: &Path) -> io::Result<Self> {
+        use std::io::Read;
+        let mut bytes = Vec::new();
+        std::fs::File::open(path)?
+            .take(MAX_MANIFEST_BYTES + 1)
+            .read_to_end(&mut bytes)?;
+        if bytes.len() as u64 > MAX_MANIFEST_BYTES {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "SKILL.md exceeds 64 KiB",
+            ));
+        }
+        let source = std::str::from_utf8(&bytes)
+            .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))?;
+        let mut lines = source.lines();
+        if lines.next() != Some("---") {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "SKILL.md must start with YAML frontmatter",
+            ));
+        }
+        let mut id = None;
+        let mut description = None;
+        let mut closed = false;
+        let mut offset = 4;
+        for line in lines {
+            offset += line.len() + 1;
+            if line == "---" {
+                closed = true;
+                break;
+            }
+            if let Some((key, value)) = line.split_once(':') {
+                let value = value.trim().trim_matches('"').trim_matches('\'');
+                match key.trim() {
+                    "name" => id = Some(value.to_owned()),
+                    "description" => description = Some(value.to_owned()),
+                    _ => {}
+                }
+            }
+        }
+        if !closed {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "Unterminated SKILL.md frontmatter",
+            ));
+        }
+        let instructions = source.get(offset..).ok_or_else(|| {
+            io::Error::new(io::ErrorKind::InvalidData, "Invalid SKILL.md body")
+        })?;
+        let pack = Self {
+            schema_version: 1,
+            skills: vec![Skill {
+                id: id.ok_or_else(|| {
+                    io::Error::new(io::ErrorKind::InvalidData, "Missing skill name")
+                })?,
+                description: description.ok_or_else(|| {
+                    io::Error::new(io::ErrorKind::InvalidData, "Missing skill description")
+                })?,
+                instructions: instructions.trim().to_owned(),
+                tags: Vec::new(),
+            }],
+        };
+        pack.validate()?;
+        Ok(pack)
+    }
+
     pub fn validate(&self) -> io::Result<()> {
         if self.schema_version != 1 || self.skills.len() > MAX_SKILLS {
             return Err(io::Error::new(
@@ -99,6 +168,22 @@ mod tests {
         assert!(invalid.validate().is_err());
         invalid.skills[1].id = "../escape".into();
         assert!(invalid.validate().is_err());
+    }
+
+
+    #[test]
+    fn imports_ecc_style_skill_markdown_without_execution() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("SKILL.md");
+        std::fs::write(
+            &path,
+            "---\\nname: rust-review\\ndescription: Review Rust changes\\n---\\n# Steps\\nCheck tests.\\n",
+        )
+        .unwrap();
+        let pack = SkillPack::load_markdown(&path).unwrap();
+        assert_eq!(pack.find("rust-review").unwrap().instructions, "# Steps\\nCheck tests.");
+        std::fs::write(&path, "---\\nname: ../bad\\ndescription: Unsafe\\n---\\nhello").unwrap();
+        assert!(SkillPack::load_markdown(&path).is_err());
     }
 
     #[test]
