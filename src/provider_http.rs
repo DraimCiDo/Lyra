@@ -146,7 +146,7 @@ impl ModelBackend for OpenAiCompatibleBackend {
             max_tokens: request.max_output_tokens,
             stream: false,
         };
-        let mut response = http.json(&body).send().map_err(map_transport_error)?;
+        let response = http.json(&body).send().map_err(map_transport_error)?;
         let status = response.status();
         if !status.is_success() {
             let kind = if status.as_u16() == 429 || status.is_server_error() {
