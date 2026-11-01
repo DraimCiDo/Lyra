@@ -290,6 +290,10 @@ impl Desktop {
                 ] {
                     args.extend([flag.into(), value.to_string().into()]);
                 }
+                args.extend([
+                    "--gpu-layers".into(),
+                    self.prefs.gpu_layers.to_string().into(),
+                ]);
                 if !self.prefs.active_skill.is_empty() {
                     let manifest = self
                         .prefs
@@ -455,6 +459,10 @@ impl Desktop {
                 ] {
                     args.extend([flag.into(), value.to_string().into()]);
                 }
+                args.extend([
+                    "--gpu-layers".into(),
+                    self.prefs.gpu_layers.to_string().into(),
+                ]);
                 if let Some(docs) = &self.prefs.documentation {
                     args.extend(["--docs".into(), docs.as_os_str().into()]);
                 }
@@ -736,11 +744,14 @@ impl Desktop {
                 {
                     self.help_open = true;
                 }
-                ui.label(
-                    RichText::new(l.text("Локально · CPU"))
-                        .small()
-                        .color(c.accent),
-                );
+                let device = if !cfg!(feature = "cuda") {
+                    "Локально · CPU"
+                } else if self.prefs.gpu_layers == 0 {
+                    "Локально · CPU"
+                } else {
+                    "Локально · CUDA + CPU/RAM"
+                };
+                ui.label(RichText::new(l.text(device)).small().color(c.accent));
             });
         });
     }
@@ -926,6 +937,35 @@ impl Desktop {
                             columns[1].horizontal(|ui|{ui.label(l.text("Таймаут, с"));help(ui,l.text("Общее время задачи, включая загрузку модели."),c.muted);});
                             columns[1].add(egui::Slider::new(&mut self.prefs.timeout,1..=3600).logarithmic(true));
                         });
+                        ui.add_space(8.0);
+                        ui.separator();
+                        ui.label(RichText::new("Распределение GGUF: GPU / CPU / ОЗУ").strong());
+                        ui.label(RichText::new("Авто использует максимум безопасных слоёв на NVIDIA GPU, остальное обрабатывается CPU с использованием RAM. Сбалансированный режим оставляет часть слоёв на CPU; он не обязательно быстрее.").small().weak());
+                        let mode = &mut self.prefs.gpu_layers;
+                        ui.horizontal_wrapped(|ui| {
+                            ui.selectable_value(mode, 0, "Только CPU");
+                            ui.selectable_value(mode, crate::resources::GPU_BALANCED, "Сбалансированный");
+                            ui.selectable_value(mode, crate::resources::GPU_AUTO, "Авто GPU");
+                            if *mode == 0 || *mode == crate::resources::GPU_BALANCED || *mode == crate::resources::GPU_AUTO {
+                                if ui.button("Ручная настройка").clicked() { *mode = 16; }
+                            }
+                        });
+                        if (1..crate::resources::GPU_BALANCED).contains(mode) {
+                            ui.add(egui::Slider::new(mode, 1..=256).text("Слоёв на CUDA"));
+                        }
+                        if !cfg!(feature = "cuda") {
+                            ui.label(RichText::new("Эта сборка CPU-only. Для выбранного GPU-режима нужна отдельная Windows-сборка с CUDA. CPU fallback будет запрещён, чтобы не скрывать отсутствие ускорения.").color(c.error).small());
+                        }
+                        if ui.button("Профиль Qwen3.5-9B · RTX 4060 8 GB").clicked() {
+                            self.prefs.context = 4096;
+                            self.prefs.tokens = 1536;
+                            self.prefs.threads = 6;
+                            self.prefs.gpu_layers = if cfg!(feature = "cuda") {
+                                crate::resources::GPU_AUTO
+                            } else {
+                                0
+                            };
+                        }
                         ui.add_space(8.0);
                         if ui.small_button(l.text("Сбросить числовые параметры")).clicked(){self.prefs.reset_inference();}
                     }).response,
@@ -1125,7 +1165,11 @@ impl Desktop {
             }
         }
         ui.label(
-            RichText::new(l.text("Модель работает на CPU. Ускорение CUDA проверяется отдельно."))
+            RichText::new(if cfg!(feature = "cuda") {
+                "CUDA включена в бинарнике. Фактическая доступность и свободная VRAM проверяются при запуске GGUF."
+            } else {
+                "Сборка CPU-only; CUDA требует отдельного бинарника."
+            })
                 .small()
                 .weak(),
         );
