@@ -25,7 +25,9 @@ fn read_u64(file: &mut File) -> io::Result<u64> {
     Ok(u64::from_le_bytes(bytes))
 }
 fn skip(file: &mut File, length: u64) -> io::Result<()> {
-    let next = file.stream_position()?.checked_add(length)
+    let next = file
+        .stream_position()?
+        .checked_add(length)
         .ok_or_else(|| invalid("GGUF metadata overflow"))?;
     if next > MAX_META_BYTES || next > file.metadata()?.len() {
         return Err(invalid("GGUF metadata outside safe scan limit"));
@@ -35,15 +37,30 @@ fn skip(file: &mut File, length: u64) -> io::Result<()> {
 }
 fn skip_value(file: &mut File, ty: u32) -> io::Result<Option<u64>> {
     match ty {
-        0 | 1 | 7 => { skip(file, 1)?; Ok(None) }
-        2 | 3 => { skip(file, 2)?; Ok(None) }
+        0 | 1 | 7 => {
+            skip(file, 1)?;
+            Ok(None)
+        }
+        2 | 3 => {
+            skip(file, 2)?;
+            Ok(None)
+        }
         4 => Ok(Some(read_u32(file)? as u64)),
-        5 | 6 => { skip(file, 4)?; Ok(None) }
-        8 => { let n = read_u64(file)?; skip(file, n)?; Ok(None) }
+        5 | 6 => {
+            skip(file, 4)?;
+            Ok(None)
+        }
+        8 => {
+            let n = read_u64(file)?;
+            skip(file, n)?;
+            Ok(None)
+        }
         9 => {
             let element = read_u32(file)?;
             let count = read_u64(file)?;
-            if count > 2_000_000 { return Err(invalid("GGUF array too large")); }
+            if count > 2_000_000 {
+                return Err(invalid("GGUF array too large"));
+            }
             let width: Option<u64> = match element {
                 0 | 1 | 7 => Some(1),
                 2 | 3 => Some(2),
@@ -52,7 +69,12 @@ fn skip_value(file: &mut File, ty: u32) -> io::Result<Option<u64>> {
                 _ => None,
             };
             if let Some(width) = width {
-                skip(file, count.checked_mul(width).ok_or_else(|| invalid("GGUF array overflow"))?)?;
+                skip(
+                    file,
+                    count
+                        .checked_mul(width)
+                        .ok_or_else(|| invalid("GGUF array overflow"))?,
+                )?;
             } else if element == 8 {
                 for _ in 0..count {
                     let len = read_u64(file)?;
@@ -64,7 +86,10 @@ fn skip_value(file: &mut File, ty: u32) -> io::Result<Option<u64>> {
             Ok(None)
         }
         10 => Ok(Some(read_u64(file)?)),
-        11 | 12 => { skip(file, 8)?; Ok(None) }
+        11 | 12 => {
+            skip(file, 8)?;
+            Ok(None)
+        }
         _ => Err(invalid("Unknown GGUF metadata type")),
     }
 }
@@ -79,10 +104,14 @@ pub fn gguf_block_count(path: &Path) -> io::Result<u32> {
     }
     let _tensors = read_u64(&mut file)?;
     let items = read_u64(&mut file)?;
-    if items > 50_000 { return Err(invalid("Too many GGUF metadata entries")); }
+    if items > 50_000 {
+        return Err(invalid("Too many GGUF metadata entries"));
+    }
     for _ in 0..items {
         let len = read_u64(&mut file)?;
-        if len > 256 { return Err(invalid("GGUF metadata key too large")); }
+        if len > 256 {
+            return Err(invalid("GGUF metadata key too large"));
+        }
         let mut key = vec![0u8; len as usize];
         file.read_exact(&mut key)?;
         let name = std::str::from_utf8(&key).map_err(|_| invalid("Invalid GGUF key"))?;
@@ -96,7 +125,9 @@ pub fn gguf_block_count(path: &Path) -> io::Result<u32> {
             return Ok(count);
         }
     }
-    Err(invalid("GGUF block count not found. Select a manual CUDA layer count."))
+    Err(invalid(
+        "GGUF block count not found. Select a manual CUDA layer count.",
+    ))
 }
 
 /// Reserve at least 1.5 GiB, plus a modest context-dependent buffer.
@@ -117,7 +148,9 @@ pub fn recommended_layers(
     context: u32,
     balanced: bool,
 ) -> u32 {
-    if model_bytes == 0 || blocks == 0 { return 0; }
+    if model_bytes == 0 || blocks == 0 {
+        return 0;
+    }
     let budget = gpu_weight_budget(free_vram, context);
     let per_layer = (model_bytes / u64::from(blocks)).max(1);
     let safe_per_layer = per_layer.saturating_mul(135) / 100;
@@ -129,7 +162,11 @@ pub fn recommended_layers(
     }
 }
 
-pub fn memory_preflight(model_bytes: u64, free_ram: Option<u64>, gpu_budget: u64) -> io::Result<()> {
+pub fn memory_preflight(
+    model_bytes: u64,
+    free_ram: Option<u64>,
+    gpu_budget: u64,
+) -> io::Result<()> {
     if let Some(free_ram) = free_ram {
         let usable_ram = free_ram.saturating_sub(2 * GIB);
         if model_bytes > usable_ram.saturating_add(gpu_budget) {
@@ -152,8 +189,10 @@ mod tests {
         let size = 6 * GIB;
         assert!(recommended_layers(size, 32, 7 * GIB, 2048, false) > 0);
         assert!(recommended_layers(size, 32, 7 * GIB, 2048, true) <= 21);
-        assert!(recommended_layers(size, 32, 7 * GIB, 8192, false)
-            <= recommended_layers(size, 32, 7 * GIB, 2048, false));
+        assert!(
+            recommended_layers(size, 32, 7 * GIB, 8192, false)
+                <= recommended_layers(size, 32, 7 * GIB, 2048, false)
+        );
         assert_eq!(recommended_layers(size, 32, 0, 4096, false), 0);
     }
     #[test]
