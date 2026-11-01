@@ -351,7 +351,12 @@ impl Desktop {
             if summaries.is_empty() {
                 self.message.clone()
             } else {
-                summaries.join("\n\n")
+                let mut text = summaries.join("\n\n");
+                if !report.context_optimization.is_empty() {
+                    text.push_str("\n\n");
+                    text.push_str(&self.message);
+                }
+                text
             }
         } else {
             self.message.clone()
@@ -678,6 +683,30 @@ impl Desktop {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn successful_task_keeps_controller_context_metrics_visible() {
+        for enabled in [false, true] {
+            let mut app = Desktop::default();
+            app.operation = Operation::Task;
+            app.chat.sent("Inspect".into());
+            app.message = "Context saved: 40 bytes".into();
+            let mut report: crate::agent::Report = serde_json::from_value(serde_json::json!({
+                "schema_version":3,"workspace":"project","status":"completed",
+                "summaries":[["coder","Inspected; tests not run."]],"proposals":[],"events":[],
+                "calls":1,"subagents":false,"truncated_index":false,"model_review_is_verified_test":false
+            })).unwrap();
+            if enabled {
+                report
+                    .context_optimization
+                    .push(crate::context_optimizer::ContextStats::default());
+            }
+            app.report = Some(report);
+            app.finish_chat();
+            let answer = &app.chat.messages.last().unwrap().text;
+            assert!(answer.contains("Inspected; tests not run."));
+            assert_eq!(answer.contains("Context saved: 40 bytes"), enabled);
+        }
+    }
     #[test]
     fn chat_layout_caps_long_messages_and_keeps_short_bubbles_compact() {
         assert_eq!(conversation_width(1600.0), 820.0);
