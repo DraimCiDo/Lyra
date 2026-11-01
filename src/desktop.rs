@@ -744,12 +744,10 @@ impl Desktop {
                 {
                     self.help_open = true;
                 }
-                let device = if !cfg!(feature = "cuda") {
-                    "Локально · CPU"
-                } else if self.prefs.gpu_layers == 0 {
-                    "Локально · CPU"
-                } else {
+                let device = if cfg!(feature = "cuda") && self.prefs.gpu_layers > 0 {
                     "Локально · CUDA + CPU/RAM"
+                } else {
+                    "Локально · CPU"
                 };
                 ui.label(RichText::new(l.text(device)).small().color(c.accent));
             });
@@ -946,9 +944,8 @@ impl Desktop {
                             ui.selectable_value(mode, 0, "Только CPU");
                             ui.selectable_value(mode, crate::resources::GPU_BALANCED, "Сбалансированный");
                             ui.selectable_value(mode, crate::resources::GPU_AUTO, "Авто GPU");
-                            if *mode == 0 || *mode == crate::resources::GPU_BALANCED || *mode == crate::resources::GPU_AUTO {
-                                if ui.button("Ручная настройка").clicked() { *mode = 16; }
-                            }
+                            if (*mode == 0 || *mode == crate::resources::GPU_BALANCED || *mode == crate::resources::GPU_AUTO)
+                                && ui.button("Ручная настройка").clicked() { *mode = 16; }
                         });
                         if (1..crate::resources::GPU_BALANCED).contains(mode) {
                             ui.add(egui::Slider::new(mode, 1..=256).text("Слоёв на CUDA"));
