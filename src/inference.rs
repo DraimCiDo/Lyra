@@ -166,13 +166,8 @@ pub fn with_session<T>(
             .iter()
             .filter(|device| device.backend == "CUDA")
             .max_by_key(|device| device.memory_free)
-            .ok_or_else(|| {
-                fail("CUDA-устройство недоступно; CPU fallback не выполняется.")
-            })?;
-        gpu_budget = crate::resources::gpu_weight_budget(
-            device.memory_free as u64,
-            args.context,
-        );
+            .ok_or_else(|| fail("CUDA-устройство недоступно; CPU fallback не выполняется."))?;
+        gpu_budget = crate::resources::gpu_weight_budget(device.memory_free as u64, args.context);
         if matches!(
             args.gpu_layers,
             crate::resources::GPU_AUTO | crate::resources::GPU_BALANCED
