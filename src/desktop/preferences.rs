@@ -32,6 +32,8 @@ pub struct Preferences {
     pub tokens: u32,
     pub calls: u32,
     pub threads: u32,
+    /// Number of model layers offloaded to CUDA; 0 keeps inference on CPU.
+    pub gpu_layers: u32,
     pub timeout: u64,
 }
 impl Default for Preferences {
@@ -59,6 +61,7 @@ impl Default for Preferences {
             tokens: 512,
             calls: 12,
             threads: crate::inference::default_threads(),
+            gpu_layers: 0,
             timeout: 600,
         }
     }
@@ -71,6 +74,7 @@ impl Preferences {
             && (1..=24).contains(&self.calls)
             && (!self.subagents || self.calls >= 3)
             && (1..=256).contains(&self.threads)
+            && self.gpu_layers <= 1024
             && (1..=3600).contains(&self.timeout)
             && self.active_skill.len() <= 64
             && self.cloud_provider.len() <= 128
@@ -125,6 +129,7 @@ impl Preferences {
         self.tokens = defaults.tokens;
         self.calls = defaults.calls;
         self.threads = defaults.threads;
+        self.gpu_layers = defaults.gpu_layers;
         self.timeout = defaults.timeout;
     }
 }
@@ -165,6 +170,26 @@ mod tests {
         legacy.as_object_mut().unwrap().remove("provider_registry");
         std::fs::write(&path, serde_json::to_vec(&legacy).unwrap()).unwrap();
         assert_eq!(Preferences::load(&path).unwrap().provider_registry, None);
+    }
+
+    #[test]
+    fn gpu_settings_roundtrip_legacy_and_safe_defaults() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("settings.json");
+        let mut prefs = Preferences {
+            gpu_layers: 99,
+            ..Preferences::default()
+        };
+        prefs.save(&path).unwrap();
+        assert_eq!(Preferences::load(&path).unwrap().gpu_layers, 99);
+        let mut legacy = serde_json::to_value(&prefs).unwrap();
+        legacy.as_object_mut().unwrap().remove("gpu_layers");
+        std::fs::write(&path, serde_json::to_vec(&legacy).unwrap()).unwrap();
+        assert_eq!(Preferences::load(&path).unwrap().gpu_layers, 0);
+        prefs.gpu_layers = 1025;
+        assert!(prefs.save(&path).is_err());
+        prefs.reset_inference();
+        assert_eq!(prefs.gpu_layers, 0);
     }
 
     #[test]
