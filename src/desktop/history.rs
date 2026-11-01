@@ -192,11 +192,10 @@ impl Desktop {
             .as_ref()
             .and_then(|p| p.parent())
             .map(|p| p.join("conversations.json"))
+            && let Err(error) = self.conversations.save(&path)
         {
-            if let Err(error) = self.conversations.save(&path) {
-                self.preference_error = Some(format!("История: {error}"));
-                self.conversations.dirty = None;
-            }
+            self.preference_error = Some(format!("История: {error}"));
+            self.conversations.dirty = None;
         }
     }
 }
