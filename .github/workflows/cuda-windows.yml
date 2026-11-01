@@ -2,6 +2,9 @@ name: Windows NVIDIA CUDA build (RTX 4060)
 
 on:
   workflow_dispatch:
+  pull_request:
+    paths:
+      - '.github/workflows/cuda-windows.yml'
   push:
     branches:
       - plan/ecc-omniroute-unified-platform
@@ -50,7 +53,7 @@ jobs:
         run: cargo build --release --locked --features desktop,gateway-http,cuda --bins --target x86_64-pc-windows-msvc
       - name: Package CUDA portable test build
         run: |
-          New-Item -ItemType Directory -Force -Path dist | Out-Null
+          New-Item -ItemType Directory -Force -Path dist, dist/examples | Out-Null
           Copy-Item -LiteralPath target/x86_64-pc-windows-msvc/release/lyra.exe -Destination dist/
           Copy-Item -LiteralPath target/x86_64-pc-windows-msvc/release/lyra-desktop.exe -Destination dist/
           Copy-Item -LiteralPath examples/buggy-add -Destination dist/examples/buggy-add -Recurse
