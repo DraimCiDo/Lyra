@@ -7,6 +7,7 @@ pub mod inference;
 pub mod knowledge;
 pub mod model_gateway;
 pub mod project;
+pub mod resources;
 #[cfg(feature = "gateway-http")]
 pub mod provider_http;
 pub mod routing;
