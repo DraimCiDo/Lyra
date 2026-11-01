@@ -15,6 +15,12 @@ on:
 permissions:
   contents: read
 
+# Keep the two feature matrices and native builds within hosted-runner disk limits.
+env:
+  CARGO_PROFILE_DEV_DEBUG: '0'
+  CARGO_PROFILE_TEST_DEBUG: '0'
+  CARGO_INCREMENTAL: '0'
+
 concurrency:
   group: cli-${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
@@ -49,9 +55,12 @@ jobs:
           path: |
             ~/.cargo/registry
             ~/.m2/repository
-            target
-          key: lyra-native-${{ runner.os }}-${{ hashFiles('rust-toolchain.toml') }}-${{ hashFiles('Cargo.lock', 'Cargo.toml') }}
-          restore-keys: lyra-native-${{ runner.os }}-${{ hashFiles('rust-toolchain.toml') }}-
+            target/debug/build
+            target/release/build
+            target/${{ matrix.target }}/release/build
+          # Do not restore old whole-target caches: they exhausted Linux runner disk.
+          key: lyra-native-v2-${{ runner.os }}-${{ hashFiles('rust-toolchain.toml') }}-${{ hashFiles('Cargo.lock', 'Cargo.toml') }}
+          restore-keys: lyra-native-v2-${{ runner.os }}-${{ hashFiles('rust-toolchain.toml') }}-
       - name: Native inference build dependencies (Linux)
         if: runner.os == 'Linux'
         run: sudo apt-get update && sudo apt-get install -y cmake libclang-dev xvfb libegl1-mesa-dev libxkbcommon-dev libxkbcommon-x11-dev

@@ -16,19 +16,25 @@ struct Message {
     text: String,
 }
 impl Chat {
+    fn selected_history(&self, optimization: preferences::Optimization) -> &[Message] {
+        let keep = match optimization {
+            preferences::Optimization::Safe => self.messages.len(),
+            preferences::Optimization::Balanced => 12,
+            preferences::Optimization::Aggressive => 6,
+        };
+        &self.messages[self.messages.len().saturating_sub(keep)..]
+    }
+
     pub(super) fn model_request(
         &self,
         latest: &str,
         tokens: u32,
+        optimization: preferences::Optimization,
     ) -> io::Result<crate::model_gateway::Request> {
-        if latest.trim().is_empty() {
-            return Err(io::Error::new(
-                io::ErrorKind::InvalidInput,
-                "Пустой запрос.",
-            ));
-        }
+        // Apply the same validation and history window as task/project payloads.
+        self.request(latest, optimization)?;
         let mut messages: Vec<crate::model_gateway::Message> = self
-            .messages
+            .selected_history(optimization)
             .iter()
             .map(|message| crate::model_gateway::Message {
                 role: if message.user {
@@ -50,7 +56,7 @@ impl Chat {
         })
     }
 
-    fn request(&self, text: &str) -> io::Result<String> {
+    fn request(&self, text: &str, optimization: preferences::Optimization) -> io::Result<String> {
         if text.trim().is_empty() || self.messages.len() + 2 > MESSAGE_COUNT {
             return Err(io::Error::other(
                 "Пустое сообщение или достигнут лимит переписки. Начни новый чат.",
@@ -65,7 +71,9 @@ impl Chat {
         let result = if self.messages.is_empty() {
             text.to_owned()
         } else {
-            let history: Vec<_> = self.messages.iter().map(|m| {
+            // Only omit entire older messages; never rewrite code, errors or patches.
+            // The latest user turn is always preserved verbatim.
+            let history: Vec<_> = self.selected_history(optimization).iter().map(|m| {
                 serde_json::json!({"role":if m.user {"user"} else {"assistant"},"content":m.text})
             }).collect();
             serde_json::json!({"conversation":history,"latest_user_request":text,
@@ -276,7 +284,7 @@ impl Desktop {
 
     pub(super) fn submit_chat(&mut self, ctx: &egui::Context) -> io::Result<()> {
         let text = self.task.trim().to_owned();
-        let request = self.chat.request(&text)?;
+        let request = self.chat.request(&text, self.prefs.optimization)?;
         self.request_task = request.clone();
         let operation = self.chat_operation();
         if operation == Operation::ProjectPlan {
@@ -685,7 +693,9 @@ mod tests {
         let mut chat = Chat::default();
         chat.sent("First".into());
         chat.finish("Answer".into());
-        let request = chat.model_request("Follow-up", 256).unwrap();
+        let request = chat
+            .model_request("Follow-up", 256, preferences::Optimization::Balanced)
+            .unwrap();
         assert_eq!(request.messages.len(), 3);
         assert_eq!(request.messages[0].role, crate::model_gateway::Role::User);
         assert_eq!(
@@ -694,7 +704,10 @@ mod tests {
         );
         assert_eq!(request.messages[2].content, "Follow-up");
         assert_eq!(request.max_output_tokens, 256);
-        assert!(chat.model_request(" ", 256).is_err());
+        assert!(
+            chat.model_request(" ", 256, preferences::Optimization::Balanced)
+                .is_err()
+        );
     }
 
     #[test]
@@ -702,7 +715,9 @@ mod tests {
         let mut chat = Chat::default();
         chat.sent("Создай плагин Paper".into());
         chat.finish("Какая версия Minecraft?".into());
-        let request = chat.request("1.21.11").unwrap();
+        let request = chat
+            .request("1.21.11", preferences::Optimization::Balanced)
+            .unwrap();
         let data: serde_json::Value = serde_json::from_str(&request).unwrap();
         assert_eq!(data["conversation"][0]["content"], "Создай плагин Paper");
         assert_eq!(
@@ -710,7 +725,13 @@ mod tests {
             "Какая версия Minecraft?"
         );
         assert_eq!(data["latest_user_request"], "1.21.11");
-        assert!(chat.request(&"я".repeat(REQUEST_BYTES)).is_err());
+        assert!(
+            chat.request(
+                &"я".repeat(REQUEST_BYTES),
+                preferences::Optimization::Balanced
+            )
+            .is_err()
+        );
         assert_eq!(chat.messages.len(), 2);
     }
     #[test]
@@ -778,7 +799,70 @@ mod tests {
             chat.sent("task".into());
             chat.finish("answer".into());
         }
-        assert!(chat.request("next").is_err());
+        assert!(
+            chat.request("next", preferences::Optimization::Balanced)
+                .is_err()
+        );
         assert_eq!(chat.messages.len(), MESSAGE_COUNT);
+    }
+}
+
+#[cfg(test)]
+mod optimization_tests {
+    use super::*;
+    #[test]
+    fn all_payloads_share_exact_history_windows_and_keep_latest_verbatim() {
+        let mut chat = Chat::default();
+        for n in 0..20 {
+            chat.messages.push(Message {
+                user: n % 2 == 0,
+                text: format!("turn_{n}"),
+            });
+        }
+        let latest = "Сохрани код дословно:\nfn main() {}\r\n";
+        for (mode, expected) in [
+            (preferences::Optimization::Safe, 20),
+            (preferences::Optimization::Balanced, 12),
+            (preferences::Optimization::Aggressive, 6),
+        ] {
+            let envelope: serde_json::Value =
+                serde_json::from_str(&chat.request(latest, mode).unwrap()).unwrap();
+            let model = chat.model_request(latest, 256, mode).unwrap();
+            let history = envelope["conversation"].as_array().unwrap();
+            assert_eq!(history.len(), expected);
+            assert_eq!(model.messages.len(), expected + 1);
+            assert_eq!(model.messages[0].content, format!("turn_{}", 20 - expected));
+            for (item, message) in history.iter().zip(&model.messages) {
+                assert_eq!(item["content"], message.content);
+                assert_eq!(item["role"], serde_json::to_value(&message.role).unwrap());
+            }
+            assert_eq!(envelope["latest_user_request"], latest);
+            assert_eq!(model.messages.last().unwrap().content, latest);
+        }
+        assert_eq!(chat.messages.len(), 20); // Selection never mutates stored history.
+    }
+    #[test]
+    fn safe_preserves_full_history_and_aggressive_keeps_recent() {
+        let mut chat = Chat::default();
+        for n in 0..10 {
+            chat.messages.push(Message {
+                user: n % 2 == 0,
+                text: format!("unique_turn_{n}"),
+            });
+        }
+        let safe = chat
+            .request("new task", preferences::Optimization::Safe)
+            .unwrap();
+        let balanced = chat
+            .request("new task", preferences::Optimization::Balanced)
+            .unwrap();
+        let aggressive = chat
+            .request("new task", preferences::Optimization::Aggressive)
+            .unwrap();
+        assert!(safe.contains("unique_turn_0"));
+        assert!(balanced.contains("unique_turn_0"));
+        assert!(!aggressive.contains("unique_turn_0"));
+        assert!(aggressive.contains("unique_turn_9"));
+        assert!(aggressive.contains("new task"));
     }
 }

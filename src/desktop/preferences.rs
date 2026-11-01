@@ -7,6 +7,30 @@ use std::{
 };
 
 const LIMIT: u64 = 64 * 1024;
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Optimization {
+    Safe,
+    #[default]
+    Balanced,
+    Aggressive,
+}
+impl Optimization {
+    pub fn from_slider(value: u32) -> Self {
+        match value {
+            0 => Self::Safe,
+            2 => Self::Aggressive,
+            _ => Self::Balanced,
+        }
+    }
+    pub fn slider(self) -> u32 {
+        match self {
+            Self::Safe => 0,
+            Self::Balanced => 1,
+            Self::Aggressive => 2,
+        }
+    }
+}
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct Preferences {
@@ -28,6 +52,7 @@ pub struct Preferences {
     pub documentation: Option<PathBuf>,
     pub files: String,
     pub subagents: bool,
+    pub optimization: Optimization,
     pub context: u32,
     pub tokens: u32,
     pub calls: u32,
@@ -57,6 +82,7 @@ impl Default for Preferences {
             documentation: None,
             files: String::new(),
             subagents: false,
+            optimization: Optimization::Balanced,
             context: 4096,
             tokens: 512,
             calls: 12,
@@ -193,6 +219,32 @@ mod tests {
     }
 
     #[test]
+    fn optimization_modes_persist_and_legacy_defaults_to_balanced() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("settings.json");
+        for mode in [
+            Optimization::Safe,
+            Optimization::Balanced,
+            Optimization::Aggressive,
+        ] {
+            let prefs = Preferences {
+                optimization: mode,
+                ..Preferences::default()
+            };
+            prefs.save(&path).unwrap();
+            assert_eq!(Preferences::load(&path).unwrap().optimization, mode);
+            assert_eq!(Optimization::from_slider(mode.slider()), mode);
+        }
+        let mut legacy = serde_json::to_value(Preferences::default()).unwrap();
+        legacy.as_object_mut().unwrap().remove("optimization");
+        std::fs::write(&path, serde_json::to_vec(&legacy).unwrap()).unwrap();
+        assert_eq!(
+            Preferences::load(&path).unwrap().optimization,
+            Optimization::Balanced
+        );
+    }
+
+    #[test]
     fn preferences_roundtrip_overwrite_and_reject_bad_data() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("settings.json");
@@ -218,6 +270,9 @@ mod tests {
         std::fs::write(&path, vec![b' '; LIMIT as usize + 1]).unwrap();
         assert!(Preferences::load(&path).is_err());
         let json = serde_json::to_value(p).unwrap();
+        assert_eq!(json["optimization"], "balanced");
+        assert_eq!(Optimization::from_slider(0), Optimization::Safe);
+        assert_eq!(Optimization::from_slider(2), Optimization::Aggressive);
         assert!(json.get("task").is_none());
         assert!(json.get("report").is_none());
         assert!(json.get("api_key").is_none());

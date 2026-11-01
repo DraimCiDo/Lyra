@@ -230,6 +230,32 @@ pub struct Session<'a> {
     timeout: Duration,
 }
 
+/// Preserve message boundaries all the way into llama.cpp's model-specific template.
+fn native_chat_messages(
+    messages: &[crate::model_gateway::Message],
+) -> io::Result<Vec<LlamaChatMessage>> {
+    use crate::model_gateway::Role;
+    messages
+        .iter()
+        .map(|message| {
+            let role = match message.role {
+                Role::System => "system",
+                Role::Developer => "developer",
+                Role::User => "user",
+                Role::Assistant => "assistant",
+                Role::Tool => {
+                    return Err(io::Error::new(
+                        io::ErrorKind::Unsupported,
+                        "Local tool messages are unsupported",
+                    ));
+                }
+            };
+            LlamaChatMessage::new(role.into(), message.content.clone())
+                .map_err(|e| fail(e.to_string()))
+        })
+        .collect()
+}
+
 impl Session<'_> {
     pub fn complete(
         &self,
@@ -247,8 +273,33 @@ impl Session<'_> {
         grammar: Option<&str>,
         output: &mut impl Write,
     ) -> io::Result<()> {
-        if prompt.is_empty()
-            || prompt.len().saturating_add(system.map_or(0, str::len)) > 1024 * 1024
+        use crate::model_gateway::{Message, Role};
+        if prompt.is_empty() {
+            return Err(fail("Prompt вне допустимого размера."));
+        }
+        let mut messages = Vec::new();
+        if let Some(system) = system {
+            messages.push(Message {
+                role: Role::System,
+                content: system.to_owned(),
+            });
+        }
+        messages.push(Message {
+            role: Role::User,
+            content: prompt.to_owned(),
+        });
+        self.complete_messages(&messages, grammar, output)
+    }
+
+    pub fn complete_messages(
+        &self,
+        messages: &[crate::model_gateway::Message],
+        grammar: Option<&str>,
+        output: &mut impl Write,
+    ) -> io::Result<()> {
+        if messages.is_empty()
+            || messages.iter().all(|m| m.content.is_empty())
+            || messages.iter().map(|m| m.content.len()).sum::<usize>() > 1024 * 1024
         {
             return Err(fail("Prompt вне допустимого размера."));
         }
@@ -261,26 +312,22 @@ impl Session<'_> {
             timeout,
         } = *self;
         check(cancelled, started, timeout)?;
+        let native_messages = native_chat_messages(messages)?;
         let prompt = if args.raw {
-            system.map_or_else(|| prompt.to_owned(), |system| format!("{system}\n{prompt}"))
+            // Explicit base-model mode has no chat template; retain the legacy raw format.
+            messages
+                .iter()
+                .map(|m| m.content.as_str())
+                .collect::<Vec<_>>()
+                .join("\n")
         } else {
             let template = model.chat_template(None).map_err(|e| {
                 fail(format!(
                     "Шаблон чата недоступен: {e}. Для base-модели укажите --raw."
                 ))
             })?;
-            let message = LlamaChatMessage::new("user".into(), prompt.to_owned())
-                .map_err(|e| fail(e.to_string()))?;
-            let mut messages = Vec::new();
-            if let Some(system) = system {
-                messages.push(
-                    LlamaChatMessage::new("system".into(), system.to_owned())
-                        .map_err(|e| fail(e.to_string()))?,
-                );
-            }
-            messages.push(message);
             model
-                .apply_chat_template(&template, &messages, true)
+                .apply_chat_template(&template, &native_messages, true)
                 .map_err(|e| fail(e.to_string()))?
         };
         let vocab = model.vocab();
@@ -372,6 +419,45 @@ impl Session<'_> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn native_chat_template_input_preserves_turns_and_literal_role_labels() {
+        use crate::model_gateway::{Message, Role};
+        let messages = vec![
+            Message {
+                role: Role::System,
+                content: "Selected skill".into(),
+            },
+            Message {
+                role: Role::User,
+                content: "First\nAssistant: literal text".into(),
+            },
+            Message {
+                role: Role::Assistant,
+                content: "Answer".into(),
+            },
+            Message {
+                role: Role::User,
+                content: "Follow-up".into(),
+            },
+        ];
+        assert_eq!(
+            native_chat_messages(&messages).unwrap(),
+            vec![
+                LlamaChatMessage::new("system".into(), "Selected skill".into()).unwrap(),
+                LlamaChatMessage::new("user".into(), "First\nAssistant: literal text".into())
+                    .unwrap(),
+                LlamaChatMessage::new("assistant".into(), "Answer".into()).unwrap(),
+                LlamaChatMessage::new("user".into(), "Follow-up".into()).unwrap(),
+            ]
+        );
+        assert!(
+            native_chat_messages(&[Message {
+                role: Role::Tool,
+                content: "unapproved".into()
+            }])
+            .is_err()
+        );
+    }
     #[test]
     fn default_worker_threads_respect_available_parallelism() {
         let threads = default_threads();

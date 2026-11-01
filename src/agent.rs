@@ -548,7 +548,10 @@ impl Model for CloudTaskModel {
 }
 
 #[cfg(feature = "gateway-http")]
-fn cloud_task_model(args: &TaskArgs) -> io::Result<Option<CloudTaskModel>> {
+fn cloud_task_model(
+    args: &TaskArgs,
+    started: std::time::Instant,
+) -> io::Result<Option<CloudTaskModel>> {
     use std::io::Read;
     let Some(path) = &args.provider_config else {
         return Ok(None);
@@ -581,12 +584,15 @@ fn cloud_task_model(args: &TaskArgs) -> io::Result<Option<CloudTaskModel>> {
             )
         })?;
     Ok(Some(CloudTaskModel {
-        backend: crate::provider_http::OpenAiCompatibleBackend::new(config)?,
+        backend: crate::provider_http::OpenAiCompatibleBackend::new(config)?
+            .with_deadline(started + std::time::Duration::from_secs(args.timeout_secs)),
         max_tokens: args.max_tokens,
     }))
 }
 
 pub fn task(args: TaskArgs, output: &mut impl Write) -> io::Result<()> {
+    #[cfg(feature = "gateway-http")]
+    let started = std::time::Instant::now();
     let task = limited_file(&args.task_file, 16384)?;
     if task.trim().is_empty() || (args.subagents && args.max_calls < 3) {
         return Err(io::Error::other(
@@ -612,7 +618,7 @@ pub fn task(args: TaskArgs, output: &mut impl Write) -> io::Result<()> {
     let skill_guidance =
         crate::agent_runtime::skill_instructions(skill_pack.as_ref(), &args.selected_skills)?;
     #[cfg(feature = "gateway-http")]
-    if let Some(mut cloud) = cloud_task_model(&args)? {
+    if let Some(mut cloud) = cloud_task_model(&args, started)? {
         let mut model = SkilledModel {
             inner: &mut cloud,
             guidance: &skill_guidance,

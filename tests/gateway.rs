@@ -3,6 +3,96 @@
 use std::process::Command;
 
 #[test]
+fn cloud_task_timeout_covers_multiple_calls_and_response_body() {
+    use std::io::{Read, Write};
+    use std::net::TcpListener;
+    use std::time::{Duration, Instant};
+
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    listener.set_nonblocking(true).unwrap();
+    let endpoint = format!(
+        "http://{}/v1/chat/completions",
+        listener.local_addr().unwrap()
+    );
+    let server = std::thread::spawn(move || {
+        let stop = Instant::now() + Duration::from_secs(5);
+        for action in [
+            r#"{"tool":"list"}"#,
+            r#"{"tool":"finish","summary":"done"}"#,
+        ] {
+            let mut stream = loop {
+                match listener.accept() {
+                    Ok((stream, _)) => break stream,
+                    Err(error)
+                        if error.kind() == std::io::ErrorKind::WouldBlock
+                            && Instant::now() < stop =>
+                    {
+                        std::thread::sleep(Duration::from_millis(10));
+                    }
+                    Err(_) => return,
+                }
+            };
+            stream
+                .set_read_timeout(Some(Duration::from_secs(2)))
+                .unwrap();
+            let mut request = [0u8; 8192];
+            if stream.read(&mut request).is_err() {
+                return;
+            }
+            let body = serde_json::json!({"choices":[{"message":{"content":action}}]}).to_string();
+            if write!(stream, "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n", body.len()).is_err() { return; }
+            // Each response fits a one-second per-request timeout; together they do not.
+            std::thread::sleep(Duration::from_millis(600));
+            let _ = stream.write_all(body.as_bytes());
+        }
+    });
+    let dir = tempfile::tempdir().unwrap();
+    let config = dir.path().join("providers.json");
+    let task = dir.path().join("task.txt");
+    let repo = dir.path().join("repo");
+    std::fs::create_dir(&repo).unwrap();
+    std::fs::write(repo.join("hello.txt"), "hello").unwrap();
+    std::fs::write(&task, "List files then finish").unwrap();
+    std::fs::write(
+        &config,
+        serde_json::json!({
+            "descriptor": {"provider":"local", "model":"test", "capabilities":{
+                "tool_calls":false, "vision":false, "prompt_cache":false, "max_context_tokens":4096
+            }},
+            "endpoint":endpoint, "api_key_env":null
+        })
+        .to_string(),
+    )
+    .unwrap();
+    let output = Command::new(env!("CARGO_BIN_EXE_lyra"))
+        .arg("task")
+        .arg("--repo")
+        .arg(&repo)
+        .arg("--task-file")
+        .arg(&task)
+        .arg("--provider-config")
+        .arg(&config)
+        .args([
+            "--allow",
+            "local",
+            "--timeout-secs",
+            "1",
+            "--max-calls",
+            "3",
+        ])
+        .output()
+        .unwrap();
+    server.join().unwrap();
+    assert!(
+        !output.status.success(),
+        "task must not reset its deadline per request"
+    );
+    let report: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(report["status"], "timeout");
+    assert!(report["calls"].as_u64().unwrap() <= 2);
+}
+
+#[test]
 fn cli_refuses_unapproved_provider_without_network_access() {
     let dir = tempfile::tempdir().unwrap();
     let config = dir.path().join("providers.json");

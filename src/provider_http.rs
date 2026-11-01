@@ -8,7 +8,7 @@ use reqwest::header::{AUTHORIZATION, CONTENT_TYPE};
 use serde::{Deserialize, Serialize};
 use std::io;
 use std::net::IpAddr;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 #[derive(Clone, Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -69,6 +69,7 @@ pub fn parse_registry(bytes: &[u8]) -> io::Result<Vec<ProviderConfig>> {
 pub struct OpenAiCompatibleBackend {
     config: ProviderConfig,
     client: Client,
+    deadline: Option<Instant>,
 }
 
 impl OpenAiCompatibleBackend {
@@ -109,7 +110,17 @@ impl OpenAiCompatibleBackend {
             .redirect(reqwest::redirect::Policy::none())
             .build()
             .map_err(io::Error::other)?;
-        Ok(Self { config, client })
+        Ok(Self {
+            config,
+            client,
+            deadline: None,
+        })
+    }
+
+    /// Bound every request by the same task deadline, including response-body reads.
+    pub fn with_deadline(mut self, deadline: Instant) -> Self {
+        self.deadline = Some(deadline);
+        self
     }
 }
 
@@ -171,6 +182,15 @@ impl ModelBackend for OpenAiCompatibleBackend {
             .client
             .post(&self.config.endpoint)
             .header(CONTENT_TYPE, "application/json");
+        if let Some(deadline) = self.deadline {
+            let remaining = deadline
+                .checked_duration_since(Instant::now())
+                .filter(|remaining| !remaining.is_zero())
+                .ok_or_else(|| {
+                    io::Error::new(io::ErrorKind::TimedOut, "Cloud task deadline exceeded")
+                })?;
+            http = http.timeout(remaining.min(Duration::from_secs(90)));
+        }
         if let Some(name) = &self.config.api_key_env {
             let secret = std::env::var(name).map_err(|_| {
                 io::Error::new(
@@ -210,7 +230,19 @@ impl ModelBackend for OpenAiCompatibleBackend {
         // Cap response size before JSON parsing to avoid unbounded allocation.
         use std::io::Read;
         let mut bytes = Vec::new();
-        response.take(8 * 1024 * 1024 + 1).read_to_end(&mut bytes)?;
+        response
+            .take(8 * 1024 * 1024 + 1)
+            .read_to_end(&mut bytes)
+            .map_err(|error| {
+                if self
+                    .deadline
+                    .is_some_and(|deadline| Instant::now() >= deadline)
+                {
+                    io::Error::new(io::ErrorKind::TimedOut, "Cloud task deadline exceeded")
+                } else {
+                    error
+                }
+            })?;
         if bytes.len() > 8 * 1024 * 1024 {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidData,
@@ -255,6 +287,34 @@ fn map_transport_error(error: reqwest::Error) -> io::Error {
 mod tests {
     use super::*;
     use crate::model_gateway::ModelCapabilities;
+
+    #[test]
+    fn expired_task_deadline_does_not_connect() {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        listener.set_nonblocking(true).unwrap();
+        let endpoint = format!(
+            "http://{}/v1/chat/completions",
+            listener.local_addr().unwrap()
+        );
+        let mut backend = OpenAiCompatibleBackend::new(config(&endpoint))
+            .unwrap()
+            .with_deadline(Instant::now());
+        let error = backend
+            .complete(&Request {
+                messages: vec![Message {
+                    role: crate::model_gateway::Role::User,
+                    content: "private".into(),
+                }],
+                max_output_tokens: 128,
+                require_tools: false,
+            })
+            .unwrap_err();
+        assert_eq!(error.kind(), io::ErrorKind::TimedOut);
+        assert_eq!(
+            listener.accept().unwrap_err().kind(),
+            io::ErrorKind::WouldBlock
+        );
+    }
 
     fn config(endpoint: &str) -> ProviderConfig {
         ProviderConfig {

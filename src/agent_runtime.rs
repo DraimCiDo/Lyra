@@ -109,32 +109,10 @@ pub fn complete_gguf(
             "Local tool calls are not supported by this adapter",
         ));
     }
-    let mut system = String::new();
-    let mut conversation = String::new();
-    for message in &prepared.messages {
-        match message.role {
-            Role::System | Role::Developer => {
-                system.push_str(&message.content);
-                system.push_str("\n\n");
-            }
-            Role::User | Role::Assistant => {
-                conversation.push_str(if message.role == Role::User {
-                    "User: "
-                } else {
-                    "Assistant: "
-                });
-                conversation.push_str(&message.content);
-                conversation.push('\n');
-            }
-            Role::Tool => {
-                return Err(io::Error::new(
-                    io::ErrorKind::Unsupported,
-                    "Tool messages are unsupported",
-                ));
-            }
-        }
-    }
-    if conversation.trim().is_empty() || prepared.max_output_tokens != args.max_tokens {
+    if !prepared.messages.iter().any(|message| {
+        matches!(message.role, Role::User | Role::Assistant) && !message.content.trim().is_empty()
+    }) || prepared.max_output_tokens != args.max_tokens
+    {
         return Err(io::Error::new(
             io::ErrorKind::InvalidInput,
             "Invalid local request or output budget",
@@ -142,16 +120,7 @@ pub fn complete_gguf(
     }
     let mut bytes = Vec::new();
     crate::inference::with_session(args, |session| {
-        session.complete_with_system(
-            &conversation,
-            if system.is_empty() {
-                None
-            } else {
-                Some(&system)
-            },
-            None,
-            &mut bytes,
-        )
+        session.complete_messages(&prepared.messages, None, &mut bytes)
     })?;
     let text = String::from_utf8(bytes)
         .map_err(|_| io::Error::new(io::ErrorKind::InvalidData, "Invalid GGUF output"))?;

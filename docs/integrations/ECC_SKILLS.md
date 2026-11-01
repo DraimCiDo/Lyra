@@ -25,6 +25,10 @@ The shared `agent_runtime` layer applies only explicitly selected skills.
 Instructions are prepended as a system message for OpenAI-compatible HTTP
 providers, or supplied as system context to the local GGUF chat template.
 Neither backend executes hooks or scripts from a skill.
+The GGUF adapter passes individual system/user/assistant messages into the
+model's chat template, preserving turn boundaries. Explicit `--raw` mode is
+for base/test models and bypasses that template; it joins message content as
+plain text and does not provide structured chat roles.
 
 Local example:
 

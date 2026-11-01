@@ -5,11 +5,19 @@ on:
   pull_request:
     paths:
       - '.github/workflows/cuda-windows.yml'
+      - 'src/**'
+      - 'Cargo.toml'
+      - 'Cargo.lock'
+      - 'rust-toolchain.toml'
   push:
     branches:
       - plan/ecc-omniroute-unified-platform
     paths:
       - '.github/workflows/cuda-windows.yml'
+      - 'src/**'
+      - 'Cargo.toml'
+      - 'Cargo.lock'
+      - 'rust-toolchain.toml'
 
 permissions:
   contents: read
@@ -42,12 +50,19 @@ jobs:
         with:
           cuda: '12.9.0'
           method: 'network'
-          sub-packages: '["nvcc","cudart","cublas","cublas_dev","cusparse","cusparse_dev","nvrtc","nvrtc_dev"]'
+          sub-packages: '["nvcc","visual_studio_integration","cudart","cublas","cublas_dev","cusparse","cusparse_dev","nvrtc","nvrtc_dev"]'
       - name: Check NVIDIA compiler
         run: |
           nvcc --version
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           Write-Host "CUDA_PATH=$env:CUDA_PATH"
+          $vswhere = Join-Path ${env:ProgramFiles(x86)} 'Microsoft Visual Studio\Installer\vswhere.exe'
+          $vs = & $vswhere -latest -products '*' -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath
+          if ($LASTEXITCODE -ne 0 -or -not $vs) { throw 'Visual Studio C++ installation not found' }
+          $customizations = Join-Path $vs 'MSBuild\Microsoft\VC\v170\BuildCustomizations'
+          if (-not (Test-Path -LiteralPath (Join-Path $customizations 'CUDA 12.9.props'))) {
+            throw 'CUDA 12.9 Visual Studio integration was not installed'
+          }
       - name: Compile CUDA Desktop and CLI (no GPU in runner)
         timeout-minutes: 60
         run: cargo build --release --locked --features desktop,gateway-http,cuda --bins --target x86_64-pc-windows-msvc

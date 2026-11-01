@@ -13,7 +13,7 @@ cargo run --features gateway-http -- chat \
 
 Edit the example model name and endpoint to match the server. Cloud endpoints must use HTTPS. To use a bearer token, set `api_key_env` in the JSON configuration to the **name** of an environment variable (for example `LYRA_PROVIDER_KEY`) and set that variable outside Lyra. Never store tokens in JSON or commit them.
 
-The provider allowlist is mandatory. A mismatched provider fails before any HTTP request. Redirects are disabled. Requests time out after 90 seconds. This initial implementation uses non-streaming `/v1/chat/completions`, plain-text assistant responses, and token usage where returned. Tool calling, streaming, image inputs, Desktop chat routing, and provider-specific API dialects remain pending; this is not yet full OmniRoute parity.
+The provider allowlist is mandatory. A mismatched provider fails before any HTTP request. Redirects are disabled. Requests time out after 90 seconds. This implementation uses non-streaming `/v1/chat/completions`, plain-text assistant responses, and token usage where returned. Native API tool calling, streaming, image inputs and provider-specific API dialects remain pending; this is not full OmniRoute parity. Project tasks exchange validated JSON actions in assistant text rather than native API tool-call payloads.
 
 ## Explicit multi-provider fallback
 
@@ -48,7 +48,30 @@ in Desktop settings. Enter the path to the JSON registry and click
 uniqueness, endpoint scheme and credential environment-variable names
 without sending prompts or making network requests.
 
-Only the registry **path** is persisted in Desktop preferences. The
-registry is not used by the Desktop conversation worker yet: cloud chat
-remains available through the `lyra chat` CLI command with an explicit
-provider allowlist. The UI does not store or request API keys.
+Desktop persists the registry **path**, selected provider/model and separate
+opt-in switches for HTTP chat and cloud project tasks. API keys remain in the
+environment; the UI does not store or request them. Chat uses the selected HTTP
+model only when HTTP chat is enabled. Task requires a selected project and its
+own cloud-task opt-in. Otherwise local GGUF is used; project planning remains
+local. Changing modes never silently enables cloud access.
+
+Safe/Balanced/Aggressive share one history selector across local chat, HTTP
+chat, task and project-planning payloads (all / last 12 / last 6 messages).
+The latest user request is preserved verbatim. Existing conversation storage
+and request-size limits still apply; this is not token-based compression.
+
+## Project tasks and total timeout
+
+```sh
+lyra task --repo ./project --task-file task.txt \
+  --provider-config providers.json --allow approved-provider \
+  --cloud-model selected-model --timeout-secs 60
+```
+
+Cloud task selects one permitted backend and sends project context/tool results
+only to that backend. CLI chat's fallback settings do not apply to task.
+`--timeout-secs` is a shared deadline starting at task entry; each HTTP request,
+including its response-body read, uses the lesser of 90 seconds and remaining
+task time. An expired deadline prevents another HTTP call. Local synchronous
+file/context operations are not preempted midway; Desktop also bounds its worker
+process. Regression coverage uses a loopback HTTP stub, without paid providers.
