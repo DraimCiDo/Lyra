@@ -118,7 +118,7 @@ fn tool_pool_reduces_real_http_body_and_restores_identical_context() {
 
 #[test]
 fn cloud_task_timeout_covers_multiple_calls_and_response_body() {
-    use std::io::{Read, Write};
+    use std::io::{BufRead, BufReader, Read, Write};
     use std::net::TcpListener;
     use std::time::{Duration, Instant};
 
@@ -146,12 +146,38 @@ fn cloud_task_timeout_covers_multiple_calls_and_response_body() {
                     Err(_) => return,
                 }
             };
+            // Accepted sockets may inherit nonblocking mode on Windows. A first
+            // read before the client writes must wait, not tear down the server.
+            stream.set_nonblocking(false).unwrap();
             stream
                 .set_read_timeout(Some(Duration::from_secs(2)))
                 .unwrap();
-            let mut request = [0u8; 8192];
-            if stream.read(&mut request).is_err() {
-                return;
+            {
+                let mut reader = BufReader::new(&mut stream);
+                let mut length = None;
+                let mut header_bytes = 0;
+                loop {
+                    let mut line = String::new();
+                    if reader.read_line(&mut line).unwrap_or(0) == 0 {
+                        return;
+                    }
+                    header_bytes += line.len();
+                    assert!(header_bytes < 32768);
+                    if line == "\r\n" {
+                        break;
+                    }
+                    if let Some((key, value)) = line.split_once(':')
+                        && key.eq_ignore_ascii_case("content-length")
+                    {
+                        length = Some(value.trim().parse::<usize>().unwrap());
+                    }
+                }
+                let length = length.unwrap();
+                assert!(length < 2 * 1024 * 1024);
+                let mut body = vec![0; length];
+                if reader.read_exact(&mut body).is_err() {
+                    return;
+                }
             }
             let body = serde_json::json!({"choices":[{"message":{"content":action}}]}).to_string();
             if write!(stream, "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n", body.len()).is_err() { return; }
