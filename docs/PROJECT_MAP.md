@@ -81,6 +81,12 @@ Action::ProposeFile; отчёт v2, v1 legacy edits читаются. Карка
 проверяются [developer/CI harness](../tools/verify_starters.py), без исполнения AI-кода.
 
 Чат: [история/главный экран](../src/desktop/chat.rs), [план](plans/0009-chat-web.md).
-Один ввод, необязательный repo; без него planner, с ним task. История только в RAM,
+Один ввод, явные режимы Chat/Task/Project; Task требует repo, Project запускает planner.
+Локальный и HTTP Chat используют общий DTO и выбор истории all/12/6.
+Gateway: [контракты](../src/model_gateway.rs), [HTTP](../src/provider_http.rs),
+[routing](../src/routing.rs), [runtime/skills](../src/agent_runtime.rs),
+[реестр навыков](../src/skills.rs), [HTTP-тесты](../tests/gateway.rs).
+Исправления интеграции и результаты CI: [план](plans/0011-pr-integration-fixes.md).
+История только в RAM,
 с ограничением числа/размера сообщений и сбросом при смене проекта.
 Веб-профиль Vue/TypeScript: [рекомендации и приёмка](WEB_PROJECTS.md).
