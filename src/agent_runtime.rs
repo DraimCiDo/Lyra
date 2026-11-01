@@ -193,6 +193,25 @@ pub fn complete_gguf(
     pack: Option<&SkillPack>,
     selected_ids: &[String],
 ) -> io::Result<Response> {
+    complete_gguf_mode(args, request, pack, selected_ids, false)
+}
+
+pub fn complete_gguf_chat(
+    args: &crate::inference::GenerateArgs,
+    request: &Request,
+    pack: Option<&SkillPack>,
+    selected_ids: &[String],
+) -> io::Result<Response> {
+    complete_gguf_mode(args, request, pack, selected_ids, true)
+}
+
+fn complete_gguf_mode(
+    args: &crate::inference::GenerateArgs,
+    request: &Request,
+    pack: Option<&SkillPack>,
+    selected_ids: &[String],
+    chat: bool,
+) -> io::Result<Response> {
     let prepared = prepare_request(request, pack, selected_ids)?;
     if prepared.require_tools {
         return Err(io::Error::new(
@@ -211,7 +230,11 @@ pub fn complete_gguf(
     }
     let mut bytes = Vec::new();
     crate::inference::with_session(args, |session| {
-        session.complete_messages(&prepared.messages, None, &mut bytes)
+        if chat {
+            session.complete_chat_messages(&prepared.messages, &mut bytes)
+        } else {
+            session.complete_messages(&prepared.messages, None, &mut bytes)
+        }
     })?;
     let text = String::from_utf8(bytes)
         .map_err(|_| io::Error::new(io::ErrorKind::InvalidData, "Invalid GGUF output"))?;

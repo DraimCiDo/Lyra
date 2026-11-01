@@ -355,6 +355,11 @@ pub fn execute_with_context(
             report.calls += 1;
             let _ = writeln!(
                 io::stderr().lock(),
+                "LYRA_PROGRESS:activity={}",
+                serde_json::json!({"label":format!("{role} · model · {}/{}",report.calls,max_calls)})
+            );
+            let _ = writeln!(
+                io::stderr().lock(),
                 "Lyra: {role}, вызов {}/{}",
                 report.calls,
                 max_calls
@@ -474,6 +479,19 @@ pub fn execute_with_context(
                 ),
             };
             let success = label == "ok";
+            let path = match &action {
+                Action::ReadFile { path }
+                | Action::ProposeEdit { path, .. }
+                | Action::ProposeFile { path, .. } => {
+                    format!(" · {}", path.chars().take(128).collect::<String>())
+                }
+                _ => String::new(),
+            };
+            let _ = writeln!(
+                io::stderr().lock(),
+                "LYRA_PROGRESS:activity={}",
+                serde_json::json!({"label":format!("{role} · {tool} · {}{path}",if success {"ok"} else {"error"})})
+            );
             report.events.push(Event {
                 call: report.calls,
                 role: role.into(),

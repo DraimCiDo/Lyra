@@ -1,4 +1,4 @@
-//! Bounded, memory-only conversation and the single prompt-first home screen.
+//! Bounded conversation state and the prompt-first home screen.
 use super::*;
 
 const MESSAGE_COUNT: usize = 32;
@@ -139,12 +139,13 @@ fn user_bubble_width(text: &str, available: f32) -> f32 {
 }
 
 /// Display only observable runtime activity; this is not model chain-of-thought.
-fn show_local_progress(
+fn show_runtime_progress(
     ui: &mut egui::Ui,
     snapshot: &job::ProgressSnapshot,
     elapsed: Duration,
     colors: theme::Colors,
     column_width: f32,
+    language: Language,
 ) {
     use job::ProgressStage;
     let stage = snapshot.stage;
@@ -165,12 +166,12 @@ fn show_local_progress(
                     ui.horizontal(|ui| {
                         ui.add(egui::Spinner::new().size(15.0));
                         let label = match stage {
-                            ProgressStage::Starting => "Запускаю локальную модель…",
+                            ProgressStage::Starting => "Запускаю выполнение…",
                             ProgressStage::Loading => "Загружаю модель GGUF…",
-                            ProgressStage::Context => "Подготавливаю контекст диалога…",
+                            ProgressStage::Context => "Подготавливаю контекст запроса…",
                             ProgressStage::Generating => "Генерирую ответ…",
                         };
-                        ui.label(RichText::new(label).strong());
+                        ui.label(RichText::new(language.text(label)).strong());
                     });
                     if matches!(stage, ProgressStage::Context | ProgressStage::Generating) {
                         ui.label(
@@ -196,6 +197,7 @@ fn show_local_progress(
                         .color(colors.muted),
                     );
                 });
+            show_activity(ui, snapshot, true, language);
             if !snapshot.preview.is_empty() {
                 ui.add_space(8.0);
                 ui.add(
@@ -206,6 +208,24 @@ fn show_local_progress(
             }
         });
     });
+}
+
+fn show_activity(
+    ui: &mut egui::Ui,
+    snapshot: &job::ProgressSnapshot,
+    running: bool,
+    language: Language,
+) {
+    egui::CollapsingHeader::new(language.text("Ход работы"))
+        .default_open(running)
+        .show(ui, |ui| {
+            if snapshot.activity.is_empty() {
+                ui.label(language.text("Подготовка запроса…"));
+            }
+            for event in &snapshot.activity {
+                ui.label(format!("› {}", language.text(event)));
+            }
+        });
 }
 
 fn show_conversation_message(
@@ -265,6 +285,8 @@ fn show_conversation_message(
 impl Desktop {
     pub(super) fn reset_chat(&mut self) {
         self.chat = Chat::default();
+        self.activity = job::ProgressSnapshot::default();
+        self.activity_elapsed = Duration::ZERO;
         self.draft = projects::ProjectDraft::default();
         self.task.clear();
         self.request_task.clear();
@@ -300,6 +322,26 @@ impl Desktop {
     pub(super) fn submit_chat(&mut self, ctx: &egui::Context) -> io::Result<()> {
         let text = self.task.trim().to_owned();
         let request = self.chat.request(&text, self.prefs.optimization)?;
+        if self.job.is_some() {
+            return Err(io::Error::other("Дождитесь текущей операции."));
+        }
+        if let Some(answer) = self.direct_chat_reply(&text) {
+            self.chat.sent(text);
+            self.chat.finish(answer.clone());
+            self.task.clear();
+            self.request_task.clear();
+            self.report = None;
+            self.report_json.clear();
+            self.applied.clear();
+            self.draft.plan = None;
+            self.log.clear();
+            self.activity = job::ProgressSnapshot::default();
+            self.activity_elapsed = Duration::ZERO;
+            self.error = false;
+            self.message = answer;
+            self.capture_session();
+            return Ok(());
+        }
         self.request_task = request.clone();
         let operation = self.chat_operation();
         if operation == Operation::ProjectPlan {
@@ -321,6 +363,8 @@ impl Desktop {
                 latest
             };
         }
+        self.activity = job::ProgressSnapshot::default();
+        self.activity_elapsed = Duration::ZERO;
         self.start(operation, ctx)?;
         // Only consume the composer after a worker has actually started.
         self.chat.sent(text);
@@ -461,6 +505,8 @@ impl Desktop {
                     }
                     let agents = if self.chat_mode == ChatMode::Chat {
                         "Lyra"
+                    } else if self.prefs.repo.is_none() {
+                        "planner"
                     } else if self.prefs.subagents {
                         "researcher · coder · reviewer"
                     } else {
@@ -540,7 +586,9 @@ impl Desktop {
                                 }
                             }
                         };
-                        let ready = model_ready && !self.task.trim().is_empty();
+                        let ready = (model_ready
+                            || self.direct_chat_reply(self.task.trim()).is_some())
+                            && !self.task.trim().is_empty();
                         let clicked = ui
                             .add_enabled(
                                 ready,
@@ -615,22 +663,37 @@ impl Desktop {
                         }
                         if self.chat.pending {
                             ui.add_space(14.0);
-                            if self.operation == Operation::LocalChat {
-                                if let Some(worker) = &self.job {
-                                    show_local_progress(
-                                        ui,
-                                        &worker.progress(),
-                                        worker.started.elapsed(),
-                                        c,
-                                        column_width,
-                                    );
+                            if let Some(worker) = &self.job {
+                                let mut snapshot = worker.progress();
+                                if self.operation != Operation::LocalChat {
+                                    snapshot.preview.clear();
                                 }
-                            } else {
-                                ui.horizontal(|ui| {
-                                    ui.add(Icon::Sparkles.image(c.accent));
-                                    ui.label(RichText::new(l.text(&self.message)).color(c.muted));
-                                });
+                                show_runtime_progress(
+                                    ui,
+                                    &snapshot,
+                                    worker.started.elapsed(),
+                                    c,
+                                    column_width,
+                                    l,
+                                );
                             }
+                        }
+                        if !self.chat.pending && !self.activity.activity.is_empty() {
+                            ui.add_space(8.0);
+                            ui.label(
+                                RichText::new(format!(
+                                    "{} · {:.1} s",
+                                    l.text(if self.error {
+                                        "Выполнение прервано"
+                                    } else {
+                                        "Выполнение завершено"
+                                    }),
+                                    self.activity_elapsed.as_secs_f32()
+                                ))
+                                .small()
+                                .weak(),
+                            );
+                            show_activity(ui, &self.activity, false, l);
                         }
                         if self.draft.plan.is_some() {
                             self.project_result(ui);
@@ -694,6 +757,59 @@ impl Desktop {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn plan_failure_is_a_short_answer_and_keeps_native_details_in_log() {
+        for (code, timed_out) in [(124, false), (1, false), (1, true)] {
+            let mut app = Desktop::default();
+            app.operation = Operation::ProjectPlan;
+            app.chat.sent("Create a site".into());
+            let native =
+                "llama_graph: internal\nLYRA_PROGRESS:tokens=216\nОшибка: Истёк таймаут генерации.";
+            app.complete(ResultData {
+                code: Some(code),
+                stdout: Vec::new(),
+                stderr: native.into(),
+                cancelled: false,
+                timed_out,
+                elapsed: Duration::from_secs(30),
+            });
+            let answer = &app.chat.messages.last().unwrap().text;
+            assert!(app.error);
+            assert!(answer.len() < 600);
+            assert!(!answer.contains("llama_graph"));
+            assert!(!answer.contains("LYRA_PROGRESS"));
+            assert_eq!(app.log, native);
+            assert!(app.draft.plan.is_none());
+            if code == 124 || timed_out {
+                assert!(answer.contains("таймаут"));
+            }
+        }
+    }
+    #[test]
+    fn task_timeout_keeps_structured_report_for_inspection_without_apply() {
+        let mut app = Desktop::default();
+        app.operation = Operation::Task;
+        app.chat.sent("Inspect".into());
+        let bytes = serde_json::to_vec(&serde_json::json!({
+            "schema_version":3,"workspace":"project","status":"timeout",
+            "summaries":[],"proposals":[],"events":[],"calls":1,"subagents":false,
+            "truncated_index":false,"model_review_is_verified_test":false
+        }))
+        .unwrap();
+        app.complete(ResultData {
+            code: Some(124),
+            stdout: bytes,
+            stderr: "native details".into(),
+            cancelled: false,
+            timed_out: false,
+            elapsed: Duration::from_secs(30),
+        });
+        assert_eq!(app.report.as_ref().unwrap().status, "timeout");
+        assert!(!app.report_json.is_empty());
+        assert!(app.error);
+        assert!(!can_apply(app.report.as_ref().unwrap(), 0, &[]));
+        assert!(app.chat.messages.last().unwrap().text.contains("таймаут"));
+    }
     #[test]
     fn successful_task_keeps_controller_context_metrics_visible() {
         for enabled in [false, true] {

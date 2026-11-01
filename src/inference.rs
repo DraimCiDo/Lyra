@@ -297,6 +297,26 @@ impl Session<'_> {
         grammar: Option<&str>,
         output: &mut impl Write,
     ) -> io::Result<()> {
+        self.complete_messages_with_sampling(messages, grammar, false, output)
+    }
+
+    /// Natural conversation uses repetition control; constrained tool/plan JSON
+    /// and raw/base-model generation retain the deterministic existing path.
+    pub fn complete_chat_messages(
+        &self,
+        messages: &[crate::model_gateway::Message],
+        output: &mut impl Write,
+    ) -> io::Result<()> {
+        self.complete_messages_with_sampling(messages, None, !self.args.raw, output)
+    }
+
+    fn complete_messages_with_sampling(
+        &self,
+        messages: &[crate::model_gateway::Message],
+        grammar: Option<&str>,
+        sample_chat: bool,
+        output: &mut impl Write,
+    ) -> io::Result<()> {
         if messages.is_empty()
             || messages.iter().all(|m| m.content.is_empty())
             || messages.iter().map(|m| m.content.len()).sum::<usize>() > 1024 * 1024
@@ -363,9 +383,20 @@ impl Session<'_> {
                 LlamaSampler::grammar(model, grammar, "root").map_err(|e| fail(e.to_string()))?,
                 LlamaSampler::greedy(),
             ])
+        } else if sample_chat {
+            LlamaSampler::chain_simple([
+                LlamaSampler::penalties(vocab.n_tokens(), 128, 1.1, 0.0, 0.0),
+                LlamaSampler::top_k(20),
+                LlamaSampler::top_p(0.8, 1),
+                LlamaSampler::temp(0.7),
+                LlamaSampler::dist(42),
+            ])
         } else {
             LlamaSampler::greedy()
         };
+        if sample_chat {
+            sampler.accept_many(tokens.iter().copied());
+        }
         let mut decoder = encoding_rs::UTF_8.new_decoder();
         let mut count = 0;
         for index in 0..args.max_tokens {

@@ -33,6 +33,19 @@ pub struct ProgressSnapshot {
     pub stage: ProgressStage,
     pub generated_tokens: u32,
     pub preview: String,
+    pub activity: Vec<String>,
+}
+impl ProgressSnapshot {
+    fn event(&mut self, text: &str) {
+        let text: String = text.chars().filter(|c| !c.is_control()).take(256).collect();
+        if text.is_empty() || self.activity.last() == Some(&text) {
+            return;
+        }
+        if self.activity.len() == 64 {
+            self.activity.remove(0);
+        }
+        self.activity.push(text);
+    }
 }
 
 #[derive(Default)]
@@ -59,16 +72,35 @@ impl ProgressParser {
         if let Some(event) = line.trim().strip_prefix(PROGRESS_PREFIX)
             && let Ok(mut snapshot) = state.lock()
         {
+            let previous = snapshot.stage;
             match event {
                 "load" => snapshot.stage = ProgressStage::Loading,
                 "context" => snapshot.stage = ProgressStage::Context,
                 "generate" => snapshot.stage = ProgressStage::Generating,
                 _ => {
+                    if let Some(value) = event.strip_prefix("activity=")
+                        && let Ok(value) = serde_json::from_str::<serde_json::Value>(value)
+                        && let Some(label) = value["label"].as_str()
+                    {
+                        snapshot.event(label);
+                    }
                     if let Some(value) = event.strip_prefix("tokens=")
                         && let Ok(tokens) = value.parse::<u32>()
                     {
                         snapshot.generated_tokens = tokens;
                     }
+                }
+            }
+            if previous != snapshot.stage {
+                let label = match snapshot.stage {
+                    ProgressStage::Starting => "Подготовка запроса",
+                    ProgressStage::Loading => "Загрузка GGUF",
+                    ProgressStage::Context => "Обработка контекста",
+                    ProgressStage::Generating => "Генерация ответа",
+                };
+                snapshot.event(label);
+                if snapshot.stage == ProgressStage::Context {
+                    snapshot.generated_tokens = 0;
                 }
             }
         }
@@ -81,6 +113,7 @@ pub struct ResultData {
     pub stdout: Vec<u8>,
     pub stderr: String,
     pub cancelled: bool,
+    pub timed_out: bool,
     pub elapsed: Duration,
 }
 
@@ -284,6 +317,7 @@ fn capture_live(
         }
     };
     let mut cancelled = false;
+    let mut timed_out = false;
     let status = loop {
         match child.try_wait() {
             Ok(Some(status)) => break Ok(status),
@@ -294,8 +328,9 @@ fn capture_live(
                 break Err(error);
             }
         }
-        if cancel.load(Ordering::Relaxed) || deadline.is_some_and(|d| started.elapsed() > d) {
-            cancelled = true;
+        cancelled = cancel.load(Ordering::Relaxed);
+        timed_out = !cancelled && deadline.is_some_and(|d| started.elapsed() > d);
+        if cancelled || timed_out {
             let _ = child.kill();
             break child.wait();
         }
@@ -326,6 +361,7 @@ fn capture_live(
         stdout,
         stderr,
         cancelled,
+        timed_out,
         elapsed: started.elapsed(),
     })
 }
@@ -333,6 +369,24 @@ fn capture_live(
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn activity_is_live_bounded_and_excludes_native_log_spam() {
+        let state = Arc::new(Mutex::new(ProgressSnapshot::default()));
+        let mut parser = ProgressParser::default();
+        parser.feed(b"llama_graph: internal\nLYRA_PROGRESS:load\nLYRA_PROGRESS:context\nLYRA_PROGRESS:generate\n",&state);
+        parser.feed(b"LYRA_PROGRESS:activity={\"label\":\"coder: read_", &state);
+        parser.feed(b"file ok\"}\nLYRA_PROGRESS:tokens=16\n", &state);
+        let snapshot = state.lock().unwrap().clone();
+        assert_eq!(snapshot.activity.len(), 4);
+        assert_eq!(snapshot.activity[3], "coder: read_file ok");
+        assert_eq!(snapshot.generated_tokens, 16);
+        assert!(!snapshot.activity.iter().any(|e| e.contains("llama_graph")));
+        for index in 0..100 {
+            state.lock().unwrap().event(&format!("tool {index}"));
+        }
+        assert_eq!(state.lock().unwrap().activity.len(), 64);
+        assert_eq!(state.lock().unwrap().activity.last().unwrap(), "tool 99");
+    }
     #[test]
     fn progress_parser_handles_split_lines_and_ignores_native_logs() {
         let state = Arc::new(Mutex::new(ProgressSnapshot::default()));
@@ -389,7 +443,8 @@ mod tests {
         )
         .unwrap();
         assert!(now.elapsed() < Duration::from_secs(5));
-        assert!(result.cancelled);
+        assert!(result.timed_out);
+        assert!(!result.cancelled);
         assert!(result.stdout.len() < OUTPUT_LIMIT);
     }
 

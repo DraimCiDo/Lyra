@@ -171,7 +171,7 @@ pub fn run(cli: Cli, output: &mut impl Write) -> io::Result<()> {
                     }
                 })
                 .transpose()?;
-            let response = agent_runtime::complete_gguf(
+            let response = agent_runtime::complete_gguf_chat(
                 &generate,
                 &request,
                 pack.as_ref(),

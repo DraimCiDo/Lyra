@@ -192,17 +192,10 @@ impl Desktop {
     }
     pub(super) fn complete_project_job(&mut self, code: Option<i32>, bytes: &[u8]) {
         if code != Some(0) {
-            let message = if self.log.trim().is_empty() {
-                format!("Операция не выполнена (код {code:?}).")
+            let message = if self.operation == Operation::ProjectPlan {
+                "Не удалось подготовить корректный план проекта. Проверь модель и параметры генерации. Подробности — в журнале.".to_owned()
             } else {
-                self.log
-                    .chars()
-                    .rev()
-                    .take(2048)
-                    .collect::<String>()
-                    .chars()
-                    .rev()
-                    .collect()
+                format!("Операция не выполнена (код {code:?}). Подробности — в журнале.")
             };
             if matches!(
                 self.operation,

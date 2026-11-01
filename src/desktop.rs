@@ -1,5 +1,6 @@
 //! Native shell around the same CLI contracts. No inference or filesystem policy in widgets.
 mod chat;
+mod chat_policy;
 mod history;
 mod icons;
 mod job;
@@ -182,6 +183,8 @@ struct Desktop {
     model_installer: models::Installer,
     chat: chat::Chat,
     chat_mode: ChatMode,
+    activity: job::ProgressSnapshot,
+    activity_elapsed: Duration,
     draft: projects::ProjectDraft,
     request_task: String,
     knowledge_ui: projects::KnowledgeUi,
@@ -221,6 +224,8 @@ impl Default for Desktop {
             model_installer: models::Installer::default(),
             chat: chat::Chat::default(),
             chat_mode: ChatMode::Chat,
+            activity: job::ProgressSnapshot::default(),
+            activity_elapsed: Duration::ZERO,
             draft: projects::ProjectDraft::default(),
             request_task: String::new(),
             knowledge_ui: projects::KnowledgeUi::default(),
@@ -273,11 +278,7 @@ impl Desktop {
                     .model
                     .as_ref()
                     .ok_or_else(|| io::Error::other("Выберите локальную GGUF-модель."))?;
-                let request = self.chat.model_request(
-                    self.task.trim(),
-                    self.prefs.tokens,
-                    self.prefs.optimization,
-                )?;
+                let request = self.chat_request(self.task.trim())?;
                 let request_path = temp.path().join("local-chat-request.json");
                 std::fs::write(
                     &request_path,
@@ -349,11 +350,7 @@ impl Desktop {
                     })
                     .ok_or_else(|| io::Error::other("Выбранная модель отсутствует в реестре."))?;
                 crate::provider_http::OpenAiCompatibleBackend::new(selected.clone())?;
-                let request = self.chat.model_request(
-                    self.task.trim(),
-                    self.prefs.tokens,
-                    self.prefs.optimization,
-                )?;
+                let request = self.chat_request(self.task.trim())?;
                 let request_path = temp.path().join("chat-request.json");
                 std::fs::write(
                     &request_path,
@@ -581,6 +578,10 @@ impl Desktop {
         let Some(result) = self.job.as_ref().and_then(Job::poll) else {
             return;
         };
+        if let Some(worker) = &self.job {
+            self.activity = worker.progress();
+            self.activity_elapsed = worker.started.elapsed();
+        }
         self.job = None;
         match result {
             Ok(result) => self.complete(result),
@@ -593,6 +594,18 @@ impl Desktop {
 
     fn complete(&mut self, result: ResultData) {
         self.log = result.stderr;
+        let structured_task_timeout = self.operation == Operation::Task
+            && serde_json::from_slice::<Report>(&result.stdout)
+                .is_ok_and(|r| matches!(r.schema_version, 1..=3) && r.status == "timeout");
+        if (result.timed_out || result.code == Some(124)) && !structured_task_timeout {
+            self.fail(if self.operation == Operation::ProjectPlan {
+                "Истёк таймаут подготовки плана. Увеличь таймаут в настройках модели или сократи запрос. Файлы проекта ещё не создавались. Подробности — в журнале."
+            } else {
+                "Истёк таймаут операции. Увеличь таймаут в настройках модели. Проверь результат операции; подробности — в журнале."
+            });
+            self.finish_chat();
+            return;
+        }
         if result.cancelled {
             self.fail(
                 if matches!(self.operation, Operation::DocsFetch | Operation::DocsImport) {
@@ -643,7 +656,11 @@ impl Desktop {
                     self.error = result.code != Some(0) || report.status != "completed";
                     self.message = format!(
                         "{} · {} {} · {:.1} s · {} {}",
-                        if self.error {
+                        if report.status == "timeout" {
+                            self.prefs
+                                .language
+                                .text("Истёк таймаут задачи; предложения не применялись")
+                        } else if self.error {
                             self.prefs.language.text("Задача не завершена")
                         } else if report.proposals.is_empty() {
                             self.prefs
@@ -777,12 +794,22 @@ impl Desktop {
                 {
                     self.help_open = true;
                 }
-                let device = if cfg!(feature = "cuda") && self.prefs.gpu_layers > 0 {
-                    "Локально · CUDA + CPU/RAM"
+                let cloud = cfg!(feature = "gateway-http")
+                    && match self.chat_mode {
+                        ChatMode::Chat => self.prefs.cloud_chat,
+                        ChatMode::Task => self.prefs.repo.is_some() && self.prefs.cloud_task,
+                    };
+                let device = if cloud {
+                    format!(
+                        "HTTP · {} / {}",
+                        self.prefs.cloud_provider, self.prefs.cloud_model
+                    )
+                } else if cfg!(feature = "cuda") && self.prefs.gpu_layers > 0 {
+                    l.text("Локально · CUDA + CPU/RAM").to_owned()
                 } else {
-                    "Локально · CPU"
+                    l.text("Локально · CPU").to_owned()
                 };
-                ui.label(RichText::new(l.text(device)).small().color(c.accent));
+                ui.label(RichText::new(device).small().color(c.accent));
             });
         });
     }

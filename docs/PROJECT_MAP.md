@@ -95,3 +95,5 @@ Gateway: [контракты](../src/model_gateway.rs), [HTTP](../src/provider_h
 Веб-профиль Vue/TypeScript: [рекомендации и приёмка](WEB_PROJECTS.md).
 
 Desktop conversations: [план](plans/0013-desktop-conversations-models.md), [history](../src/desktop/history.rs), [GGUF catalog/installer](../src/desktop/models.rs).
+
+Chat reliability/activity: [план](plans/0014-chat-reliability-activity.md), [capability contract](../src/desktop/chat_policy.rs), [worker/progress](../src/desktop/job.rs).
