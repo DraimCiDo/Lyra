@@ -112,6 +112,7 @@ impl Desktop {
                     ("--context", self.prefs.context as u64),
                     ("--max-tokens", self.prefs.tokens as u64),
                     ("--threads", self.prefs.threads as u64),
+                    ("--gpu-layers", self.prefs.gpu_layers as u64),
                     ("--timeout-secs", self.prefs.timeout),
                 ] {
                     args.extend([flag.into(), value.to_string().into()]);
