@@ -106,7 +106,10 @@ impl Desktop {
         self.conversations.dirty = Some(Instant::now());
     }
     pub(super) fn open_session(&mut self, index: usize) {
-        if self.job.is_some() || index >= self.conversations.sessions.len() {
+        if self.job.is_some()
+            || index >= self.conversations.sessions.len()
+            || index == self.conversations.active
+        {
             return;
         }
         self.capture_session();

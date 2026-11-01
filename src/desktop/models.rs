@@ -204,7 +204,12 @@ async fn receive(
         temp.write_all(&chunk)?;
         progress.store(bytes, Ordering::Relaxed);
     }
-    verify(bytes, &magic, &format!("{:x}", digest.finalize()), model)?;
+    let hash: String = digest
+        .finalize()
+        .iter()
+        .map(|b| format!("{b:02x}"))
+        .collect();
+    verify(bytes, &magic, &hash, model)?;
     temp.as_file_mut().sync_all()?;
     temp.persist_noclobber(&target).map_err(|e| e.error)?;
     Ok(target)
@@ -306,7 +311,10 @@ mod tests {
         use std::net::TcpListener;
         let dir = tempfile::tempdir().unwrap();
         let bytes = b"GGUFtest weights";
-        let hash = format!("{:x}", Sha256::digest(bytes));
+        let hash: String = Sha256::digest(bytes)
+            .iter()
+            .map(|b| format!("{b:02x}"))
+            .collect();
         let runtime = tokio::runtime::Builder::new_current_thread()
             .enable_all()
             .build()
