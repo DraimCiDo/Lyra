@@ -770,7 +770,7 @@ pub fn apply(args: ApplyArgs, output: &mut impl Write) -> io::Result<()> {
             std::slice::from_ref(&edit.path)
         },
     )?;
-    if !matches!(report.schema_version, 1 | 2 | 3)
+    if !matches!(report.schema_version, 1..=3)
         || report.schema_version == 1 && edit.create
         || report.status != "completed"
         || report.workspace != workspace.root
