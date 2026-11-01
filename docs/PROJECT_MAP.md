@@ -24,6 +24,9 @@ alpha добавляет task/предложения/apply и ограничен
 по необходимости. Для изменений документации не нужен полный стек разработки.
 
 Интеграция ECC + OmniRoute: [полный план](plans/0010-unified-ecc-omniroute.md) и [матрица статусов](integrations/PARITY.md).
+Первый общий инкремент: [роли и контекст инструментов](integrations/TOOL_CONTEXT.md),
+[план/критерии](plans/0012-ecc-omniroute-stage-1.md),
+[lossless optimizer](../src/context_optimizer.rs).
 Это план, а не доказательство наличия подсистем.
 
 ## Следующий этап

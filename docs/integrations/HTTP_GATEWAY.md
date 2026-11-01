@@ -62,6 +62,12 @@ and request-size limits still apply; this is not token-based compression.
 
 ## Project tasks and total timeout
 
+Tool-result pooling is available separately through `--dedup-tool-context` for
+both HTTP and GGUF task backends. It reports byte counts, keeps source/patches
+exact and falls back to the original envelope if fidelity or savings fails.
+See [role and context contracts](TOOL_CONTEXT.md). This does not turn on native
+API tool calls or change the provider allowlist.
+
 ```sh
 lyra task --repo ./project --task-file task.txt \
   --provider-config providers.json --allow approved-provider \

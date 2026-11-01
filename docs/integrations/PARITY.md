@@ -6,12 +6,16 @@ See [integration plan](../plans/0010-unified-ecc-omniroute.md).
 **Status semantics:** planned = not implemented; implemented = code exists but not
 necessarily validated; verified = tests + Windows acceptance recorded; unsupported
 = consciously excluded with rationale. Do not infer status from upstream claims.
-Upstream revision/license audit is P00 and remains pending.
+Core upstream audit is pinned to ECC b38be6a7f6350964d59328b52f0624e1d1d552d1
+and OmniRoute 139070680f77728e2309eb4df18463282a1c990a (both MIT).
+The complete feature inventory/SBOM in P00 remains pending; see
+[stage 1](../plans/0012-ecc-omniroute-stage-1.md).
 
 | Source | Feature family | Lyra destination | Status | Acceptance |
 | --- | --- | --- | --- | --- |
 | ECC | Sequential researcher/coder/reviewer roles and proposal/apply | src/agent.rs | implemented before integration | Existing agent tests; not worktree orchestration |
 | ECC | Worktrees, checkpoints and extended orchestration | Agent Runtime | planned | P07 |
+| ECC | Explicit role contracts, scoped tools, structured recovery feedback | src/agent_runtime.rs / src/agent.rs | implemented; stage-1 verification pending | Recovery/read_only/native fixture tests |
 | ECC | JSON packs, bounded SKILL.md import, explicit selection | src/skills.rs / src/agent_runtime.rs | implemented | Unit tests / gateway tests; full YAML and resources pending |
 | ECC | Selective install of complete upstream packs | Skills Registry | planned | P06 |
 | ECC | Rules, commands, language packs | Rules/Commands | planned | P06/P12 |
@@ -20,6 +24,7 @@ Upstream revision/license audit is P00 and remains pending.
 | ECC | Session memory and checkpoints | Memory | planned | P09 |
 | ECC | Instincts/continuous learning | Learning | planned | P09 |
 | ECC | Token optimization | Context Optimizer | planned | P04/P05 |
+| OmniRoute | Request-local lossless pooling of repeated tool results | src/context_optimizer.rs | implemented; stage-1 verification pending | Exact round-trip / actual HTTP body comparison |
 | ECC | Security/verification/evals | Security/Verification | planned | P10 |
 | OmniRoute | Provider-neutral DTOs, output budget/capability validation, allowlist | src/model_gateway.rs | implemented | Contract unit tests; complete P01 not claimed |
 | OmniRoute | OpenAI-compatible text HTTP and local GGUF adapters | src/provider_http.rs / src/agent_runtime.rs | implemented | Loopback HTTP tests / CPU GGUF smoke; paid APIs unverified |

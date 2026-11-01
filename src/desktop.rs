@@ -504,6 +504,9 @@ impl Desktop {
                 if self.prefs.subagents {
                     args.push("--subagents".into());
                 }
+                if self.prefs.dedup_tool_context {
+                    args.push("--dedup-tool-context".into());
+                }
                 self.report = None;
                 self.report_json.clear();
                 self.applied.clear();
@@ -628,7 +631,7 @@ impl Desktop {
             | Operation::DocsFetch
             | Operation::DocsImport => self.complete_project_job(result.code, &result.stdout),
             Operation::Task => match serde_json::from_slice::<Report>(&result.stdout) {
-                Ok(report) if matches!(report.schema_version, 1 | 2) => {
+                Ok(report) if matches!(report.schema_version, 1 | 2 | 3) => {
                     self.error = result.code != Some(0) || report.status != "completed";
                     self.message = format!(
                         "{} · {} {} · {:.1} s · {} {}",
@@ -647,6 +650,24 @@ impl Desktop {
                         report.proposals.len(),
                         self.prefs.language.text("предложений")
                     );
+                    if !report.context_optimization.is_empty() {
+                        let before: usize = report
+                            .context_optimization
+                            .iter()
+                            .map(|s| s.prompt_bytes_before)
+                            .sum();
+                        let after: usize = report
+                            .context_optimization
+                            .iter()
+                            .map(|s| s.prompt_bytes_after)
+                            .sum();
+                        self.message.push_str(&format!(
+                            " · {} {} {}",
+                            self.prefs.language.text("Сокращено контекста:"),
+                            before.saturating_sub(after),
+                            self.prefs.language.text("байт")
+                        ));
+                    }
                     self.report = Some(report);
                     self.report_json = result.stdout;
                 }
@@ -993,6 +1014,9 @@ impl Desktop {
                         };
                         ui.label(RichText::new(l.text(description)).small().weak());
                         ui.label(RichText::new(l.text("Сокращается только история чата; исходники и ошибки не переписываются.")).small().weak());
+                        ui.separator();
+                        ui.checkbox(&mut self.prefs.dedup_tool_context, l.text("Дедупликация результатов инструментов (задачи)"));
+                        ui.label(RichText::new(l.text("Повторные старые результаты передаются один раз со ссылками. Последний результат, ошибки и патчи сохраняются дословно. Экономия показывается в байтах; токены не оцениваются.")).small().weak());
                     }).response,
                     SettingsPage::Workers=>ui.add_enabled_ui(self.job.is_none(),|ui|{
                         icons::toggle(ui,&mut self.prefs.subagents,l.text("Исследователь и ревьюер"),self.prefs.animations,c.accent,c.on_accent);
@@ -1591,7 +1615,7 @@ fn validate_task(task: &str, files: &str) -> io::Result<()> {
     Ok(())
 }
 fn can_apply(report: &Report, index: usize, applied: &[usize]) -> bool {
-    matches!(report.schema_version, 1 | 2)
+    matches!(report.schema_version, 1 | 2 | 3)
         && report.status == "completed"
         && report
             .proposals
@@ -1619,6 +1643,8 @@ mod tests {
         })).unwrap();
         assert!(!can_apply(&report, 0, &[]));
         report.status = "completed".into();
+        assert!(can_apply(&report, 0, &[]));
+        report.schema_version = 3;
         assert!(can_apply(&report, 0, &[]));
         assert!(!can_apply(&report, 1, &[]));
         assert!(!can_apply(&report, 0, &[0]));

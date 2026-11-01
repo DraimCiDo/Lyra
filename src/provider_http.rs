@@ -212,7 +212,9 @@ impl ModelBackend for OpenAiCompatibleBackend {
             max_tokens: request.max_output_tokens,
             stream: false,
         };
-        let response = http.json(&body).send().map_err(map_transport_error)?;
+        let wire = serde_json::to_vec(&body).map_err(io::Error::other)?;
+        eprintln!("Lyra HTTP: request_body_bytes={}", wire.len());
+        let response = http.body(wire).send().map_err(map_transport_error)?;
         let status = response.status();
         if !status.is_success() {
             let kind = if status.as_u16() == 429 || status.is_server_error() {

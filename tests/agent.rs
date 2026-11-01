@@ -43,6 +43,11 @@ impl Script {
 impl Model for Script {
     fn respond(&mut self, prompt: &str) -> io::Result<String> {
         let value: serde_json::Value = serde_json::from_str(prompt).unwrap();
+        if value["read_only"] == true {
+            assert!(value["tools"].as_array().unwrap().iter().all(|tool| {
+                !matches!(tool["tool"].as_str(), Some("propose_edit" | "propose_file"))
+            }));
+        }
         self.roles.push(value["role"].as_str().unwrap().into());
         self.actions
             .pop_front()
@@ -51,6 +56,165 @@ impl Model for Script {
 }
 fn done(text: &str) -> serde_json::Value {
     serde_json::json!({"tool":"finish","summary":text})
+}
+
+#[test]
+fn rejected_edit_keeps_recovery_evidence_and_pending_proposal_is_explicit() {
+    struct Recover {
+        step: usize,
+    }
+    impl Model for Recover {
+        fn respond(&mut self, prompt: &str) -> io::Result<String> {
+            let input: serde_json::Value = serde_json::from_str(prompt).unwrap();
+            assert_eq!(input["role_contract"]["name"], "coder");
+            assert_eq!(input["workflow"]["writes_applied"], false);
+            let action = match self.step {
+                0 => serde_json::json!({"tool":"read_file","path":"src/lib.rs"}),
+                1 => {
+                    assert_eq!(
+                        input["history"][0]["result"]["data"]["line_endings"],
+                        "crlf"
+                    );
+                    serde_json::json!({"tool":"propose_edit","path":"src/lib.rs","old":"fn add() {\n a-b\n}","new":"unused"})
+                }
+                2 => {
+                    let failure = &input["history"][1];
+                    assert_eq!(failure["result"]["status"], "error");
+                    assert_eq!(failure["action"]["old"], "fn add() {\n a-b\n}");
+                    assert!(failure["action"].get("content_in_proposals").is_none());
+                    assert_eq!(input["proposals"].as_array().unwrap().len(), 0);
+                    serde_json::json!({"tool":"propose_edit","path":"src/lib.rs","old":"a-b","new":"a+b"})
+                }
+                3 => {
+                    assert_eq!(input["workflow"]["pending_paths"][0], "src/lib.rs");
+                    assert_eq!(input["history"][2]["result"]["status"], "success");
+                    assert_eq!(input["history"][2]["result"]["next_actions"][0], "finish");
+                    done("Proposal ready; tests not run.")
+                }
+                _ => panic!("unexpected model call"),
+            };
+            self.step += 1;
+            Ok(action.to_string())
+        }
+    }
+    let repo = Repo::new();
+    let original = "fn add() {\r\n a-b\r\n}\r\n";
+    repo.write("src/lib.rs", original);
+    let mut workspace = Workspace::open(&repo.0, &[]).unwrap();
+    let report = agent::execute_with_context(
+        &mut Recover { step: 0 },
+        &mut workspace,
+        "Fix add",
+        false,
+        4,
+        &lyra::knowledge::Pack::empty(),
+        true,
+    );
+    assert_eq!(report.status, "completed");
+    assert_eq!(report.proposals.len(), 1);
+    assert!(report.proposals[0].replacement.contains("a+b\r\n"));
+    assert_eq!(
+        std::fs::read_to_string(repo.0.join("src/lib.rs")).unwrap(),
+        original
+    );
+    assert_eq!(report.schema_version, 3);
+    let report_path = repo.0.join("report.json");
+    std::fs::write(&report_path, serde_json::to_vec(&report).unwrap()).unwrap();
+    let output = std::process::Command::new(env!("CARGO_BIN_EXE_lyra"))
+        .arg("apply")
+        .arg("--repo")
+        .arg(&repo.0)
+        .arg("--report")
+        .arg(&report_path)
+        .args(["--index", "0"])
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert_eq!(
+        std::fs::read_to_string(repo.0.join("src/lib.rs")).unwrap(),
+        original.replace("a-b", "a+b")
+    );
+}
+
+#[test]
+fn request_local_tool_pool_is_reversible_and_readonly_roles_get_no_edit_tools() {
+    struct Capture {
+        prompts: Vec<serde_json::Value>,
+        step: usize,
+    }
+    impl Model for Capture {
+        fn respond(&mut self, prompt: &str) -> io::Result<String> {
+            self.prompts.push(serde_json::from_str(prompt).unwrap());
+            self.step += 1;
+            Ok(if self.step < 4 {
+                serde_json::json!({"tool":"read_file","path":"src/lib.rs"})
+            } else {
+                done("Read; no tests run.")
+            }
+            .to_string())
+        }
+    }
+    let repo = Repo::new();
+    repo.write("src/lib.rs", &"// immutable source\r\n".repeat(400));
+    let run = |dedup| {
+        let mut model = Capture {
+            prompts: vec![],
+            step: 0,
+        };
+        let mut workspace = Workspace::open(&repo.0, &[]).unwrap();
+        let report = agent::execute_with_context(
+            &mut model,
+            &mut workspace,
+            "Inspect",
+            false,
+            4,
+            &lyra::knowledge::Pack::empty(),
+            dedup,
+        );
+        assert_eq!(report.status, "completed");
+        (model, report)
+    };
+    let (plain, _) = run(false);
+    let (packed, report) = run(true);
+    assert_eq!(report.schema_version, 3);
+    assert_eq!(
+        lyra::context_optimizer::restore(&packed.prompts[3]).unwrap(),
+        plain.prompts[3]
+    );
+    assert_eq!(report.context_optimization[3].references, 2);
+    for role in [
+        lyra::agent_runtime::AgentRole::Researcher,
+        lyra::agent_runtime::AgentRole::Reviewer,
+    ] {
+        let contract = role.contract();
+        assert_eq!(contract["read_only"], true);
+        assert!(
+            !contract["allowed_tools"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|tool| tool == "propose_edit")
+        );
+        let observation = lyra::agent_runtime::tool_observation(
+            role,
+            "read_file",
+            true,
+            serde_json::json!({"content":"data"}),
+            Some("src/lib.rs"),
+            false,
+        );
+        assert!(
+            !observation["next_actions"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|tool| tool == "propose_edit")
+        );
+    }
 }
 
 #[test]

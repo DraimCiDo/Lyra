@@ -1,5 +1,6 @@
 pub mod agent;
 pub mod agent_runtime;
+pub mod context_optimizer;
 #[cfg(feature = "desktop")]
 pub mod desktop;
 pub mod doctor;

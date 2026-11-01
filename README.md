@@ -78,6 +78,9 @@ Safe/Balanced/Aggressive выбирают всю историю / последн
 [HTTP gateway](docs/integrations/HTTP_GATEWAY.md),
 [навыки](docs/integrations/ECC_SKILLS.md),
 [фактический статус интеграции](docs/integrations/PARITY.md).
+Следующий рабочий инкремент PR #3 добавляет явные контракты ролей и recovery
+инструментов, opt-in дедупликацию повторных tool results и измерение байтов.
+[Как включить и что сохраняется дословно](docs/integrations/TOOL_CONTEXT.md).
 
 ```powershell
 .\lyra.exe task --model 'D:\Models\model.gguf' --repo 'D:\Code\test-copy' --task-file '.\TASK.md' --file 'src/lib.rs' --subagents

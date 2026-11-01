@@ -53,6 +53,7 @@ pub struct Preferences {
     pub files: String,
     pub subagents: bool,
     pub optimization: Optimization,
+    pub dedup_tool_context: bool,
     pub context: u32,
     pub tokens: u32,
     pub calls: u32,
@@ -83,6 +84,7 @@ impl Default for Preferences {
             files: String::new(),
             subagents: false,
             optimization: Optimization::Balanced,
+            dedup_tool_context: false,
             context: 4096,
             tokens: 512,
             calls: 12,
@@ -242,6 +244,22 @@ mod tests {
             Preferences::load(&path).unwrap().optimization,
             Optimization::Balanced
         );
+    }
+
+    #[test]
+    fn tool_result_pool_is_opt_in_and_legacy_defaults_off() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("settings.json");
+        let prefs = Preferences {
+            dedup_tool_context: true,
+            ..Preferences::default()
+        };
+        prefs.save(&path).unwrap();
+        assert!(Preferences::load(&path).unwrap().dedup_tool_context);
+        let mut old = serde_json::to_value(&prefs).unwrap();
+        old.as_object_mut().unwrap().remove("dedup_tool_context");
+        std::fs::write(&path, serde_json::to_vec(&old).unwrap()).unwrap();
+        assert!(!Preferences::load(&path).unwrap().dedup_tool_context);
     }
 
     #[test]

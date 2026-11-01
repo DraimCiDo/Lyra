@@ -175,6 +175,14 @@ impl Language {
             return ru;
         }
         match ru {
+            "Сокращено контекста:" => "Context saved:",
+            "байт" => "bytes",
+            "Дедупликация результатов инструментов (задачи)" => {
+                "Deduplicate tool results (tasks)"
+            }
+            "Повторные старые результаты передаются один раз со ссылками. Последний результат, ошибки и патчи сохраняются дословно. Экономия показывается в байтах; токены не оцениваются." => {
+                "Repeated older results are sent once with references. The latest result, errors and patches stay verbatim. Savings are shown in bytes; tokens are not estimated."
+            }
             "Выбрать проект" => "Choose project",
             "Проект · необязательно" => "Project · optional",
             "Выбрать существующий проект" => "Choose existing project",
