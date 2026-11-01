@@ -7,14 +7,11 @@ use std::{collections::VecDeque, io, path::PathBuf};
 struct Repo(PathBuf);
 impl Repo {
     fn new() -> Self {
-        let nonce = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
+        let root = tempfile::Builder::new()
+            .prefix("lyra агент с пробелами-")
+            .tempdir()
             .unwrap()
-            .as_nanos();
-        let root = std::env::temp_dir().join(format!(
-            "lyra агент с пробелами-{}-{nonce}",
-            std::process::id()
-        ));
+            .keep();
         std::fs::create_dir_all(root.join("src")).unwrap();
         Self(root)
     }
