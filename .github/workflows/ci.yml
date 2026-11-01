@@ -15,6 +15,12 @@ on:
 permissions:
   contents: read
 
+# Keep the two feature matrices and native builds within hosted-runner disk limits.
+env:
+  CARGO_PROFILE_DEV_DEBUG: '0'
+  CARGO_PROFILE_TEST_DEBUG: '0'
+  CARGO_INCREMENTAL: '0'
+
 concurrency:
   group: cli-${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
@@ -49,9 +55,12 @@ jobs:
           path: |
             ~/.cargo/registry
             ~/.m2/repository
-            target
-          key: lyra-native-${{ runner.os }}-${{ hashFiles('rust-toolchain.toml') }}-${{ hashFiles('Cargo.lock', 'Cargo.toml') }}
-          restore-keys: lyra-native-${{ runner.os }}-${{ hashFiles('rust-toolchain.toml') }}-
+            target/debug/build
+            target/release/build
+            target/${{ matrix.target }}/release/build
+          # Do not restore old whole-target caches: they exhausted Linux runner disk.
+          key: lyra-native-v2-${{ runner.os }}-${{ hashFiles('rust-toolchain.toml') }}-${{ hashFiles('Cargo.lock', 'Cargo.toml') }}
+          restore-keys: lyra-native-v2-${{ runner.os }}-${{ hashFiles('rust-toolchain.toml') }}-
       - name: Native inference build dependencies (Linux)
         if: runner.os == 'Linux'
         run: sudo apt-get update && sudo apt-get install -y cmake libclang-dev xvfb libegl1-mesa-dev libxkbcommon-dev libxkbcommon-x11-dev
@@ -67,6 +76,10 @@ jobs:
         run: cargo clippy --workspace --all-targets --features desktop --locked -- -D warnings
       - name: Tests
         run: cargo test --workspace --features desktop --locked
+      - name: Gateway Clippy (HTTP + Desktop)
+        run: cargo clippy --workspace --all-targets --features desktop,gateway-http --locked -- -D warnings
+      - name: Gateway tests (HTTP + Desktop)
+        run: cargo test --workspace --features desktop,gateway-http --locked
       - name: Explicit real CPU inference smoke (tiny GGUF)
         run: |
           $model = Join-Path $env:RUNNER_TEMP 'lyra-stories260K.gguf'
@@ -78,7 +91,7 @@ jobs:
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           Remove-Item -LiteralPath $model
       - name: Release build
-        run: cargo build --release --locked --features desktop --bins --target ${{ matrix.target }}
+        run: cargo build --release --locked --features desktop,gateway-http --bins --target ${{ matrix.target }}
       - name: Set up full JDK 21 for trusted starter acceptance
         uses: actions/setup-java@b843ebf9b913146b38da2eaa7aeddf76074ae1ad # v6.1.0
         with:
@@ -123,7 +136,8 @@ jobs:
           New-Item -ItemType Directory -Force -Path dist/docs, dist/examples | Out-Null
           Copy-Item -LiteralPath docs/ACCEPTANCE.md, docs/LOCAL_MODELS.md, docs/DESKTOP.md, docs/UPDATES.md, docs/PROJECTS.md, docs/KNOWLEDGE.md, docs/WEB_PROJECTS.md -Destination dist/docs
           Copy-Item -LiteralPath examples/buggy-add -Destination dist/examples -Recurse
-          python tools/collect_licenses.py --features desktop --target ${{ matrix.target }} --output dist/THIRD_PARTY_NOTICES.txt
+          Copy-Item -LiteralPath examples/qwen3-coder-openrouter.json -Destination dist/examples/qwen3-coder-openrouter.json
+          python tools/collect_licenses.py --features desktop,gateway-http --target ${{ matrix.target }} --output dist/THIRD_PARTY_NOTICES.txt
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           $hashes = @('${{ matrix.binary }}', $desktop) | ForEach-Object {
             $hash = (Get-FileHash -Algorithm SHA256 -LiteralPath "dist/$_").Hash.ToLowerInvariant()

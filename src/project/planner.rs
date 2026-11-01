@@ -299,6 +299,8 @@ pub fn run(args: PlanArgs, out: &mut impl Write) -> io::Result<()> {
     let config = GenerateArgs {
         model: args.model,
         prompt: "project plan".into(),
+        skills: None,
+        selected_skills: Vec::new(),
         context: args.context,
         max_tokens: args.max_tokens,
         threads: args.threads,

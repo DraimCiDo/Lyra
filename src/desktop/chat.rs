@@ -1,4 +1,4 @@
-//! Bounded, memory-only conversation and the single prompt-first home screen.
+//! Bounded conversation state and the prompt-first home screen.
 use super::*;
 
 const MESSAGE_COUNT: usize = 32;
@@ -6,17 +6,67 @@ const MESSAGE_BYTES: usize = 64 * 1024;
 const HISTORY_BYTES: usize = 256 * 1024;
 const REQUEST_BYTES: usize = 16384;
 
-#[derive(Default)]
+#[derive(Clone, Default, serde::Serialize, serde::Deserialize)]
 pub(super) struct Chat {
-    messages: Vec<Message>,
-    pending: bool,
+    pub(super) messages: Vec<Message>,
+    #[serde(skip)]
+    pub(super) pending: bool,
 }
-struct Message {
-    user: bool,
-    text: String,
+#[derive(Clone, serde::Serialize, serde::Deserialize)]
+pub(super) struct Message {
+    pub(super) user: bool,
+    pub(super) text: String,
 }
 impl Chat {
-    fn request(&self, text: &str) -> io::Result<String> {
+    pub(super) fn is_empty(&self) -> bool {
+        self.messages.is_empty()
+    }
+    pub(super) fn valid(&self) -> bool {
+        self.messages.len() <= MESSAGE_COUNT
+            && self.messages.iter().all(|m| m.text.len() <= MESSAGE_BYTES)
+            && self.messages.iter().map(|m| m.text.len()).sum::<usize>() <= HISTORY_BYTES
+    }
+    fn selected_history(&self, optimization: preferences::Optimization) -> &[Message] {
+        let keep = match optimization {
+            preferences::Optimization::Safe => self.messages.len(),
+            preferences::Optimization::Balanced => 12,
+            preferences::Optimization::Aggressive => 6,
+        };
+        &self.messages[self.messages.len().saturating_sub(keep)..]
+    }
+
+    pub(super) fn model_request(
+        &self,
+        latest: &str,
+        tokens: u32,
+        optimization: preferences::Optimization,
+    ) -> io::Result<crate::model_gateway::Request> {
+        // Apply the same validation and history window as task/project payloads.
+        self.request(latest, optimization)?;
+        let mut messages: Vec<crate::model_gateway::Message> = self
+            .selected_history(optimization)
+            .iter()
+            .map(|message| crate::model_gateway::Message {
+                role: if message.user {
+                    crate::model_gateway::Role::User
+                } else {
+                    crate::model_gateway::Role::Assistant
+                },
+                content: message.text.clone(),
+            })
+            .collect();
+        messages.push(crate::model_gateway::Message {
+            role: crate::model_gateway::Role::User,
+            content: latest.to_owned(),
+        });
+        Ok(crate::model_gateway::Request {
+            messages,
+            max_output_tokens: tokens,
+            require_tools: false,
+        })
+    }
+
+    fn request(&self, text: &str, optimization: preferences::Optimization) -> io::Result<String> {
         if text.trim().is_empty() || self.messages.len() + 2 > MESSAGE_COUNT {
             return Err(io::Error::other(
                 "Пустое сообщение или достигнут лимит переписки. Начни новый чат.",
@@ -31,7 +81,9 @@ impl Chat {
         let result = if self.messages.is_empty() {
             text.to_owned()
         } else {
-            let history: Vec<_> = self.messages.iter().map(|m| {
+            // Only omit entire older messages; never rewrite code, errors or patches.
+            // The latest user turn is always preserved verbatim.
+            let history: Vec<_> = self.selected_history(optimization).iter().map(|m| {
                 serde_json::json!({"role":if m.user {"user"} else {"assistant"},"content":m.text})
             }).collect();
             serde_json::json!({"conversation":history,"latest_user_request":text,
@@ -44,7 +96,7 @@ impl Chat {
         }
         Ok(result)
     }
-    fn sent(&mut self, text: String) {
+    pub(super) fn sent(&mut self, text: String) {
         self.messages.push(Message { user: true, text });
         self.pending = true;
     }
@@ -68,9 +120,173 @@ impl Chat {
     }
 }
 
+/// Keep conversation content readable on wide displays instead of stretching every line.
+fn conversation_width(available: f32) -> f32 {
+    available.clamp(1.0, 820.0)
+}
+
+/// User bubbles grow with the message but never occupy the entire conversation width.
+/// UTF-8 character counts are only a visual estimate; egui wraps the actual text.
+fn user_bubble_width(text: &str, available: f32) -> f32 {
+    let cap = (available * 0.76).clamp(1.0, 560.0);
+    let longest_line = text
+        .lines()
+        .map(|line| line.chars().count())
+        .max()
+        .unwrap_or(0)
+        .min(256);
+    (longest_line as f32 * 7.8 + 32.0).clamp(100.0_f32.min(cap), cap)
+}
+
+/// Display only observable runtime activity; this is not model chain-of-thought.
+fn show_runtime_progress(
+    ui: &mut egui::Ui,
+    snapshot: &job::ProgressSnapshot,
+    elapsed: Duration,
+    colors: theme::Colors,
+    column_width: f32,
+    language: Language,
+) {
+    use job::ProgressStage;
+    let stage = snapshot.stage;
+    ui.horizontal(|ui| {
+        ui.add(
+            Icon::Sparkles
+                .image(colors.accent)
+                .fit_to_exact_size(egui::vec2(19.0, 19.0)),
+        );
+        ui.vertical(|ui| {
+            ui.set_width((column_width - 36.0).max(1.0));
+            ui.label(RichText::new("Lyra").strong().color(colors.accent));
+            egui::Frame::new()
+                .fill(colors.card)
+                .corner_radius(10)
+                .inner_margin(10)
+                .show(ui, |ui| {
+                    ui.horizontal(|ui| {
+                        ui.add(egui::Spinner::new().size(15.0));
+                        let label = match stage {
+                            ProgressStage::Starting => "Запускаю выполнение…",
+                            ProgressStage::Loading => "Загружаю модель GGUF…",
+                            ProgressStage::Context => "Подготавливаю контекст запроса…",
+                            ProgressStage::Generating => "Генерирую ответ…",
+                        };
+                        ui.label(RichText::new(language.text(label)).strong());
+                    });
+                    if matches!(stage, ProgressStage::Context | ProgressStage::Generating) {
+                        ui.label(
+                            RichText::new("✓ Модель загружена")
+                                .small()
+                                .color(colors.muted),
+                        );
+                    }
+                    if stage == ProgressStage::Generating {
+                        ui.label(
+                            RichText::new("✓ Контекст обработан")
+                                .small()
+                                .color(colors.muted),
+                        );
+                    }
+                    ui.label(
+                        RichText::new(format!(
+                            "{} с · {} токенов",
+                            elapsed.as_secs(),
+                            snapshot.generated_tokens
+                        ))
+                        .small()
+                        .color(colors.muted),
+                    );
+                });
+            show_activity(ui, snapshot, true, language);
+            if !snapshot.preview.is_empty() {
+                ui.add_space(8.0);
+                ui.add(
+                    egui::Label::new(RichText::new(&snapshot.preview).color(colors.text))
+                        .selectable(true)
+                        .wrap(),
+                );
+            }
+        });
+    });
+}
+
+fn show_activity(
+    ui: &mut egui::Ui,
+    snapshot: &job::ProgressSnapshot,
+    running: bool,
+    language: Language,
+) {
+    egui::CollapsingHeader::new(language.text("Ход работы"))
+        .default_open(running)
+        .show(ui, |ui| {
+            if snapshot.activity.is_empty() {
+                ui.label(language.text("Подготовка запроса…"));
+            }
+            for event in &snapshot.activity {
+                ui.label(format!("› {}", language.text(event)));
+            }
+        });
+}
+
+fn show_conversation_message(
+    ui: &mut egui::Ui,
+    message: &Message,
+    colors: theme::Colors,
+    column_width: f32,
+) {
+    if message.user {
+        let bubble_width = user_bubble_width(&message.text, column_width);
+        ui.horizontal(|ui| {
+            let offset = (column_width - bubble_width - ui.spacing().item_spacing.x).max(0.0);
+            if offset > 0.0 {
+                ui.add_space(offset);
+            }
+            ui.allocate_ui_with_layout(
+                egui::vec2(bubble_width, 0.0),
+                egui::Layout::top_down(egui::Align::Min),
+                |ui| {
+                    ui.set_min_width(bubble_width);
+                    egui::Frame::new()
+                        .fill(colors.input)
+                        .corner_radius(16)
+                        .inner_margin(egui::Margin::symmetric(14, 10))
+                        .show(ui, |ui| {
+                            ui.set_min_width((bubble_width - 28.0).max(1.0));
+                            ui.set_max_width((bubble_width - 28.0).max(1.0));
+                            ui.add(
+                                egui::Label::new(RichText::new(&message.text).color(colors.text))
+                                    .selectable(true)
+                                    .wrap(),
+                            );
+                        });
+                },
+            );
+        });
+    } else {
+        ui.horizontal(|ui| {
+            ui.add(
+                Icon::Sparkles
+                    .image(colors.accent)
+                    .fit_to_exact_size(egui::vec2(19.0, 19.0)),
+            );
+            ui.vertical(|ui| {
+                ui.set_width((column_width - 36.0).max(1.0));
+                ui.label(RichText::new("Lyra").strong().color(colors.accent));
+                ui.add(
+                    egui::Label::new(RichText::new(&message.text).color(colors.text))
+                        .selectable(true)
+                        .wrap(),
+                );
+            });
+        });
+    }
+}
+
 impl Desktop {
     pub(super) fn reset_chat(&mut self) {
         self.chat = Chat::default();
+        self.activity = job::ProgressSnapshot::default();
+        self.activity_elapsed = Duration::ZERO;
         self.draft = projects::ProjectDraft::default();
         self.task.clear();
         self.request_task.clear();
@@ -84,13 +300,51 @@ impl Desktop {
         self.message = "Готова к локальной работе".into();
     }
 
+    fn chat_operation(&self) -> Operation {
+        match self.chat_mode {
+            ChatMode::Chat => {
+                #[cfg(feature = "gateway-http")]
+                if self.prefs.cloud_chat {
+                    return Operation::CloudChat;
+                }
+                Operation::LocalChat
+            }
+            ChatMode::Task => {
+                if self.prefs.repo.is_some() {
+                    Operation::Task
+                } else {
+                    Operation::ProjectPlan
+                }
+            }
+        }
+    }
+
     pub(super) fn submit_chat(&mut self, ctx: &egui::Context) -> io::Result<()> {
         let text = self.task.trim().to_owned();
-        let request = self.chat.request(&text)?;
+        let request = self.chat.request(&text, self.prefs.optimization)?;
+        if self.job.is_some() {
+            return Err(io::Error::other("Дождитесь текущей операции."));
+        }
+        if let Some(answer) = self.direct_chat_reply(&text) {
+            self.chat.sent(text);
+            self.chat.finish(answer.clone());
+            self.task.clear();
+            self.request_task.clear();
+            self.report = None;
+            self.report_json.clear();
+            self.applied.clear();
+            self.draft.plan = None;
+            self.log.clear();
+            self.activity = job::ProgressSnapshot::default();
+            self.activity_elapsed = Duration::ZERO;
+            self.error = false;
+            self.message = answer;
+            self.capture_session();
+            return Ok(());
+        }
         self.request_task = request.clone();
-        let operation = if self.prefs.repo.is_some() {
-            Operation::Task
-        } else {
+        let operation = self.chat_operation();
+        if operation == Operation::ProjectPlan {
             self.draft.task = request;
             let user_context = self
                 .chat
@@ -108,8 +362,9 @@ impl Desktop {
             } else {
                 latest
             };
-            Operation::ProjectPlan
-        };
+        }
+        self.activity = job::ProgressSnapshot::default();
+        self.activity_elapsed = Duration::ZERO;
         self.start(operation, ctx)?;
         // Only consume the composer after a worker has actually started.
         self.chat.sent(text);
@@ -118,6 +373,7 @@ impl Desktop {
         self.report_json.clear();
         self.applied.clear();
         self.draft.plan = None;
+        self.capture_session();
         Ok(())
     }
 
@@ -155,12 +411,18 @@ impl Desktop {
             if summaries.is_empty() {
                 self.message.clone()
             } else {
-                summaries.join("\n\n")
+                let mut text = summaries.join("\n\n");
+                if !report.context_optimization.is_empty() {
+                    text.push_str("\n\n");
+                    text.push_str(&self.message);
+                }
+                text
             }
         } else {
             self.message.clone()
         };
         self.chat.finish(response);
+        self.capture_session();
     }
 
     pub(super) fn smoke_conversation(&mut self, visible: bool) {
@@ -181,150 +443,92 @@ impl Desktop {
         }
     }
 
-    pub(super) fn chat_home(&mut self, ui: &mut egui::Ui) {
-        let c = self.prefs.palette.colors();
-        let l = self.prefs.language;
-        ui.horizontal(|ui| {
-            let repo = self.prefs.repo.as_ref();
-            let title = repo
-                .and_then(|p| p.file_name())
-                .map(|s| {
-                    let s = s.to_string_lossy();
-                    let mut title = s.chars().take(36).collect::<String>();
-                    if s.chars().count() > 36 {
-                        title.push('…');
+    fn chat_composer(&mut self, ui: &mut egui::Ui, c: theme::Colors, l: Language) {
+        card(c).inner_margin(12).show(ui, |ui| {
+            ui.add_enabled_ui(self.job.is_none(), |ui| {
+                ui.horizontal_wrapped(|ui| {
+                    let before = self.chat_mode;
+                    if self.chat.messages.is_empty() {
+                        egui::ComboBox::from_id_salt("conversation-mode")
+                            .selected_text(l.text(if self.chat_mode == ChatMode::Chat {
+                                "Чат"
+                            } else {
+                                "Работа"
+                            }))
+                            .show_ui(ui, |ui| {
+                                ui.selectable_value(
+                                    &mut self.chat_mode,
+                                    ChatMode::Chat,
+                                    l.text("Чат"),
+                                );
+                                ui.selectable_value(
+                                    &mut self.chat_mode,
+                                    ChatMode::Task,
+                                    l.text("Работа"),
+                                );
+                            });
+                    } else {
+                        ui.label(l.text(if self.chat_mode == ChatMode::Chat {
+                            "Чат"
+                        } else {
+                            "Работа"
+                        }));
                     }
-                    title
-                })
-                .unwrap_or_else(|| l.text("Выбрать проект").into());
-            if ui
-                .allocate_ui_with_layout(
-                    egui::vec2((ui.available_width() - 100.0).max(160.0), 28.0),
-                    egui::Layout::left_to_right(egui::Align::Center),
-                    |ui| {
-                        ui.add_enabled(
-                            self.job.is_none(),
-                            egui::Button::image_and_text(Icon::Folder.image(c.muted), title)
-                                .frame(false)
-                                .wrap_mode(egui::TextWrapMode::Truncate),
-                        )
-                    },
-                )
-                .inner
-                .on_hover_text(
-                    repo.map(|p| p.display().to_string())
-                        .unwrap_or_else(|| l.text("Выбрать существующий проект").into()),
-                )
-                .clicked()
-            {
-                self.choose_path(false);
-            }
-            if self.prefs.repo.is_some()
-                && ui
-                    .add_enabled(
-                        self.job.is_none(),
-                        egui::Button::image(Icon::Close.image(c.muted)).frame(false),
-                    )
-                    .on_hover_text(l.text("Без проекта · создавать с нуля"))
-                    .clicked()
-            {
-                self.reset_chat();
-                self.prefs.repo = None;
-                self.prefs.files.clear();
-            }
-            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                if ui
-                    .add_enabled(
-                        self.job.is_none(),
-                        egui::Button::image(Icon::NewChat.image(c.accent)).frame(false),
-                    )
-                    .on_hover_text(l.text("Новый чат"))
-                    .clicked()
-                {
-                    self.reset_chat();
-                }
-            });
-        });
-        ui.add_space(5.0);
-        let reserve = if self.error { 132.0 } else { 110.0 };
-        let height = (ui.available_height() - reserve).max(100.0);
-        egui::ScrollArea::vertical()
-            .id_salt("conversation")
-            .max_height(height)
-            .auto_shrink([false, false])
-            .stick_to_bottom(true)
-            .show(ui, |ui| {
-                ui.set_min_width(ui.available_width());
-                if self.chat.messages.is_empty() {
-                    ui.add_space((height * 0.18).min(42.0));
-                    ui.vertical_centered(|ui| {
-                        ui.add(
-                            Icon::Sparkles
-                                .image(c.accent)
-                                .fit_to_exact_size(egui::vec2(28.0, 28.0)),
-                        );
-                        ui.label(RichText::new(l.text("Что сделаем?")).size(24.0).strong());
-                    });
-                }
-                for message in &self.chat.messages {
-                    ui.add_space(6.0);
-                    let label = if message.user { l.text("Вы") } else { "Lyra" };
-                    egui::Frame::new()
-                        .fill(if message.user { c.input } else { c.card })
-                        .corner_radius(10)
-                        .inner_margin(10)
-                        .show(ui, |ui| {
-                            ui.set_min_width((ui.available_width() - 2.0).max(0.0));
-                            ui.label(RichText::new(label).small().strong().color(c.accent));
-                            ui.add(egui::Label::new(&message.text).selectable(true).wrap());
-                        });
-                }
-                if self.chat.pending {
-                    ui.add_space(8.0);
-                    ui.label(RichText::new(l.text(&self.message)).color(c.accent));
-                }
-                if self.draft.plan.is_some() {
-                    self.project_result(ui);
-                }
-                if self.report.is_some() {
-                    ui.add_space(6.0);
-                    egui::CollapsingHeader::new(l.text("Файлы и предложения"))
-                        .default_open(false)
-                        .show(ui, |ui| self.changes(ui));
-                }
-                if !self.log.is_empty()
-                    || self
-                        .report
+                    if before != self.chat_mode {
+                        self.capture_session();
+                    }
+                    let repo = self
+                        .prefs
+                        .repo
                         .as_ref()
-                        .is_some_and(|report| !report.events.is_empty())
-                {
-                    egui::CollapsingHeader::new(l.text("Журнал")).show(ui, |ui| {
-                        ui.add(Icon::Log.image(c.muted));
-                        if let Some(report) = &self.report {
-                            for event in &report.events {
-                                ui.label(format!(
-                                    "{} · {} · {} · {}",
-                                    event.call, event.role, event.tool, event.outcome
-                                ));
-                            }
+                        .and_then(|p| p.file_name())
+                        .map(|p| p.to_string_lossy().into_owned())
+                        .unwrap_or_else(|| l.text("Выбрать репозиторий").into());
+                    if ui
+                        .button(format!("{} · {repo}", l.text("Проект")))
+                        .clicked()
+                    {
+                        self.choose_path(false);
+                    }
+                    if self.prefs.repo.is_some()
+                        && ui
+                            .small_button("×")
+                            .on_hover_text(l.text("Без проекта"))
+                            .clicked()
+                    {
+                        if !self.chat.messages.is_empty() {
+                            self.new_session();
                         }
-                        selectable_code(ui, &self.log, c.muted);
-                    });
-                }
+                        self.prefs.repo = None;
+                        self.prefs.files.clear();
+                        self.capture_session();
+                    }
+                    let agents = if self.chat_mode == ChatMode::Chat {
+                        "Lyra"
+                    } else if self.prefs.repo.is_none() {
+                        "planner"
+                    } else if self.prefs.subagents {
+                        "researcher · coder · reviewer"
+                    } else {
+                        "coder"
+                    };
+                    ui.label(format!("{}: {agents}", l.text("Агенты")));
+                    if !self.prefs.active_skill.is_empty() {
+                        ui.label(format!("Skill: {}", self.prefs.active_skill));
+                    }
+                });
             });
-        ui.add_space(5.0);
-        card(c).inner_margin(9).show(ui, |ui| {
             let edit = egui::ScrollArea::vertical()
                 .id_salt("composer-scroll")
-                .min_scrolled_height(32.0)
-                .max_height(36.0)
+                .min_scrolled_height(42.0)
+                .max_height(96.0)
                 .auto_shrink([false, false])
                 .show(ui, |ui| {
                     ui.add_enabled(
                         self.job.is_none(),
                         egui::TextEdit::multiline(&mut self.task)
                             .id_salt("chat-composer")
-                            .desired_rows(2)
+                            .desired_rows(3)
                             .desired_width(f32::INFINITY)
                             .char_limit(16384)
                             .frame(egui::Frame::NONE)
@@ -336,6 +540,9 @@ impl Desktop {
                     )
                 })
                 .inner;
+            if edit.changed() {
+                self.capture_session();
+            }
             let enter = edit.has_focus()
                 && ui.input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::Enter));
             ui.horizontal(|ui| {
@@ -353,7 +560,35 @@ impl Desktop {
                                 .weak(),
                         );
                     } else {
-                        let ready = self.prefs.model.is_some() && !self.task.trim().is_empty();
+                        let model_ready = match self.chat_mode {
+                            ChatMode::Chat => {
+                                #[cfg(feature = "gateway-http")]
+                                if self.prefs.cloud_chat {
+                                    true
+                                } else {
+                                    self.prefs.model.is_some()
+                                }
+                                #[cfg(not(feature = "gateway-http"))]
+                                {
+                                    self.prefs.model.is_some()
+                                }
+                            }
+                            ChatMode::Task => {
+                                #[cfg(feature = "gateway-http")]
+                                if self.prefs.cloud_task && self.prefs.repo.is_some() {
+                                    true
+                                } else {
+                                    self.prefs.model.is_some()
+                                }
+                                #[cfg(not(feature = "gateway-http"))]
+                                {
+                                    self.prefs.model.is_some()
+                                }
+                            }
+                        };
+                        let ready = (model_ready
+                            || self.direct_chat_reply(self.task.trim()).is_some())
+                            && !self.task.trim().is_empty();
                         let clicked = ui
                             .add_enabled(
                                 ready,
@@ -374,6 +609,141 @@ impl Desktop {
                 });
             });
         });
+    }
+
+    pub(super) fn chat_home(&mut self, ui: &mut egui::Ui) {
+        let c = self.prefs.palette.colors();
+        let l = self.prefs.language;
+        if self.prefs.model.is_none() {
+            ui.horizontal(|ui| {
+                ui.label(l.text("Локальная модель не выбрана"));
+                if ui.button(l.text("Подобрать и установить GGUF")).clicked() {
+                    self.settings_open = true;
+                    self.settings_page = SettingsPage::Model;
+                }
+            });
+        }
+        ui.add_space(5.0);
+        let reserve = if self.error { 208.0 } else { 184.0 };
+        let height = (ui.available_height() - reserve).max(100.0);
+        egui::ScrollArea::vertical()
+            .id_salt("conversation")
+            .min_scrolled_height(height)
+            .max_height(height)
+            .auto_shrink([false, false])
+            .stick_to_bottom(true)
+            .show(ui, |ui| {
+                let available = ui.available_width();
+                let column_width = conversation_width(available);
+                ui.horizontal(|ui| {
+                    let offset =
+                        ((available - column_width) / 2.0 - ui.spacing().item_spacing.x).max(0.0);
+                    if offset > 0.0 {
+                        ui.add_space(offset);
+                    }
+                    ui.vertical(|ui| {
+                        ui.set_width(column_width);
+                        if self.chat.messages.is_empty() {
+                            let rect = egui::Rect::from_min_size(
+                                ui.cursor().min,
+                                egui::vec2(column_width, height),
+                            );
+                            ui.painter().text(
+                                rect.center(),
+                                egui::Align2::CENTER_CENTER,
+                                l.text("Что сделаем?"),
+                                egui::FontId::proportional(24.0),
+                                c.accent,
+                            );
+                            ui.allocate_space(egui::vec2(column_width, height));
+                        }
+                        for message in &self.chat.messages {
+                            ui.add_space(14.0);
+                            show_conversation_message(ui, message, c, column_width);
+                        }
+                        if self.chat.pending {
+                            ui.add_space(14.0);
+                            if let Some(worker) = &self.job {
+                                let mut snapshot = worker.progress();
+                                if self.operation != Operation::LocalChat {
+                                    snapshot.preview.clear();
+                                }
+                                show_runtime_progress(
+                                    ui,
+                                    &snapshot,
+                                    worker.started.elapsed(),
+                                    c,
+                                    column_width,
+                                    l,
+                                );
+                            }
+                        }
+                        if !self.chat.pending && !self.activity.activity.is_empty() {
+                            ui.add_space(8.0);
+                            ui.label(
+                                RichText::new(format!(
+                                    "{} · {:.1} s",
+                                    l.text(if self.error {
+                                        "Выполнение прервано"
+                                    } else {
+                                        "Выполнение завершено"
+                                    }),
+                                    self.activity_elapsed.as_secs_f32()
+                                ))
+                                .small()
+                                .weak(),
+                            );
+                            show_activity(ui, &self.activity, false, l);
+                        }
+                        if self.draft.plan.is_some() {
+                            self.project_result(ui);
+                        }
+                        if self.report.is_some() {
+                            ui.add_space(8.0);
+                            egui::CollapsingHeader::new(l.text("Файлы и предложения"))
+                                .default_open(false)
+                                .show(ui, |ui| self.changes(ui));
+                        }
+                        if !self.log.is_empty()
+                            || self
+                                .report
+                                .as_ref()
+                                .is_some_and(|report| !report.events.is_empty())
+                        {
+                            egui::CollapsingHeader::new(l.text("Журнал")).show(ui, |ui| {
+                                ui.add(Icon::Log.image(c.muted));
+                                if let Some(report) = &self.report {
+                                    for event in &report.events {
+                                        ui.label(format!(
+                                            "{} · {} · {} · {}",
+                                            event.call, event.role, event.tool, event.outcome
+                                        ));
+                                    }
+                                }
+                                selectable_code(ui, &self.log, c.muted);
+                            });
+                        }
+                    });
+                });
+            });
+        ui.add_space(5.0);
+        let composer_width = conversation_width(ui.available_width());
+        ui.horizontal(|ui| {
+            let offset = ((ui.available_width() - composer_width) / 2.0
+                - ui.spacing().item_spacing.x)
+                .max(0.0);
+            if offset > 0.0 {
+                ui.add_space(offset);
+            }
+            ui.allocate_ui_with_layout(
+                egui::vec2(composer_width, 0.0),
+                egui::Layout::top_down(egui::Align::Min),
+                |ui| {
+                    ui.set_min_width(composer_width);
+                    self.chat_composer(ui, c, l);
+                },
+            );
+        });
         if self.error {
             ui.add(
                 egui::Label::new(RichText::new(l.text(&self.message)).small().color(c.error))
@@ -388,11 +758,122 @@ impl Desktop {
 mod tests {
     use super::*;
     #[test]
+    fn plan_failure_is_a_short_answer_and_keeps_native_details_in_log() {
+        for (code, timed_out) in [(124, false), (1, false), (1, true)] {
+            let mut app = Desktop::default();
+            app.operation = Operation::ProjectPlan;
+            app.chat.sent("Create a site".into());
+            let native =
+                "llama_graph: internal\nLYRA_PROGRESS:tokens=216\nОшибка: Истёк таймаут генерации.";
+            app.complete(ResultData {
+                code: Some(code),
+                stdout: Vec::new(),
+                stderr: native.into(),
+                cancelled: false,
+                timed_out,
+                elapsed: Duration::from_secs(30),
+            });
+            let answer = &app.chat.messages.last().unwrap().text;
+            assert!(app.error);
+            assert!(answer.len() < 600);
+            assert!(!answer.contains("llama_graph"));
+            assert!(!answer.contains("LYRA_PROGRESS"));
+            assert_eq!(app.log, native);
+            assert!(app.draft.plan.is_none());
+            if code == 124 || timed_out {
+                assert!(answer.contains("таймаут"));
+            }
+        }
+    }
+    #[test]
+    fn task_timeout_keeps_structured_report_for_inspection_without_apply() {
+        let mut app = Desktop::default();
+        app.operation = Operation::Task;
+        app.chat.sent("Inspect".into());
+        let bytes = serde_json::to_vec(&serde_json::json!({
+            "schema_version":3,"workspace":"project","status":"timeout",
+            "summaries":[],"proposals":[],"events":[],"calls":1,"subagents":false,
+            "truncated_index":false,"model_review_is_verified_test":false
+        }))
+        .unwrap();
+        app.complete(ResultData {
+            code: Some(124),
+            stdout: bytes,
+            stderr: "native details".into(),
+            cancelled: false,
+            timed_out: false,
+            elapsed: Duration::from_secs(30),
+        });
+        assert_eq!(app.report.as_ref().unwrap().status, "timeout");
+        assert!(!app.report_json.is_empty());
+        assert!(app.error);
+        assert!(!can_apply(app.report.as_ref().unwrap(), 0, &[]));
+        assert!(app.chat.messages.last().unwrap().text.contains("таймаут"));
+    }
+    #[test]
+    fn successful_task_keeps_controller_context_metrics_visible() {
+        for enabled in [false, true] {
+            let mut app = Desktop::default();
+            app.operation = Operation::Task;
+            app.chat.sent("Inspect".into());
+            app.message = "Context saved: 40 bytes".into();
+            let mut report: crate::agent::Report = serde_json::from_value(serde_json::json!({
+                "schema_version":3,"workspace":"project","status":"completed",
+                "summaries":[["coder","Inspected; tests not run."]],"proposals":[],"events":[],
+                "calls":1,"subagents":false,"truncated_index":false,"model_review_is_verified_test":false
+            })).unwrap();
+            if enabled {
+                report
+                    .context_optimization
+                    .push(crate::context_optimizer::ContextStats::default());
+            }
+            app.report = Some(report);
+            app.finish_chat();
+            let answer = &app.chat.messages.last().unwrap().text;
+            assert!(answer.contains("Inspected; tests not run."));
+            assert_eq!(answer.contains("Context saved: 40 bytes"), enabled);
+        }
+    }
+    #[test]
+    fn chat_layout_caps_long_messages_and_keeps_short_bubbles_compact() {
+        assert_eq!(conversation_width(1600.0), 820.0);
+        assert_eq!(conversation_width(520.0), 520.0);
+        assert!(user_bubble_width("Привет", 820.0) < 180.0);
+        assert!(user_bubble_width(&"очень длинный текст ".repeat(100), 820.0) <= 560.0);
+        assert!(user_bubble_width("a".repeat(400).as_str(), 400.0) <= 304.0);
+        assert!(user_bubble_width("Привет\\nмир", 400.0) < 200.0);
+    }
+
+    #[test]
+    fn model_request_preserves_roles_and_latest_user_message() {
+        let mut chat = Chat::default();
+        chat.sent("First".into());
+        chat.finish("Answer".into());
+        let request = chat
+            .model_request("Follow-up", 256, preferences::Optimization::Balanced)
+            .unwrap();
+        assert_eq!(request.messages.len(), 3);
+        assert_eq!(request.messages[0].role, crate::model_gateway::Role::User);
+        assert_eq!(
+            request.messages[1].role,
+            crate::model_gateway::Role::Assistant
+        );
+        assert_eq!(request.messages[2].content, "Follow-up");
+        assert_eq!(request.max_output_tokens, 256);
+        assert!(
+            chat.model_request(" ", 256, preferences::Optimization::Balanced)
+                .is_err()
+        );
+    }
+
+    #[test]
     fn followup_keeps_the_original_request_and_questions_without_silent_truncation() {
         let mut chat = Chat::default();
         chat.sent("Создай плагин Paper".into());
         chat.finish("Какая версия Minecraft?".into());
-        let request = chat.request("1.21.11").unwrap();
+        let request = chat
+            .request("1.21.11", preferences::Optimization::Balanced)
+            .unwrap();
         let data: serde_json::Value = serde_json::from_str(&request).unwrap();
         assert_eq!(data["conversation"][0]["content"], "Создай плагин Paper");
         assert_eq!(
@@ -400,7 +881,13 @@ mod tests {
             "Какая версия Minecraft?"
         );
         assert_eq!(data["latest_user_request"], "1.21.11");
-        assert!(chat.request(&"я".repeat(REQUEST_BYTES)).is_err());
+        assert!(
+            chat.request(
+                &"я".repeat(REQUEST_BYTES),
+                preferences::Optimization::Balanced
+            )
+            .is_err()
+        );
         assert_eq!(chat.messages.len(), 2);
     }
     #[test]
@@ -434,6 +921,7 @@ mod tests {
         let mut app = Desktop::default();
         app.chat.sent("Создай Paper плагин для 1.20.6".into());
         app.chat.finish("Предлагаю вместо этого 1.21.10".into());
+        app.chat_mode = ChatMode::Task;
         app.task = "Используй 1.21.11".into();
         assert!(app.submit_chat(&egui::Context::default()).is_err()); // No model selected.
         assert_eq!(app.draft.version, "1.21.11");
@@ -441,13 +929,96 @@ mod tests {
         assert_eq!(app.chat.messages.len(), 2);
     }
     #[test]
+    fn conversation_routing_requires_explicit_task_or_project_mode() {
+        let mut app = Desktop::default();
+        assert!(matches!(app.chat_operation(), Operation::LocalChat));
+        app.prefs.repo = Some("example".into());
+        assert!(matches!(app.chat_operation(), Operation::LocalChat));
+        app.chat_mode = ChatMode::Task;
+        assert!(matches!(app.chat_operation(), Operation::Task));
+        app.prefs.repo = None;
+        assert!(matches!(app.chat_operation(), Operation::ProjectPlan));
+        #[cfg(feature = "gateway-http")]
+        {
+            app.chat_mode = ChatMode::Chat;
+            app.prefs.cloud_chat = true;
+            assert!(matches!(app.chat_operation(), Operation::CloudChat));
+            app.prefs.cloud_chat = false;
+            assert!(matches!(app.chat_operation(), Operation::LocalChat));
+        }
+    }
+
+    #[test]
     fn full_conversation_rejects_another_turn_without_dropping_history() {
         let mut chat = Chat::default();
         for _ in 0..MESSAGE_COUNT / 2 {
             chat.sent("task".into());
             chat.finish("answer".into());
         }
-        assert!(chat.request("next").is_err());
+        assert!(
+            chat.request("next", preferences::Optimization::Balanced)
+                .is_err()
+        );
         assert_eq!(chat.messages.len(), MESSAGE_COUNT);
+    }
+}
+
+#[cfg(test)]
+mod optimization_tests {
+    use super::*;
+    #[test]
+    fn all_payloads_share_exact_history_windows_and_keep_latest_verbatim() {
+        let mut chat = Chat::default();
+        for n in 0..20 {
+            chat.messages.push(Message {
+                user: n % 2 == 0,
+                text: format!("turn_{n}"),
+            });
+        }
+        let latest = "Сохрани код дословно:\nfn main() {}\r\n";
+        for (mode, expected) in [
+            (preferences::Optimization::Safe, 20),
+            (preferences::Optimization::Balanced, 12),
+            (preferences::Optimization::Aggressive, 6),
+        ] {
+            let envelope: serde_json::Value =
+                serde_json::from_str(&chat.request(latest, mode).unwrap()).unwrap();
+            let model = chat.model_request(latest, 256, mode).unwrap();
+            let history = envelope["conversation"].as_array().unwrap();
+            assert_eq!(history.len(), expected);
+            assert_eq!(model.messages.len(), expected + 1);
+            assert_eq!(model.messages[0].content, format!("turn_{}", 20 - expected));
+            for (item, message) in history.iter().zip(&model.messages) {
+                assert_eq!(item["content"], message.content);
+                assert_eq!(item["role"], serde_json::to_value(&message.role).unwrap());
+            }
+            assert_eq!(envelope["latest_user_request"], latest);
+            assert_eq!(model.messages.last().unwrap().content, latest);
+        }
+        assert_eq!(chat.messages.len(), 20); // Selection never mutates stored history.
+    }
+    #[test]
+    fn safe_preserves_full_history_and_aggressive_keeps_recent() {
+        let mut chat = Chat::default();
+        for n in 0..10 {
+            chat.messages.push(Message {
+                user: n % 2 == 0,
+                text: format!("unique_turn_{n}"),
+            });
+        }
+        let safe = chat
+            .request("new task", preferences::Optimization::Safe)
+            .unwrap();
+        let balanced = chat
+            .request("new task", preferences::Optimization::Balanced)
+            .unwrap();
+        let aggressive = chat
+            .request("new task", preferences::Optimization::Aggressive)
+            .unwrap();
+        assert!(safe.contains("unique_turn_0"));
+        assert!(balanced.contains("unique_turn_0"));
+        assert!(!aggressive.contains("unique_turn_0"));
+        assert!(aggressive.contains("unique_turn_9"));
+        assert!(aggressive.contains("new task"));
     }
 }

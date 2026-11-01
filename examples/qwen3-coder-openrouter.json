@@ -1,0 +1,14 @@
+{
+  "descriptor": {
+    "provider": "openrouter",
+    "model": "qwen/qwen3-coder",
+    "capabilities": {
+      "tool_calls": false,
+      "vision": false,
+      "prompt_cache": false,
+      "max_context_tokens": 262144
+    }
+  },
+  "endpoint": "https://openrouter.ai/api/v1/chat/completions",
+  "api_key_env": "OPENROUTER_API_KEY"
+}

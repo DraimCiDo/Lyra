@@ -7,6 +7,30 @@ use std::{
 };
 
 const LIMIT: u64 = 64 * 1024;
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Optimization {
+    Safe,
+    #[default]
+    Balanced,
+    Aggressive,
+}
+impl Optimization {
+    pub fn from_slider(value: u32) -> Self {
+        match value {
+            0 => Self::Safe,
+            2 => Self::Aggressive,
+            _ => Self::Balanced,
+        }
+    }
+    pub fn slider(self) -> u32 {
+        match self {
+            Self::Safe => 0,
+            Self::Balanced => 1,
+            Self::Aggressive => 2,
+        }
+    }
+}
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct Preferences {
@@ -18,13 +42,24 @@ pub struct Preferences {
     pub preview_updates: bool,
     pub repo: Option<PathBuf>,
     pub model: Option<PathBuf>,
+    pub provider_registry: Option<PathBuf>,
+    pub skill_manifest: Option<PathBuf>,
+    pub active_skill: String,
+    pub cloud_chat: bool,
+    pub cloud_task: bool,
+    pub cloud_provider: String,
+    pub cloud_model: String,
     pub documentation: Option<PathBuf>,
     pub files: String,
     pub subagents: bool,
+    pub optimization: Optimization,
+    pub dedup_tool_context: bool,
     pub context: u32,
     pub tokens: u32,
     pub calls: u32,
     pub threads: u32,
+    /// Number of model layers offloaded to CUDA; 0 keeps inference on CPU.
+    pub gpu_layers: u32,
     pub timeout: u64,
 }
 impl Default for Preferences {
@@ -38,13 +73,23 @@ impl Default for Preferences {
             preview_updates: env!("CARGO_PKG_VERSION").contains('-'),
             repo: None,
             model: None,
+            provider_registry: None,
+            skill_manifest: None,
+            active_skill: String::new(),
+            cloud_chat: false,
+            cloud_task: false,
+            cloud_provider: String::new(),
+            cloud_model: String::new(),
             documentation: None,
             files: String::new(),
             subagents: false,
+            optimization: Optimization::Balanced,
+            dedup_tool_context: false,
             context: 4096,
             tokens: 512,
             calls: 12,
             threads: crate::inference::default_threads(),
+            gpu_layers: 0,
             timeout: 600,
         }
     }
@@ -57,12 +102,22 @@ impl Preferences {
             && (1..=24).contains(&self.calls)
             && (!self.subagents || self.calls >= 3)
             && (1..=256).contains(&self.threads)
+            && self.gpu_layers <= 1024
             && (1..=3600).contains(&self.timeout)
+            && self.active_skill.len() <= 64
+            && self.cloud_provider.len() <= 128
+            && self.cloud_model.len() <= 256
             && self.files.len() <= 32768
             && self.files.lines().filter(|l| !l.trim().is_empty()).count() <= 32
-            && [&self.repo, &self.model, &self.documentation]
-                .into_iter()
-                .all(|p| p.as_ref().is_none_or(|p| p.as_os_str().len() <= 4096))
+            && [
+                &self.repo,
+                &self.model,
+                &self.documentation,
+                &self.provider_registry,
+                &self.skill_manifest,
+            ]
+            .into_iter()
+            .all(|p| p.as_ref().is_none_or(|p| p.as_os_str().len() <= 4096))
     }
     pub fn load(path: &Path) -> io::Result<Self> {
         let mut bytes = Vec::new();
@@ -102,6 +157,7 @@ impl Preferences {
         self.tokens = defaults.tokens;
         self.calls = defaults.calls;
         self.threads = defaults.threads;
+        self.gpu_layers = defaults.gpu_layers;
         self.timeout = defaults.timeout;
     }
 }
@@ -129,6 +185,84 @@ pub fn config_path() -> Option<PathBuf> {
 mod tests {
     use super::*;
     #[test]
+    fn provider_registry_path_roundtrip_and_legacy_settings() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("settings.json");
+        let prefs = Preferences {
+            provider_registry: Some(PathBuf::from("C:/Lyra/providers.json")),
+            ..Preferences::default()
+        };
+        prefs.save(&path).unwrap();
+        assert_eq!(Preferences::load(&path).unwrap(), prefs);
+        let mut legacy = serde_json::to_value(&prefs).unwrap();
+        legacy.as_object_mut().unwrap().remove("provider_registry");
+        std::fs::write(&path, serde_json::to_vec(&legacy).unwrap()).unwrap();
+        assert_eq!(Preferences::load(&path).unwrap().provider_registry, None);
+    }
+
+    #[test]
+    fn gpu_settings_roundtrip_legacy_and_safe_defaults() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("settings.json");
+        let mut prefs = Preferences {
+            gpu_layers: 99,
+            ..Preferences::default()
+        };
+        prefs.save(&path).unwrap();
+        assert_eq!(Preferences::load(&path).unwrap().gpu_layers, 99);
+        let mut legacy = serde_json::to_value(&prefs).unwrap();
+        legacy.as_object_mut().unwrap().remove("gpu_layers");
+        std::fs::write(&path, serde_json::to_vec(&legacy).unwrap()).unwrap();
+        assert_eq!(Preferences::load(&path).unwrap().gpu_layers, 0);
+        prefs.gpu_layers = 1025;
+        assert!(prefs.save(&path).is_err());
+        prefs.reset_inference();
+        assert_eq!(prefs.gpu_layers, 0);
+    }
+
+    #[test]
+    fn optimization_modes_persist_and_legacy_defaults_to_balanced() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("settings.json");
+        for mode in [
+            Optimization::Safe,
+            Optimization::Balanced,
+            Optimization::Aggressive,
+        ] {
+            let prefs = Preferences {
+                optimization: mode,
+                ..Preferences::default()
+            };
+            prefs.save(&path).unwrap();
+            assert_eq!(Preferences::load(&path).unwrap().optimization, mode);
+            assert_eq!(Optimization::from_slider(mode.slider()), mode);
+        }
+        let mut legacy = serde_json::to_value(Preferences::default()).unwrap();
+        legacy.as_object_mut().unwrap().remove("optimization");
+        std::fs::write(&path, serde_json::to_vec(&legacy).unwrap()).unwrap();
+        assert_eq!(
+            Preferences::load(&path).unwrap().optimization,
+            Optimization::Balanced
+        );
+    }
+
+    #[test]
+    fn tool_result_pool_is_opt_in_and_legacy_defaults_off() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("settings.json");
+        let prefs = Preferences {
+            dedup_tool_context: true,
+            ..Preferences::default()
+        };
+        prefs.save(&path).unwrap();
+        assert!(Preferences::load(&path).unwrap().dedup_tool_context);
+        let mut old = serde_json::to_value(&prefs).unwrap();
+        old.as_object_mut().unwrap().remove("dedup_tool_context");
+        std::fs::write(&path, serde_json::to_vec(&old).unwrap()).unwrap();
+        assert!(!Preferences::load(&path).unwrap().dedup_tool_context);
+    }
+
+    #[test]
     fn preferences_roundtrip_overwrite_and_reject_bad_data() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("settings.json");
@@ -154,7 +288,11 @@ mod tests {
         std::fs::write(&path, vec![b' '; LIMIT as usize + 1]).unwrap();
         assert!(Preferences::load(&path).is_err());
         let json = serde_json::to_value(p).unwrap();
+        assert_eq!(json["optimization"], "balanced");
+        assert_eq!(Optimization::from_slider(0), Optimization::Safe);
+        assert_eq!(Optimization::from_slider(2), Optimization::Aggressive);
         assert!(json.get("task").is_none());
         assert!(json.get("report").is_none());
+        assert!(json.get("api_key").is_none());
     }
 }

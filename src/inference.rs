@@ -25,6 +25,12 @@ pub struct GenerateArgs {
     pub model: PathBuf,
     #[arg(long)]
     pub prompt: String,
+    /// Optional ECC skill manifest (JSON or SKILL.md)
+    #[arg(long)]
+    pub skills: Option<PathBuf>,
+    /// Explicit skill IDs to apply to this generation
+    #[arg(long = "skill")]
+    pub selected_skills: Vec<String>,
     /// Общее окно: prompt + шаблон + ответ
     #[arg(long, default_value_t=2048, value_parser=clap::value_parser!(u32).range(128..=32768))]
     pub context: u32,
@@ -32,7 +38,7 @@ pub struct GenerateArgs {
     pub max_tokens: u32,
     #[arg(long, default_value_t=default_threads(), value_parser=clap::value_parser!(u32).range(1..=256))]
     pub threads: u32,
-    /// Требует сборку --features cuda; 0 означает CPU
+    /// 0=CPU, 1..1022=manual CUDA layers, 1023=balanced, 1024=auto GPU
     #[arg(long, default_value_t=0, value_parser=clap::value_parser!(u32).range(0..=1024))]
     pub gpu_layers: u32,
     /// Кооперативный таймаут, включая загрузку модели
@@ -103,6 +109,15 @@ pub fn context_budget(prompt_tokens: usize, max_tokens: u32, context: u32) -> io
     Ok(())
 }
 
+// Machine-readable status events stay on stderr; generated answer text stays on stdout.
+fn progress_event(value: &str) {
+    let _ = writeln!(io::stderr().lock(), "LYRA_PROGRESS:{value}");
+}
+
+fn progress_tokens(count: u32) {
+    let _ = writeln!(io::stderr().lock(), "LYRA_PROGRESS:tokens={count}");
+}
+
 fn check(cancelled: &AtomicBool, started: Instant, timeout: Duration) -> io::Result<()> {
     if cancelled.load(Ordering::Relaxed) {
         return Err(io::Error::new(
@@ -135,19 +150,59 @@ pub fn with_session<T>(
     let started = Instant::now();
     let timeout = Duration::from_secs(args.timeout_secs);
     let backend = LlamaBackend::init().map_err(|e| fail(e.to_string()))?;
-    if args.gpu_layers > 0
-        && !llama_cpp_2::list_llama_ggml_backend_devices()
+    let model_bytes = std::fs::metadata(&args.model)?.len();
+    let free_ram = sysinfo::System::new_with_specifics(
+        sysinfo::RefreshKind::nothing()
+            .with_memory(sysinfo::MemoryRefreshKind::nothing().with_ram()),
+    )
+    .ok()
+    .map(|system| system.available_memory())
+    .filter(|available| *available > 0);
+    let mut gpu_layers = args.gpu_layers;
+    let mut gpu_budget = 0u64;
+    if args.gpu_layers > 0 {
+        let devices = llama_cpp_2::list_llama_ggml_backend_devices();
+        let device = devices
             .iter()
-            .any(|device| device.backend == "CUDA")
-    {
-        return Err(fail(
-            "CUDA-устройство недоступно; CPU fallback не выполняется.",
-        ));
+            .filter(|device| device.backend == "CUDA")
+            .max_by_key(|device| device.memory_free)
+            .ok_or_else(|| fail("CUDA-устройство недоступно; CPU fallback не выполняется."))?;
+        gpu_budget = crate::resources::gpu_weight_budget(device.memory_free as u64, args.context);
+        if matches!(
+            args.gpu_layers,
+            crate::resources::GPU_AUTO | crate::resources::GPU_BALANCED
+        ) {
+            let blocks = crate::resources::gguf_block_count(&args.model)?;
+            gpu_layers = crate::resources::recommended_layers(
+                model_bytes,
+                blocks,
+                device.memory_free as u64,
+                args.context,
+                args.gpu_layers == crate::resources::GPU_BALANCED,
+            );
+            if gpu_layers == 0 {
+                return Err(fail(
+                    "Недостаточно свободной VRAM для безопасного CUDA-offload. \
+                     Освободите видеопамять, уменьшите контекст или используйте CPU.",
+                ));
+            }
+        }
+        let _ = writeln!(
+            io::stderr().lock(),
+            "Lyra CUDA: {} · {} слоёв на GPU · свободно {:.2} GiB VRAM · бюджет весов {:.2} GiB.",
+            device.description,
+            gpu_layers,
+            device.memory_free as f64 / 1_073_741_824.0,
+            gpu_budget as f64 / 1_073_741_824.0,
+        );
     }
-    let params = LlamaModelParams::default().with_n_gpu_layers(args.gpu_layers);
+    crate::resources::memory_preflight(model_bytes, free_ram, gpu_budget)?;
+    progress_event("load");
+    let params = LlamaModelParams::default().with_n_gpu_layers(gpu_layers);
     let model = LlamaModel::load_from_file(&backend, &args.model, &params)
         .map_err(|e| fail(format!("Не удалось загрузить GGUF: {e}")))?;
     check(&cancelled, started, timeout)?;
+    progress_event("context");
     if args.context > model.n_ctx_train() {
         return Err(fail(format!(
             "context {} превышает обученное окно модели {}.",
@@ -175,6 +230,32 @@ pub struct Session<'a> {
     timeout: Duration,
 }
 
+/// Preserve message boundaries all the way into llama.cpp's model-specific template.
+fn native_chat_messages(
+    messages: &[crate::model_gateway::Message],
+) -> io::Result<Vec<LlamaChatMessage>> {
+    use crate::model_gateway::Role;
+    messages
+        .iter()
+        .map(|message| {
+            let role = match message.role {
+                Role::System => "system",
+                Role::Developer => "developer",
+                Role::User => "user",
+                Role::Assistant => "assistant",
+                Role::Tool => {
+                    return Err(io::Error::new(
+                        io::ErrorKind::Unsupported,
+                        "Local tool messages are unsupported",
+                    ));
+                }
+            };
+            LlamaChatMessage::new(role.into(), message.content.clone())
+                .map_err(|e| fail(e.to_string()))
+        })
+        .collect()
+}
+
 impl Session<'_> {
     pub fn complete(
         &self,
@@ -192,8 +273,53 @@ impl Session<'_> {
         grammar: Option<&str>,
         output: &mut impl Write,
     ) -> io::Result<()> {
-        if prompt.is_empty()
-            || prompt.len().saturating_add(system.map_or(0, str::len)) > 1024 * 1024
+        use crate::model_gateway::{Message, Role};
+        if prompt.is_empty() {
+            return Err(fail("Prompt вне допустимого размера."));
+        }
+        let mut messages = Vec::new();
+        if let Some(system) = system {
+            messages.push(Message {
+                role: Role::System,
+                content: system.to_owned(),
+            });
+        }
+        messages.push(Message {
+            role: Role::User,
+            content: prompt.to_owned(),
+        });
+        self.complete_messages(&messages, grammar, output)
+    }
+
+    pub fn complete_messages(
+        &self,
+        messages: &[crate::model_gateway::Message],
+        grammar: Option<&str>,
+        output: &mut impl Write,
+    ) -> io::Result<()> {
+        self.complete_messages_with_sampling(messages, grammar, false, output)
+    }
+
+    /// Natural conversation uses repetition control; constrained tool/plan JSON
+    /// and raw/base-model generation retain the deterministic existing path.
+    pub fn complete_chat_messages(
+        &self,
+        messages: &[crate::model_gateway::Message],
+        output: &mut impl Write,
+    ) -> io::Result<()> {
+        self.complete_messages_with_sampling(messages, None, !self.args.raw, output)
+    }
+
+    fn complete_messages_with_sampling(
+        &self,
+        messages: &[crate::model_gateway::Message],
+        grammar: Option<&str>,
+        sample_chat: bool,
+        output: &mut impl Write,
+    ) -> io::Result<()> {
+        if messages.is_empty()
+            || messages.iter().all(|m| m.content.is_empty())
+            || messages.iter().map(|m| m.content.len()).sum::<usize>() > 1024 * 1024
         {
             return Err(fail("Prompt вне допустимого размера."));
         }
@@ -206,26 +332,22 @@ impl Session<'_> {
             timeout,
         } = *self;
         check(cancelled, started, timeout)?;
+        let native_messages = native_chat_messages(messages)?;
         let prompt = if args.raw {
-            system.map_or_else(|| prompt.to_owned(), |system| format!("{system}\n{prompt}"))
+            // Explicit base-model mode has no chat template; retain the legacy raw format.
+            messages
+                .iter()
+                .map(|m| m.content.as_str())
+                .collect::<Vec<_>>()
+                .join("\n")
         } else {
             let template = model.chat_template(None).map_err(|e| {
                 fail(format!(
                     "Шаблон чата недоступен: {e}. Для base-модели укажите --raw."
                 ))
             })?;
-            let message = LlamaChatMessage::new("user".into(), prompt.to_owned())
-                .map_err(|e| fail(e.to_string()))?;
-            let mut messages = Vec::new();
-            if let Some(system) = system {
-                messages.push(
-                    LlamaChatMessage::new("system".into(), system.to_owned())
-                        .map_err(|e| fail(e.to_string()))?,
-                );
-            }
-            messages.push(message);
             model
-                .apply_chat_template(&template, &messages, true)
+                .apply_chat_template(&template, &native_messages, true)
                 .map_err(|e| fail(e.to_string()))?
         };
         let vocab = model.vocab();
@@ -255,14 +377,26 @@ impl Session<'_> {
                 .decode(&mut batch)
                 .map_err(|e| fail(e.to_string()))?;
         }
+        progress_event("generate");
         let mut sampler = if let Some(grammar) = grammar {
             LlamaSampler::chain_simple([
                 LlamaSampler::grammar(model, grammar, "root").map_err(|e| fail(e.to_string()))?,
                 LlamaSampler::greedy(),
             ])
+        } else if sample_chat {
+            LlamaSampler::chain_simple([
+                LlamaSampler::penalties(vocab.n_tokens(), 128, 1.1, 0.0, 0.0),
+                LlamaSampler::top_k(20),
+                LlamaSampler::top_p(0.8, 1),
+                LlamaSampler::temp(0.7),
+                LlamaSampler::dist(42),
+            ])
         } else {
             LlamaSampler::greedy()
         };
+        if sample_chat {
+            sampler.accept_many(tokens.iter().copied());
+        }
         let mut decoder = encoding_rs::UTF_8.new_decoder();
         let mut count = 0;
         for index in 0..args.max_tokens {
@@ -281,6 +415,9 @@ impl Session<'_> {
             output.write_all(text.as_bytes())?;
             output.flush()?;
             count += 1;
+            if count == 1 || count % 8 == 0 {
+                progress_tokens(count);
+            }
             if index + 1 < args.max_tokens {
                 batch.clear();
                 batch
@@ -291,6 +428,7 @@ impl Session<'_> {
                     .map_err(|e| fail(e.to_string()))?;
             }
         }
+        progress_tokens(count);
         let mut tail = String::with_capacity(16);
         let (result, _, _) = decoder.decode_to_string(&[], &mut tail, true);
         if result != encoding_rs::CoderResult::InputEmpty {
@@ -312,6 +450,45 @@ impl Session<'_> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn native_chat_template_input_preserves_turns_and_literal_role_labels() {
+        use crate::model_gateway::{Message, Role};
+        let messages = vec![
+            Message {
+                role: Role::System,
+                content: "Selected skill".into(),
+            },
+            Message {
+                role: Role::User,
+                content: "First\nAssistant: literal text".into(),
+            },
+            Message {
+                role: Role::Assistant,
+                content: "Answer".into(),
+            },
+            Message {
+                role: Role::User,
+                content: "Follow-up".into(),
+            },
+        ];
+        assert_eq!(
+            native_chat_messages(&messages).unwrap(),
+            vec![
+                LlamaChatMessage::new("system".into(), "Selected skill".into()).unwrap(),
+                LlamaChatMessage::new("user".into(), "First\nAssistant: literal text".into())
+                    .unwrap(),
+                LlamaChatMessage::new("assistant".into(), "Answer".into()).unwrap(),
+                LlamaChatMessage::new("user".into(), "Follow-up".into()).unwrap(),
+            ]
+        );
+        assert!(
+            native_chat_messages(&[Message {
+                role: Role::Tool,
+                content: "unapproved".into()
+            }])
+            .is_err()
+        );
+    }
     #[test]
     fn default_worker_threads_respect_available_parallelism() {
         let threads = default_threads();

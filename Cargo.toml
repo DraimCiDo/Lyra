@@ -24,7 +24,7 @@ egui_extras = { version = "=0.37.0", default-features = false, features = ["svg"
 rfd = { version = "=0.17.2", default-features = false, features = ["xdg-portal"], optional = true }
 tempfile = "=3.27.0"
 
-reqwest = { version = "=0.12.28", default-features = false, features = ["rustls-tls-native-roots"], optional = true }
+reqwest = { version = "=0.12.28", default-features = false, features = ["rustls-tls-native-roots", "blocking", "json"], optional = true }
 tokio = { version = "=1.54.1", features = ["rt", "time", "macros", "sync", "fs", "io-util"], optional = true }
 semver = { version = "=1.0.28", features = ["serde"], optional = true }
 sha2 = "=0.11.1"
@@ -55,6 +55,7 @@ required-features = ["desktop"]
 [features]
 default = []
 online-docs = ["dep:reqwest", "dep:tokio", "dep:html2text"]
+gateway-http = ["dep:reqwest"]
 desktop = ["online-docs", "dep:semver", "dep:zip", "dep:winresource", "dep:egui_extras", "dep:eframe", "dep:rfd", "dep:wgpu"]
 cuda = ["llama-cpp-2/cuda"]
 

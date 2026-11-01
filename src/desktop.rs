@@ -1,7 +1,10 @@
 //! Native shell around the same CLI contracts. No inference or filesystem policy in widgets.
 mod chat;
+mod chat_policy;
+mod history;
 mod icons;
 mod job;
+mod models;
 mod preferences;
 mod projects;
 mod theme;
@@ -20,8 +23,8 @@ use std::{
 };
 use theme::{Language, Palette};
 
-const WINDOW_SIZE: [f32; 2] = [760.0, 480.0];
-const MIN_SIZE: [f32; 2] = [640.0, 460.0];
+const WINDOW_SIZE: [f32; 2] = [1160.0, 760.0];
+const MIN_SIZE: [f32; 2] = [820.0, 600.0];
 const SMOKE_STEPS: usize = 72;
 
 pub fn worker_main() -> ExitCode {
@@ -104,6 +107,8 @@ fn configure(ctx: &egui::Context) {
 #[derive(Clone, Copy, PartialEq)]
 enum SettingsPage {
     Model,
+    #[cfg(feature = "gateway-http")]
+    Providers,
     Context,
     Workers,
     Appearance,
@@ -112,8 +117,10 @@ enum SettingsPage {
     Knowledge,
 }
 impl SettingsPage {
-    const ALL: [Self; 7] = [
+    const ALL: [Self; 7 + cfg!(feature = "gateway-http") as usize] = [
         Self::Model,
+        #[cfg(feature = "gateway-http")]
+        Self::Providers,
         Self::Context,
         Self::Workers,
         Self::Appearance,
@@ -124,6 +131,8 @@ impl SettingsPage {
     fn title(self) -> &'static str {
         match self {
             Self::Model => "Модель и ресурсы",
+            #[cfg(feature = "gateway-http")]
+            Self::Providers => "HTTP-провайдеры",
             Self::Context => "Контекст проекта",
             Self::Workers => "Помощники",
             Self::Appearance => "Оформление",
@@ -135,6 +144,8 @@ impl SettingsPage {
     fn icon(self) -> Icon {
         match self {
             Self::Model => Icon::Cpu,
+            #[cfg(feature = "gateway-http")]
+            Self::Providers => Icon::Model,
             Self::Context => Icon::Folder,
             Self::Workers => Icon::Workers,
             Self::Appearance => Icon::Palette,
@@ -145,9 +156,19 @@ impl SettingsPage {
     }
 }
 
+#[derive(Clone, Copy, Default, PartialEq, Eq, Debug, serde::Serialize, serde::Deserialize)]
+enum ChatMode {
+    #[default]
+    Chat,
+    Task,
+}
+
 #[derive(Clone, Copy, PartialEq)]
 enum Operation {
     Task,
+    LocalChat,
+    #[cfg(feature = "gateway-http")]
+    CloudChat,
     Apply(usize),
     Doctor,
     ProjectPlan,
@@ -157,7 +178,13 @@ enum Operation {
 }
 
 struct Desktop {
+    conversations: history::History,
+    history_available: bool,
+    model_installer: models::Installer,
     chat: chat::Chat,
+    chat_mode: ChatMode,
+    activity: job::ProgressSnapshot,
+    activity_elapsed: Duration,
     draft: projects::ProjectDraft,
     request_task: String,
     knowledge_ui: projects::KnowledgeUi,
@@ -192,7 +219,13 @@ struct Desktop {
 impl Default for Desktop {
     fn default() -> Self {
         Self {
+            conversations: history::History::default(),
+            history_available: true,
+            model_installer: models::Installer::default(),
             chat: chat::Chat::default(),
+            chat_mode: ChatMode::Chat,
+            activity: job::ProgressSnapshot::default(),
+            activity_elapsed: Duration::ZERO,
             draft: projects::ProjectDraft::default(),
             request_task: String::new(),
             knowledge_ui: projects::KnowledgeUi::default(),
@@ -239,17 +272,130 @@ impl Desktop {
         let temp = tempfile::Builder::new().prefix("lyra-desktop-").tempdir()?;
         let mut args: Vec<OsString> = Vec::new();
         let deadline = match operation {
+            Operation::LocalChat => {
+                let model = self
+                    .prefs
+                    .model
+                    .as_ref()
+                    .ok_or_else(|| io::Error::other("Выберите локальную GGUF-модель."))?;
+                let request = self.chat_request(self.task.trim())?;
+                let request_path = temp.path().join("local-chat-request.json");
+                std::fs::write(
+                    &request_path,
+                    serde_json::to_vec(&request).map_err(io::Error::other)?,
+                )?;
+                args.extend([
+                    "local-chat".into(),
+                    "--request-file".into(),
+                    request_path.into_os_string(),
+                    "--model".into(),
+                    model.as_os_str().into(),
+                    "--prompt".into(),
+                    "chat".into(),
+                ]);
+                for (flag, value) in [
+                    ("--context", self.prefs.context as u64),
+                    ("--max-tokens", self.prefs.tokens as u64),
+                    ("--threads", self.prefs.threads as u64),
+                    ("--timeout-secs", self.prefs.timeout),
+                ] {
+                    args.extend([flag.into(), value.to_string().into()]);
+                }
+                args.extend([
+                    "--gpu-layers".into(),
+                    self.prefs.gpu_layers.to_string().into(),
+                ]);
+                if !self.prefs.active_skill.is_empty() {
+                    let manifest = self
+                        .prefs
+                        .skill_manifest
+                        .as_ref()
+                        .ok_or_else(|| io::Error::other("Укажите манифест ECC Skills."))?;
+                    let pack = if manifest.file_name().is_some_and(|name| name == "SKILL.md") {
+                        crate::skills::SkillPack::load_markdown(manifest)?
+                    } else {
+                        crate::skills::SkillPack::load(manifest)?
+                    };
+                    crate::agent_runtime::skill_instructions(
+                        Some(&pack),
+                        std::slice::from_ref(&self.prefs.active_skill),
+                    )?;
+                    args.extend([
+                        "--skills".into(),
+                        manifest.as_os_str().into(),
+                        "--skill".into(),
+                        self.prefs.active_skill.clone().into(),
+                    ]);
+                }
+                Some(Duration::from_secs(self.prefs.timeout + 5))
+            }
+            #[cfg(feature = "gateway-http")]
+            Operation::CloudChat => {
+                use std::io::Read;
+                let registry = self
+                    .prefs
+                    .provider_registry
+                    .as_ref()
+                    .ok_or_else(|| io::Error::other("Укажите реестр HTTP-провайдеров."))?;
+                let mut bytes = Vec::new();
+                std::fs::File::open(registry)?
+                    .take(64 * 1024 + 1)
+                    .read_to_end(&mut bytes)?;
+                let configs = crate::provider_http::parse_registry(&bytes)?;
+                let selected = configs
+                    .iter()
+                    .find(|config| {
+                        config.descriptor.provider == self.prefs.cloud_provider
+                            && config.descriptor.model == self.prefs.cloud_model
+                    })
+                    .ok_or_else(|| io::Error::other("Выбранная модель отсутствует в реестре."))?;
+                crate::provider_http::OpenAiCompatibleBackend::new(selected.clone())?;
+                let request = self.chat_request(self.task.trim())?;
+                let request_path = temp.path().join("chat-request.json");
+                std::fs::write(
+                    &request_path,
+                    serde_json::to_vec(&request).map_err(io::Error::other)?,
+                )?;
+                args.extend([
+                    "chat".into(),
+                    "--provider-config".into(),
+                    registry.as_os_str().into(),
+                    "--allow".into(),
+                    self.prefs.cloud_provider.clone().into(),
+                    "--model".into(),
+                    self.prefs.cloud_model.clone().into(),
+                    "--request-file".into(),
+                    request_path.into_os_string(),
+                ]);
+                if !self.prefs.active_skill.is_empty() {
+                    let manifest = self
+                        .prefs
+                        .skill_manifest
+                        .as_ref()
+                        .ok_or_else(|| io::Error::other("Укажите манифест ECC Skills."))?;
+                    let pack = if manifest.file_name().is_some_and(|name| name == "SKILL.md") {
+                        crate::skills::SkillPack::load_markdown(manifest)?
+                    } else {
+                        crate::skills::SkillPack::load(manifest)?
+                    };
+                    if pack.find(&self.prefs.active_skill).is_none() {
+                        return Err(io::Error::other("Выбранный ECC Skill не найден."));
+                    }
+                    args.extend([
+                        "--skills".into(),
+                        manifest.as_os_str().into(),
+                        "--skill".into(),
+                        self.prefs.active_skill.clone().into(),
+                    ]);
+                }
+                Some(Duration::from_secs(100))
+            }
             Operation::Task => {
                 let repo = self
                     .prefs
                     .repo
                     .as_ref()
                     .ok_or_else(|| io::Error::other("Выберите папку проекта."))?;
-                let model = self
-                    .prefs
-                    .model
-                    .as_ref()
-                    .ok_or_else(|| io::Error::other("Выберите GGUF-модель."))?;
                 validate_task(&self.request_task, &self.prefs.files)?;
                 let task_path = temp.path().join("task.txt");
                 std::fs::write(&task_path, &self.request_task)?;
@@ -257,11 +403,62 @@ impl Desktop {
                     "task".into(),
                     "--repo".into(),
                     repo.as_os_str().into(),
-                    "--model".into(),
-                    model.as_os_str().into(),
                     "--task-file".into(),
                     task_path.into_os_string(),
                 ]);
+                #[cfg(feature = "gateway-http")]
+                if self.prefs.cloud_task {
+                    use std::io::Read;
+                    let registry = self
+                        .prefs
+                        .provider_registry
+                        .as_ref()
+                        .ok_or_else(|| io::Error::other("Укажите реестр HTTP-провайдеров."))?;
+                    if self.prefs.cloud_provider.is_empty() || self.prefs.cloud_model.is_empty() {
+                        return Err(io::Error::other(
+                            "Выберите облачную модель в настройках провайдеров.",
+                        ));
+                    }
+                    let mut bytes = Vec::new();
+                    std::fs::File::open(registry)?
+                        .take(64 * 1024 + 1)
+                        .read_to_end(&mut bytes)?;
+                    let configs = crate::provider_http::parse_registry(&bytes)?;
+                    let selected = configs
+                        .into_iter()
+                        .find(|config| {
+                            config.descriptor.provider == self.prefs.cloud_provider
+                                && config.descriptor.model == self.prefs.cloud_model
+                        })
+                        .ok_or_else(|| {
+                            io::Error::other("Облачная модель отсутствует в реестре.")
+                        })?;
+                    crate::provider_http::OpenAiCompatibleBackend::new(selected)?;
+                    args.extend([
+                        "--provider-config".into(),
+                        registry.as_os_str().into(),
+                        "--allow".into(),
+                        self.prefs.cloud_provider.clone().into(),
+                        "--cloud-model".into(),
+                        self.prefs.cloud_model.clone().into(),
+                    ]);
+                } else {
+                    let model = self
+                        .prefs
+                        .model
+                        .as_ref()
+                        .ok_or_else(|| io::Error::other("Выберите GGUF-модель."))?;
+                    args.extend(["--model".into(), model.as_os_str().into()]);
+                }
+                #[cfg(not(feature = "gateway-http"))]
+                {
+                    let model = self
+                        .prefs
+                        .model
+                        .as_ref()
+                        .ok_or_else(|| io::Error::other("Выберите GGUF-модель."))?;
+                    args.extend(["--model".into(), model.as_os_str().into()]);
+                }
                 for (flag, value) in [
                     ("--context", self.prefs.context as u64),
                     ("--max-tokens", self.prefs.tokens as u64),
@@ -271,6 +468,10 @@ impl Desktop {
                 ] {
                     args.extend([flag.into(), value.to_string().into()]);
                 }
+                args.extend([
+                    "--gpu-layers".into(),
+                    self.prefs.gpu_layers.to_string().into(),
+                ]);
                 if let Some(docs) = &self.prefs.documentation {
                     args.extend(["--docs".into(), docs.as_os_str().into()]);
                 }
@@ -283,8 +484,33 @@ impl Desktop {
                 {
                     args.extend(["--file".into(), file.into()]);
                 }
+                if !self.prefs.active_skill.is_empty() {
+                    let manifest = self
+                        .prefs
+                        .skill_manifest
+                        .as_ref()
+                        .ok_or_else(|| io::Error::other("Укажите манифест ECC Skills."))?;
+                    let pack = if manifest.file_name().is_some_and(|name| name == "SKILL.md") {
+                        crate::skills::SkillPack::load_markdown(manifest)?
+                    } else {
+                        crate::skills::SkillPack::load(manifest)?
+                    };
+                    crate::agent_runtime::skill_instructions(
+                        Some(&pack),
+                        std::slice::from_ref(&self.prefs.active_skill),
+                    )?;
+                    args.extend([
+                        "--skills".into(),
+                        manifest.as_os_str().into(),
+                        "--skill".into(),
+                        self.prefs.active_skill.clone().into(),
+                    ]);
+                }
                 if self.prefs.subagents {
                     args.push("--subagents".into());
+                }
+                if self.prefs.dedup_tool_context {
+                    args.push("--dedup-tool-context".into());
                 }
                 self.report = None;
                 self.report_json.clear();
@@ -334,6 +560,9 @@ impl Desktop {
         self.error = false;
         self.message = match operation {
             Operation::Task => "Модель работает…",
+            Operation::LocalChat => "Локальная модель отвечает…",
+            #[cfg(feature = "gateway-http")]
+            Operation::CloudChat => "HTTP-провайдер отвечает…",
             Operation::Apply(_) => "Применение выбранной правки…",
             Operation::Doctor => "Сбор сведений о ПК…",
             Operation::ProjectPlan => "Готовлю план проекта…",
@@ -349,6 +578,10 @@ impl Desktop {
         let Some(result) = self.job.as_ref().and_then(Job::poll) else {
             return;
         };
+        if let Some(worker) = &self.job {
+            self.activity = worker.progress();
+            self.activity_elapsed = worker.started.elapsed();
+        }
         self.job = None;
         match result {
             Ok(result) => self.complete(result),
@@ -361,6 +594,18 @@ impl Desktop {
 
     fn complete(&mut self, result: ResultData) {
         self.log = result.stderr;
+        let structured_task_timeout = self.operation == Operation::Task
+            && serde_json::from_slice::<Report>(&result.stdout)
+                .is_ok_and(|r| matches!(r.schema_version, 1..=3) && r.status == "timeout");
+        if (result.timed_out || result.code == Some(124)) && !structured_task_timeout {
+            self.fail(if self.operation == Operation::ProjectPlan {
+                "Истёк таймаут подготовки плана. Увеличь таймаут в настройках модели или сократи запрос. Файлы проекта ещё не создавались. Подробности — в журнале."
+            } else {
+                "Истёк таймаут операции. Увеличь таймаут в настройках модели. Проверь результат операции; подробности — в журнале."
+            });
+            self.finish_chat();
+            return;
+        }
         if result.cancelled {
             self.fail(
                 if matches!(self.operation, Operation::DocsFetch | Operation::DocsImport) {
@@ -374,16 +619,48 @@ impl Desktop {
         }
         let seconds = result.elapsed.as_secs_f32();
         match self.operation {
+            Operation::LocalChat => {
+                if result.code == Some(0) {
+                    match String::from_utf8(result.stdout) {
+                        Ok(text) if !text.trim().is_empty() => {
+                            self.message = text.trim().to_owned();
+                            self.error = false;
+                        }
+                        Ok(_) => self.fail("Локальная GGUF-модель вернула пустой ответ."),
+                        Err(_) => self.fail("Некорректная кодировка ответа локальной модели."),
+                    }
+                } else {
+                    self.fail("Локальная модель завершилась с ошибкой. Подробности — в журнале.");
+                }
+            }
+            #[cfg(feature = "gateway-http")]
+            Operation::CloudChat => {
+                if result.code == Some(0) {
+                    match String::from_utf8(result.stdout) {
+                        Ok(text) => {
+                            self.message = text.trim_end().to_owned();
+                            self.error = false;
+                        }
+                        Err(_) => self.fail("Некорректная кодировка ответа HTTP-провайдера."),
+                    }
+                } else {
+                    self.fail("HTTP-запрос завершился ошибкой. Подробности — в журнале.");
+                }
+            }
             Operation::ProjectPlan
             | Operation::ProjectCreate
             | Operation::DocsFetch
             | Operation::DocsImport => self.complete_project_job(result.code, &result.stdout),
             Operation::Task => match serde_json::from_slice::<Report>(&result.stdout) {
-                Ok(report) if matches!(report.schema_version, 1 | 2) => {
+                Ok(report) if matches!(report.schema_version, 1..=3) => {
                     self.error = result.code != Some(0) || report.status != "completed";
                     self.message = format!(
                         "{} · {} {} · {:.1} s · {} {}",
-                        if self.error {
+                        if report.status == "timeout" {
+                            self.prefs
+                                .language
+                                .text("Истёк таймаут задачи; предложения не применялись")
+                        } else if self.error {
                             self.prefs.language.text("Задача не завершена")
                         } else if report.proposals.is_empty() {
                             self.prefs
@@ -398,6 +675,24 @@ impl Desktop {
                         report.proposals.len(),
                         self.prefs.language.text("предложений")
                     );
+                    if !report.context_optimization.is_empty() {
+                        let before: usize = report
+                            .context_optimization
+                            .iter()
+                            .map(|s| s.prompt_bytes_before)
+                            .sum();
+                        let after: usize = report
+                            .context_optimization
+                            .iter()
+                            .map(|s| s.prompt_bytes_after)
+                            .sum();
+                        self.message.push_str(&format!(
+                            " · {} {} {}",
+                            self.prefs.language.text("Сокращено контекста:"),
+                            before.saturating_sub(after),
+                            self.prefs.language.text("байт")
+                        ));
+                    }
                     self.report = Some(report);
                     self.report_json = result.stdout;
                 }
@@ -499,11 +794,22 @@ impl Desktop {
                 {
                     self.help_open = true;
                 }
-                ui.label(
-                    RichText::new(l.text("Локально · CPU"))
-                        .small()
-                        .color(c.accent),
-                );
+                let cloud = cfg!(feature = "gateway-http")
+                    && match self.chat_mode {
+                        ChatMode::Chat => self.prefs.cloud_chat,
+                        ChatMode::Task => self.prefs.repo.is_some() && self.prefs.cloud_task,
+                    };
+                let device = if cloud {
+                    format!(
+                        "HTTP · {} / {}",
+                        self.prefs.cloud_provider, self.prefs.cloud_model
+                    )
+                } else if cfg!(feature = "cuda") && self.prefs.gpu_layers > 0 {
+                    l.text("Локально · CUDA + CPU/RAM").to_owned()
+                } else {
+                    l.text("Локально · CPU").to_owned()
+                };
+                ui.label(RichText::new(device).small().color(c.accent));
             });
         });
     }
@@ -523,9 +829,12 @@ impl Desktop {
             .pick_folder()
             && self.prefs.repo.as_ref() != Some(&p)
         {
-            self.reset_chat();
+            if !self.chat.is_empty() {
+                self.new_session();
+            }
             self.prefs.files.clear();
             self.prefs.repo = Some(p);
+            self.capture_session();
         }
     }
 
@@ -562,7 +871,112 @@ impl Desktop {
                 match self.settings_page{
                     SettingsPage::Knowledge=>ui.vertical(|ui|self.knowledge_settings(ui)).response,
                     SettingsPage::Updates=>ui.vertical(|ui| self.update_settings(ui)).response,
+                    #[cfg(feature = "gateway-http")]
+                    SettingsPage::Providers=>ui.add_enabled_ui(self.job.is_none(),|ui|{
+                        ui.label(l.text("Файл реестра HTTP-провайдеров (JSON)"));
+                        ui.label(RichText::new(l.text("Сохраняется только путь. API-ключи должны находиться в переменных окружения.")).small().weak());
+                        let mut path = self.prefs.provider_registry.as_ref()
+                            .map(|p|p.display().to_string()).unwrap_or_default();
+                        if ui.add(egui::TextEdit::singleline(&mut path)
+                            .desired_width(f32::INFINITY).hint_text("C:\\providers.json")).changed(){
+                            self.prefs.provider_registry=if path.trim().is_empty(){None}else{Some(PathBuf::from(path.trim()))};
+                        }
+                        if ui.button(l.text("Проверить реестр")).clicked(){
+                            let result=(||->io::Result<usize>{
+                                use std::io::Read;
+                                let path=self.prefs.provider_registry.as_ref()
+                                    .ok_or_else(||io::Error::other("Укажите путь к JSON."))?;
+                                let mut bytes=Vec::new();
+                                std::fs::File::open(path)?.take(64*1024+1).read_to_end(&mut bytes)?;
+                                let configs=crate::provider_http::parse_registry(&bytes)?;
+                                for config in &configs{
+                                    crate::provider_http::OpenAiCompatibleBackend::new(config.clone())?;
+                                }
+                                Ok(configs.len())
+                            })();
+                            match result{
+                                Ok(count)=>{self.message=format!("Реестр проверен: {count} провайдеров.");self.error=false;}
+                                Err(error)=>self.fail(error),
+                            }
+                        }
+                        ui.separator();
+                        ui.checkbox(&mut self.prefs.cloud_chat, "Разрешить HTTP-запросы из чата");
+                        ui.checkbox(&mut self.prefs.cloud_task, "Разрешить облачную модель для задач проекта (Desktop Task)");
+                        if self.prefs.cloud_task {
+                            ui.label(RichText::new("При запуске задачи фрагменты исходного кода и задание отправляются выбранному провайдеру.").small().weak());
+                        }
+                        if let Some(path) = &self.prefs.provider_registry {
+                            let available = (|| -> io::Result<Vec<crate::provider_http::ProviderConfig>> {
+                                use std::io::Read;
+                                let mut bytes = Vec::new();
+                                std::fs::File::open(path)?.take(64 * 1024 + 1).read_to_end(&mut bytes)?;
+                                crate::provider_http::parse_registry(&bytes)
+                            })();
+                            if let Ok(configs) = available {
+                                let selected = format!("{} / {}", self.prefs.cloud_provider, self.prefs.cloud_model);
+                                egui::ComboBox::from_id_salt("cloud-model")
+                                    .selected_text(selected)
+                                    .show_ui(ui, |ui| {
+                                        for config in &configs {
+                                            let provider = &config.descriptor.provider;
+                                            let model = &config.descriptor.model;
+                                            if ui.selectable_label(
+                                                self.prefs.cloud_provider == *provider && self.prefs.cloud_model == *model,
+                                                format!("{provider} / {model}"),
+                                            ).clicked() {
+                                                self.prefs.cloud_provider = provider.clone();
+                                                self.prefs.cloud_model = model.clone();
+                                            }
+                                        }
+                                    });
+                            } else {
+                                ui.label("Не удалось загрузить реестр провайдеров.");
+                            }
+                        }
+                        ui.separator();
+                        ui.label("ECC Skills · JSON-манифест или SKILL.md");
+                        let mut manifest_path = self.prefs.skill_manifest.as_ref()
+                            .map(|path| path.display().to_string()).unwrap_or_default();
+                        if ui.add(egui::TextEdit::singleline(&mut manifest_path)
+                            .desired_width(f32::INFINITY).hint_text("skills.json")).changed() {
+                            self.prefs.skill_manifest = if manifest_path.trim().is_empty() {
+                                None
+                            } else {
+                                Some(PathBuf::from(manifest_path.trim()))
+                            };
+                        }
+                        if let Some(path) = &self.prefs.skill_manifest {
+                            let pack = if path.file_name().is_some_and(|name| name == "SKILL.md") {
+                                crate::skills::SkillPack::load_markdown(path)
+                            } else {
+                                crate::skills::SkillPack::load(path)
+                            };
+                            match pack {
+                                Ok(pack) => {
+                                    egui::ComboBox::from_id_salt("ecc-active-skill")
+                                        .selected_text(if self.prefs.active_skill.is_empty() {
+                                            "Без навыка"
+                                        } else {
+                                            &self.prefs.active_skill
+                                        })
+                                        .show_ui(ui, |ui| {
+                                            ui.selectable_value(&mut self.prefs.active_skill, String::new(), "Без навыка");
+                                            for skill in &pack.skills {
+                                                ui.selectable_value(
+                                                    &mut self.prefs.active_skill,
+                                                    skill.id.clone(),
+                                                    &skill.id,
+                                                );
+                                            }
+                                        });
+                                }
+                                Err(_) => { ui.label("Не удалось загрузить ECC Skills."); }
+                            }
+                        }
+                        ui.label(RichText::new("Только выбранная модель; без автоматического переключения в облако.").small().weak());
+                    }).response,
                     SettingsPage::Model=>ui.add_enabled_ui(self.job.is_none(),|ui|{
+                        self.model_suggestion(ui);
                         let title=self.prefs.model.as_ref().and_then(|p|p.file_name())
                             .map(|s|s.to_string_lossy().into_owned()).unwrap_or_else(||l.text("Выбрать…").into());
                         let full=self.prefs.model.as_ref().map(|p|p.display().to_string()).unwrap_or_else(||l.text("Модель GGUF").into());
@@ -586,6 +1000,34 @@ impl Desktop {
                             columns[1].add(egui::Slider::new(&mut self.prefs.timeout,1..=3600).logarithmic(true));
                         });
                         ui.add_space(8.0);
+                        ui.separator();
+                        ui.label(RichText::new("Распределение GGUF: GPU / CPU / ОЗУ").strong());
+                        ui.label(RichText::new("Авто использует максимум безопасных слоёв на NVIDIA GPU, остальное обрабатывается CPU с использованием RAM. Сбалансированный режим оставляет часть слоёв на CPU; он не обязательно быстрее.").small().weak());
+                        let mode = &mut self.prefs.gpu_layers;
+                        ui.horizontal_wrapped(|ui| {
+                            ui.selectable_value(mode, 0, "Только CPU");
+                            ui.selectable_value(mode, crate::resources::GPU_BALANCED, "Сбалансированный");
+                            ui.selectable_value(mode, crate::resources::GPU_AUTO, "Авто GPU");
+                            if (*mode == 0 || *mode == crate::resources::GPU_BALANCED || *mode == crate::resources::GPU_AUTO)
+                                && ui.button("Ручная настройка").clicked() { *mode = 16; }
+                        });
+                        if (1..crate::resources::GPU_BALANCED).contains(mode) {
+                            ui.add(egui::Slider::new(mode, 1..=256).text("Слоёв на CUDA"));
+                        }
+                        if !cfg!(feature = "cuda") {
+                            ui.label(RichText::new("Эта сборка CPU-only. Для выбранного GPU-режима нужна отдельная Windows-сборка с CUDA. CPU fallback будет запрещён, чтобы не скрывать отсутствие ускорения.").color(c.error).small());
+                        }
+                        if ui.button("Профиль Qwen3.5-9B · RTX 4060 8 GB").clicked() {
+                            self.prefs.context = 4096;
+                            self.prefs.tokens = 1536;
+                            self.prefs.threads = 6;
+                            self.prefs.gpu_layers = if cfg!(feature = "cuda") {
+                                crate::resources::GPU_AUTO
+                            } else {
+                                0
+                            };
+                        }
+                        ui.add_space(8.0);
                         if ui.small_button(l.text("Сбросить числовые параметры")).clicked(){self.prefs.reset_inference();}
                     }).response,
                     SettingsPage::Context=>ui.add_enabled_ui(self.job.is_none(),|ui|{
@@ -593,6 +1035,27 @@ impl Desktop {
                         ui.label(RichText::new(l.text("Пусто — ограниченный индекс проекта. Секретные и служебные файлы исключаются движком.")).small().weak());
                         ui.add(egui::TextEdit::multiline(&mut self.prefs.files).desired_rows(6).desired_width(f32::INFINITY).char_limit(32768).hint_text("src/lib.rs\nCargo.toml"));
                         ui.label(format!("{} / 32",self.prefs.files.lines().filter(|s|!s.trim().is_empty()).count()));
+                        ui.separator();
+                        ui.label(RichText::new(l.text("Оптимизация контекста")).strong());
+                        let mut level = self.prefs.optimization.slider();
+                        ui.add(egui::Slider::new(&mut level, 0..=2)
+                            .step_by(1.0)
+                            .custom_formatter(|v, _| match v.round() as u32 {
+                                0 => "Safe".to_owned(),
+                                2 => "Aggressive".to_owned(),
+                                _ => "Balanced".to_owned(),
+                            }));
+                        self.prefs.optimization = preferences::Optimization::from_slider(level);
+                        let description = match self.prefs.optimization {
+                            preferences::Optimization::Safe => "Полная история переписки, без сокращения.",
+                            preferences::Optimization::Balanced => "До 12 последних сообщений в запросе.",
+                            preferences::Optimization::Aggressive => "До 6 последних сообщений в запросе.",
+                        };
+                        ui.label(RichText::new(l.text(description)).small().weak());
+                        ui.label(RichText::new(l.text("Сокращается только история чата; исходники и ошибки не переписываются.")).small().weak());
+                        ui.separator();
+                        ui.checkbox(&mut self.prefs.dedup_tool_context, l.text("Дедупликация результатов инструментов (задачи)"));
+                        ui.label(RichText::new(l.text("Повторные старые результаты передаются один раз со ссылками. Последний результат, ошибки и патчи сохраняются дословно. Экономия показывается в байтах; токены не оцениваются.")).small().weak());
                     }).response,
                     SettingsPage::Workers=>ui.add_enabled_ui(self.job.is_none(),|ui|{
                         icons::toggle(ui,&mut self.prefs.subagents,l.text("Исследователь и ревьюер"),self.prefs.animations,c.accent,c.on_accent);
@@ -784,7 +1247,11 @@ impl Desktop {
             }
         }
         ui.label(
-            RichText::new(l.text("Модель работает на CPU. Ускорение CUDA проверяется отдельно."))
+            RichText::new(if cfg!(feature = "cuda") {
+                "CUDA включена в бинарнике. Фактическая доступность и свободная VRAM проверяются при запуске GGUF."
+            } else {
+                "Сборка CPU-only; CUDA требует отдельного бинарника."
+            })
                 .small()
                 .weak(),
         );
@@ -932,6 +1399,11 @@ impl Desktop {
                     .inner_margin(egui::Margin::symmetric(16, 8)),
             )
             .show(ui, |ui| self.header(ui));
+        if !self.settings_open {
+            egui::Panel::left("conversation-history")
+                .default_size(210.0)
+                .show(ui, |ui| self.history_sidebar(ui));
+        }
         egui::CentralPanel::default()
             .frame(
                 egui::Frame::new()
@@ -1030,6 +1502,7 @@ impl Desktop {
             ui.ctx().request_repaint();
         }
         self.save_preferences(ui.ctx());
+        self.save_history(ui.ctx(), false);
     }
 
     fn load() -> Self {
@@ -1049,10 +1522,46 @@ impl Desktop {
                 .and_then(|p| p.parent())
                 .map(|p| p.join("updater")),
         );
+        if let Some(path) = app
+            .storage
+            .as_ref()
+            .and_then(|p| p.parent())
+            .map(|p| p.join("conversations.json"))
+        {
+            match history::History::load(&path) {
+                Ok(history) => app.conversations = history,
+                Err(error) if error.kind() == io::ErrorKind::NotFound => {}
+                Err(error) => {
+                    app.history_available = false;
+                    app.preference_error =
+                        Some(format!("История: {error}. Файл сохранён без изменений."));
+                }
+            }
+        }
+        if let Some(session) = app
+            .conversations
+            .sessions
+            .get(app.conversations.active)
+            .cloned()
+        {
+            app.chat = session.chat;
+            app.chat_mode = session.mode;
+            app.prefs.repo = session.repo;
+            app.prefs.files = session.files;
+            app.task = session.draft;
+        } else {
+            app.capture_session();
+        }
+        app.model_installer.detect();
         app.last_attempted = app.prefs.clone();
         app
     }
     fn save_preferences(&mut self, ctx: &egui::Context) {
+        if self.prefs.repo != self.last_attempted.repo
+            || self.prefs.files != self.last_attempted.files
+        {
+            self.capture_session();
+        }
         if self.storage.is_none() || self.prefs == self.last_attempted {
             self.dirty_since = None;
             return;
@@ -1072,6 +1581,8 @@ impl Desktop {
 impl Drop for Desktop {
     fn drop(&mut self) {
         self.job = None;
+        self.capture_session();
+        self.save_history(&egui::Context::default(), true);
         if self.prefs != self.last_attempted
             && let Some(path) = &self.storage
         {
@@ -1083,6 +1594,7 @@ impl Drop for Desktop {
 impl eframe::App for Desktop {
     fn logic(&mut self, ctx: &egui::Context, _: &mut eframe::Frame) {
         self.poll();
+        self.poll_model_install(ctx);
         let visible = !ctx.input(|i| i.viewport().minimized.unwrap_or(false));
         self.updates.tick(
             ctx,
@@ -1187,7 +1699,7 @@ fn validate_task(task: &str, files: &str) -> io::Result<()> {
     Ok(())
 }
 fn can_apply(report: &Report, index: usize, applied: &[usize]) -> bool {
-    matches!(report.schema_version, 1 | 2)
+    matches!(report.schema_version, 1..=3)
         && report.status == "completed"
         && report
             .proposals
@@ -1215,6 +1727,8 @@ mod tests {
         })).unwrap();
         assert!(!can_apply(&report, 0, &[]));
         report.status = "completed".into();
+        assert!(can_apply(&report, 0, &[]));
+        report.schema_version = 3;
         assert!(can_apply(&report, 0, &[]));
         assert!(!can_apply(&report, 1, &[]));
         assert!(!can_apply(&report, 0, &[0]));

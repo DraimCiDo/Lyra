@@ -175,6 +175,14 @@ impl Language {
             return ru;
         }
         match ru {
+            "Сокращено контекста:" => "Context saved:",
+            "байт" => "bytes",
+            "Дедупликация результатов инструментов (задачи)" => {
+                "Deduplicate tool results (tasks)"
+            }
+            "Повторные старые результаты передаются один раз со ссылками. Последний результат, ошибки и патчи сохраняются дословно. Экономия показывается в байтах; токены не оцениваются." => {
+                "Repeated older results are sent once with references. The latest result, errors and patches stay verbatim. Savings are shown in bytes; tokens are not estimated."
+            }
             "Выбрать проект" => "Choose project",
             "Проект · необязательно" => "Project · optional",
             "Выбрать существующий проект" => "Choose existing project",
@@ -184,6 +192,35 @@ impl Language {
             "Выбрать GGUF" => "Choose GGUF",
             "Новый чат" => "New chat",
             "Что сделаем?" => "What shall we do?",
+            "Ход работы" => "Activity",
+            "Подготовка запроса…" => "Preparing request…",
+            "Подготовка запроса" => "Preparing request",
+            "Загрузка GGUF" => "Loading GGUF",
+            "Обработка контекста" => "Processing context",
+            "Генерация ответа" => "Generating response",
+            "Запускаю выполнение…" => "Starting execution…",
+            "Подготавливаю контекст запроса…" => {
+                "Preparing request context…"
+            }
+            "Выполнение прервано" => "Execution interrupted",
+            "Выполнение завершено" => "Execution finished",
+            "Работа" => "Work",
+            "Агенты" => "Agents",
+            "Выбрать репозиторий" => "Choose repository",
+            "Без проекта" => "No project",
+            "Подобрать локальную GGUF" => "Find a local GGUF",
+            "рекомендация для контекста 4096" => {
+                "recommendation for 4096 context"
+            }
+            "Источник и лицензия" => "Source and license",
+            "Для этой модели рекомендуется больше RAM" => {
+                "More RAM is recommended for this model"
+            }
+            "Установить GGUF…" => "Install GGUF…",
+            "Папка для моделей GGUF" => "GGUF models folder",
+            "Локальная модель не выбрана" => "No local model selected",
+            "Подобрать и установить GGUF" => "Find and install GGUF",
+            "GGUF установлена и выбрана" => "GGUF installed and selected",
             "Разобраться в проекте" => "Understand the project",
             "Изучи проект и объясни его устройство." => {
                 "Explore the project and explain its structure."
