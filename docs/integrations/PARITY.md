@@ -50,4 +50,14 @@ the integration fix starts a smaller v2 cache and disables CI debug/incremental 
 the Visual Studio CUDA toolset; the fix includes its installation and a preflight.
 These historical results do not verify the modified head. See
 [integration fixes](../plans/0011-pr-integration-fixes.md) for current checks.
-No live paid-provider or NVIDIA GPU quality/runtime acceptance is claimed.
+The final-code [CUDA build](https://github.com/DraimCiDo/Lyra/actions/runs/41316498644)
+passed on b1c9a98, whose source is identical to cd96b7d (only Markdown changed).
+Its portable package also passed a native Windows partial-offload GGUF chat smoke
+on a real NVIDIA device. This verifies that specific runtime path, not all GPUs,
+OOM safety across configurations or coding quality. No paid provider was called.
+
+Live coding acceptance remains open: a small CRLF Python fixture did not finish
+the task protocol with either tested real model. One produced a correct proposal
+but repeated it; the other exhausted its steps after rejected exact edits.
+Incomplete reports were refused by apply and no file was changed. See the
+integration-fixes plan for this separate finding; do not mark P07/P10 complete.
