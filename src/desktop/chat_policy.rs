@@ -87,6 +87,90 @@ pub(super) fn direct(text: &str, model: &str, language: Language) -> Option<Stri
     None
 }
 
+fn project_topic(text: &str) -> Option<String> {
+    let text = text.to_lowercase();
+    [
+        "о проекте ",
+        "про проект ",
+        "о репозитории ",
+        "о дискорд сервере ",
+        "о discord сервере ",
+        "о сервере ",
+        "about the project ",
+        "about project ",
+        "about the repository ",
+        "about the discord server ",
+        "about the server ",
+    ]
+    .iter()
+    .find_map(|marker| {
+        text.split_once(*marker).map(|(_, tail)| {
+            tail.split(['?', '!', '\n', ',', ';'])
+                .next()
+                .unwrap_or("")
+                .trim_matches(|c: char| c.is_whitespace() || matches!(c, '«' | '»' | '"' | '.'))
+                .chars()
+                .take(80)
+                .collect()
+        })
+    })
+}
+
+fn provided_context(text: &str, topic: &str) -> bool {
+    let text = text.to_lowercase();
+    let body = [
+        "контекст проекта:",
+        "описание проекта:",
+        "project context:",
+        "project description:",
+        "контекст сервера:",
+        "описание сервера:",
+    ]
+    .iter()
+    .find_map(|prefix| text.trim().strip_prefix(*prefix));
+    body.is_some_and(|body| {
+        body.trim().len() >= 20
+            && !body.trim().starts_with("http")
+            && body
+                .split_whitespace()
+                .filter(|word| !word.contains("://") && word.chars().any(char::is_alphabetic))
+                .count()
+                >= 3
+            && (topic.is_empty() || body.contains(topic))
+    })
+}
+
+fn project_reply(text: &str, chat: &chat::Chat, language: Language) -> Option<String> {
+    let latest = text.to_lowercase();
+    let topic = project_topic(text).or_else(|| {
+        chat.messages.iter().rev().filter(|m| m.user).find_map(|m| {
+            let topic = project_topic(&m.text)?;
+            if topic.len() >= 3 && latest.contains(&topic) {
+                Some(topic)
+            } else {
+                None
+            }
+        })
+    })?;
+    if provided_context(text, &topic)
+        || chat
+            .messages
+            .iter()
+            .any(|m| m.user && provided_context(&m.text, &topic))
+    {
+        return None;
+    }
+    Some(if language == Language::Ru {
+        format!(
+            "У меня нет подтверждённого описания этого проекта или сервера. Предыдущие ответы модели не являются источником. Пришли описание, например «Контекст проекта: {topic} — это …», или текст источника. Ссылка сама по себе не читается. Для локального репозитория выбери «Работа» и его папку."
+        )
+    } else {
+        format!(
+            "I have no verified description of this project or server. Earlier model answers are not a source. Provide a description such as 'Project context: {topic} is …', or source text. Links are not fetched automatically. Use Work mode with a folder for a local repository."
+        )
+    })
+}
+
 impl Desktop {
     fn chat_model_label(&self) -> String {
         if self.prefs.cloud_chat && cfg!(feature = "gateway-http") {
@@ -118,6 +202,7 @@ impl Desktop {
             return None;
         }
         direct(text, &self.chat_model_label(), self.prefs.language)
+            .or_else(|| project_reply(text, &self.chat, self.prefs.language))
     }
 }
 
@@ -187,6 +272,35 @@ mod tests {
         assert_eq!(
             request.messages.last().unwrap().content,
             "Сколько будет 2+2?"
+        );
+    }
+    #[test]
+    fn unknown_project_and_followup_cannot_reuse_fabricated_assistant_facts() {
+        assert!(!provided_context(
+            "Контекст проекта: Horizon https://example.com/repo",
+            "horizon"
+        ));
+        let mut app = Desktop::default();
+        assert!(
+            app.direct_chat_reply("Что ты знаешь о проекте Horizon?")
+                .unwrap()
+                .contains("нет подтверждённого")
+        );
+        app.chat.sent("Что ты знаешь о проекте Horizon?".into());
+        app.chat
+            .finish("Horizon создан Square Enix для Minecraft.".into());
+        let reply = app.direct_chat_reply("Для чего нужен Horizon?").unwrap();
+        assert!(!reply.contains("Square Enix"));
+        assert!(reply.contains("не являются источником"));
+        assert!(app.direct_chat_reply("Сколько будет 2+2?").is_none());
+        assert!(app.direct_chat_reply("Для чего нужен Python?").is_none());
+        app.chat.sent(
+            "Контекст проекта: Horizon — это мой лаунчер для Minecraft с профилями запуска.".into(),
+        );
+        assert!(app.direct_chat_reply("Для чего нужен Horizon?").is_none());
+        assert!(
+            app.direct_chat_reply("Что ты знаешь о сервере Корпа?")
+                .is_some()
         );
     }
 }
