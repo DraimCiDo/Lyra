@@ -53,8 +53,10 @@ lyra task --repo ./project --model ./coder.gguf --task-file task.txt \
 число ссылок/уникальных результатов и отметка lossless_verified. CLI apply и
 Desktop понимают v1/v2/v3; старые сборки не должны применять v3-отчёт.
 
-Desktop показывает суммарное сокращение контекста в байтах. HTTP backend в
-stderr/журнале сообщает request_body_bytes для фактически отправленного JSON body.
+prompt_bytes измеряет JSON-конверт задачи до обёртки выбранных skills и system
+prompt; это не размер всего запроса. Desktop показывает суммарное сокращение
+этого контекста в байтах. HTTP backend в stderr/журнале сообщает
+request_body_bytes — размер сериализованного JSON body, переданного HTTP-клиенту.
 Это не полный TCP/TLS-трафик, не число токенов, не экономия оплаты и не cache-hit.
 Измерения касаются одних и тех же новых контрактов с pooling off/on;
 не следует сравнивать их с другим prompt/моделью и приписывать разницу сжатию.

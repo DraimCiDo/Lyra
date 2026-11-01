@@ -1,7 +1,9 @@
 //! Native shell around the same CLI contracts. No inference or filesystem policy in widgets.
 mod chat;
+mod history;
 mod icons;
 mod job;
+mod models;
 mod preferences;
 mod projects;
 mod theme;
@@ -20,8 +22,8 @@ use std::{
 };
 use theme::{Language, Palette};
 
-const WINDOW_SIZE: [f32; 2] = [760.0, 480.0];
-const MIN_SIZE: [f32; 2] = [640.0, 460.0];
+const WINDOW_SIZE: [f32; 2] = [1160.0, 760.0];
+const MIN_SIZE: [f32; 2] = [820.0, 600.0];
 const SMOKE_STEPS: usize = 72;
 
 pub fn worker_main() -> ExitCode {
@@ -153,11 +155,11 @@ impl SettingsPage {
     }
 }
 
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+#[derive(Clone, Copy, Default, PartialEq, Eq, Debug, serde::Serialize, serde::Deserialize)]
 enum ChatMode {
+    #[default]
     Chat,
     Task,
-    Project,
 }
 
 #[derive(Clone, Copy, PartialEq)]
@@ -175,6 +177,9 @@ enum Operation {
 }
 
 struct Desktop {
+    conversations: history::History,
+    history_available: bool,
+    model_installer: models::Installer,
     chat: chat::Chat,
     chat_mode: ChatMode,
     draft: projects::ProjectDraft,
@@ -211,6 +216,9 @@ struct Desktop {
 impl Default for Desktop {
     fn default() -> Self {
         Self {
+            conversations: history::History::default(),
+            history_available: true,
+            model_installer: models::Installer::default(),
             chat: chat::Chat::default(),
             chat_mode: ChatMode::Chat,
             draft: projects::ProjectDraft::default(),
@@ -794,9 +802,12 @@ impl Desktop {
             .pick_folder()
             && self.prefs.repo.as_ref() != Some(&p)
         {
-            self.reset_chat();
+            if !self.chat.is_empty() {
+                self.new_session();
+            }
             self.prefs.files.clear();
             self.prefs.repo = Some(p);
+            self.capture_session();
         }
     }
 
@@ -938,6 +949,7 @@ impl Desktop {
                         ui.label(RichText::new("Только выбранная модель; без автоматического переключения в облако.").small().weak());
                     }).response,
                     SettingsPage::Model=>ui.add_enabled_ui(self.job.is_none(),|ui|{
+                        self.model_suggestion(ui);
                         let title=self.prefs.model.as_ref().and_then(|p|p.file_name())
                             .map(|s|s.to_string_lossy().into_owned()).unwrap_or_else(||l.text("Выбрать…").into());
                         let full=self.prefs.model.as_ref().map(|p|p.display().to_string()).unwrap_or_else(||l.text("Модель GGUF").into());
@@ -1360,6 +1372,11 @@ impl Desktop {
                     .inner_margin(egui::Margin::symmetric(16, 8)),
             )
             .show(ui, |ui| self.header(ui));
+        if !self.settings_open {
+            egui::Panel::left("conversation-history")
+                .default_size(210.0)
+                .show(ui, |ui| self.history_sidebar(ui));
+        }
         egui::CentralPanel::default()
             .frame(
                 egui::Frame::new()
@@ -1458,6 +1475,7 @@ impl Desktop {
             ui.ctx().request_repaint();
         }
         self.save_preferences(ui.ctx());
+        self.save_history(ui.ctx(), false);
     }
 
     fn load() -> Self {
@@ -1477,10 +1495,46 @@ impl Desktop {
                 .and_then(|p| p.parent())
                 .map(|p| p.join("updater")),
         );
+        if let Some(path) = app
+            .storage
+            .as_ref()
+            .and_then(|p| p.parent())
+            .map(|p| p.join("conversations.json"))
+        {
+            match history::History::load(&path) {
+                Ok(history) => app.conversations = history,
+                Err(error) if error.kind() == io::ErrorKind::NotFound => {}
+                Err(error) => {
+                    app.history_available = false;
+                    app.preference_error =
+                        Some(format!("История: {error}. Файл сохранён без изменений."));
+                }
+            }
+        }
+        if let Some(session) = app
+            .conversations
+            .sessions
+            .get(app.conversations.active)
+            .cloned()
+        {
+            app.chat = session.chat;
+            app.chat_mode = session.mode;
+            app.prefs.repo = session.repo;
+            app.prefs.files = session.files;
+            app.task = session.draft;
+        } else {
+            app.capture_session();
+        }
+        app.model_installer.detect();
         app.last_attempted = app.prefs.clone();
         app
     }
     fn save_preferences(&mut self, ctx: &egui::Context) {
+        if self.prefs.repo != self.last_attempted.repo
+            || self.prefs.files != self.last_attempted.files
+        {
+            self.capture_session();
+        }
         if self.storage.is_none() || self.prefs == self.last_attempted {
             self.dirty_since = None;
             return;
@@ -1500,6 +1554,8 @@ impl Desktop {
 impl Drop for Desktop {
     fn drop(&mut self) {
         self.job = None;
+        self.capture_session();
+        self.save_history(&egui::Context::default(), true);
         if self.prefs != self.last_attempted
             && let Some(path) = &self.storage
         {
@@ -1511,6 +1567,7 @@ impl Drop for Desktop {
 impl eframe::App for Desktop {
     fn logic(&mut self, ctx: &egui::Context, _: &mut eframe::Frame) {
         self.poll();
+        self.poll_model_install(ctx);
         let visible = !ctx.input(|i| i.viewport().minimized.unwrap_or(false));
         self.updates.tick(
             ctx,

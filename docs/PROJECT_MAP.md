@@ -93,3 +93,5 @@ Gateway: [контракты](../src/model_gateway.rs), [HTTP](../src/provider_h
 История только в RAM,
 с ограничением числа/размера сообщений и сбросом при смене проекта.
 Веб-профиль Vue/TypeScript: [рекомендации и приёмка](WEB_PROJECTS.md).
+
+Desktop conversations: [план](plans/0013-desktop-conversations-models.md), [history](../src/desktop/history.rs), [GGUF catalog/installer](../src/desktop/models.rs).

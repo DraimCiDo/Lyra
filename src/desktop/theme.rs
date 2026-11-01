@@ -192,6 +192,23 @@ impl Language {
             "Выбрать GGUF" => "Choose GGUF",
             "Новый чат" => "New chat",
             "Что сделаем?" => "What shall we do?",
+            "Работа" => "Work",
+            "Агенты" => "Agents",
+            "Выбрать репозиторий" => "Choose repository",
+            "Без проекта" => "No project",
+            "Подобрать локальную GGUF" => "Find a local GGUF",
+            "рекомендация для контекста 4096" => {
+                "recommendation for 4096 context"
+            }
+            "Источник и лицензия" => "Source and license",
+            "Для этой модели рекомендуется больше RAM" => {
+                "More RAM is recommended for this model"
+            }
+            "Установить GGUF…" => "Install GGUF…",
+            "Папка для моделей GGUF" => "GGUF models folder",
+            "Локальная модель не выбрана" => "No local model selected",
+            "Подобрать и установить GGUF" => "Find and install GGUF",
+            "GGUF установлена и выбрана" => "GGUF installed and selected",
             "Разобраться в проекте" => "Understand the project",
             "Изучи проект и объясни его устройство." => {
                 "Explore the project and explain its structure."

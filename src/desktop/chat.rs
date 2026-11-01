@@ -6,16 +6,26 @@ const MESSAGE_BYTES: usize = 64 * 1024;
 const HISTORY_BYTES: usize = 256 * 1024;
 const REQUEST_BYTES: usize = 16384;
 
-#[derive(Default)]
+#[derive(Clone, Default, serde::Serialize, serde::Deserialize)]
 pub(super) struct Chat {
-    messages: Vec<Message>,
-    pending: bool,
+    pub(super) messages: Vec<Message>,
+    #[serde(skip)]
+    pub(super) pending: bool,
 }
-struct Message {
-    user: bool,
-    text: String,
+#[derive(Clone, serde::Serialize, serde::Deserialize)]
+pub(super) struct Message {
+    pub(super) user: bool,
+    pub(super) text: String,
 }
 impl Chat {
+    pub(super) fn is_empty(&self) -> bool {
+        self.messages.is_empty()
+    }
+    pub(super) fn valid(&self) -> bool {
+        self.messages.len() <= MESSAGE_COUNT
+            && self.messages.iter().all(|m| m.text.len() <= MESSAGE_BYTES)
+            && self.messages.iter().map(|m| m.text.len()).sum::<usize>() <= HISTORY_BYTES
+    }
     fn selected_history(&self, optimization: preferences::Optimization) -> &[Message] {
         let keep = match optimization {
             preferences::Optimization::Safe => self.messages.len(),
@@ -86,7 +96,7 @@ impl Chat {
         }
         Ok(result)
     }
-    fn sent(&mut self, text: String) {
+    pub(super) fn sent(&mut self, text: String) {
         self.messages.push(Message { user: true, text });
         self.pending = true;
     }
@@ -277,8 +287,13 @@ impl Desktop {
                 }
                 Operation::LocalChat
             }
-            ChatMode::Task => Operation::Task,
-            ChatMode::Project => Operation::ProjectPlan,
+            ChatMode::Task => {
+                if self.prefs.repo.is_some() {
+                    Operation::Task
+                } else {
+                    Operation::ProjectPlan
+                }
+            }
         }
     }
 
@@ -314,6 +329,7 @@ impl Desktop {
         self.report_json.clear();
         self.applied.clear();
         self.draft.plan = None;
+        self.capture_session();
         Ok(())
     }
 
@@ -362,6 +378,7 @@ impl Desktop {
             self.message.clone()
         };
         self.chat.finish(response);
+        self.capture_session();
     }
 
     pub(super) fn smoke_conversation(&mut self, visible: bool) {
@@ -384,6 +401,77 @@ impl Desktop {
 
     fn chat_composer(&mut self, ui: &mut egui::Ui, c: theme::Colors, l: Language) {
         card(c).inner_margin(12).show(ui, |ui| {
+            ui.add_enabled_ui(self.job.is_none(), |ui| {
+                ui.horizontal_wrapped(|ui| {
+                    let before = self.chat_mode;
+                    if self.chat.messages.is_empty() {
+                        egui::ComboBox::from_id_salt("conversation-mode")
+                            .selected_text(l.text(if self.chat_mode == ChatMode::Chat {
+                                "Чат"
+                            } else {
+                                "Работа"
+                            }))
+                            .show_ui(ui, |ui| {
+                                ui.selectable_value(
+                                    &mut self.chat_mode,
+                                    ChatMode::Chat,
+                                    l.text("Чат"),
+                                );
+                                ui.selectable_value(
+                                    &mut self.chat_mode,
+                                    ChatMode::Task,
+                                    l.text("Работа"),
+                                );
+                            });
+                    } else {
+                        ui.label(l.text(if self.chat_mode == ChatMode::Chat {
+                            "Чат"
+                        } else {
+                            "Работа"
+                        }));
+                    }
+                    if before != self.chat_mode {
+                        self.capture_session();
+                    }
+                    let repo = self
+                        .prefs
+                        .repo
+                        .as_ref()
+                        .and_then(|p| p.file_name())
+                        .map(|p| p.to_string_lossy().into_owned())
+                        .unwrap_or_else(|| l.text("Выбрать репозиторий").into());
+                    if ui
+                        .button(format!("{} · {repo}", l.text("Проект")))
+                        .clicked()
+                    {
+                        self.choose_path(false);
+                    }
+                    if self.prefs.repo.is_some()
+                        && ui
+                            .small_button("×")
+                            .on_hover_text(l.text("Без проекта"))
+                            .clicked()
+                    {
+                        if !self.chat.messages.is_empty() {
+                            self.new_session();
+                        }
+                        self.prefs.repo = None;
+                        self.prefs.files.clear();
+                        self.capture_session();
+                    }
+                    let agents = if self.chat_mode == ChatMode::Chat {
+                        "Lyra"
+                    } else if self.prefs.subagents {
+                        "researcher · coder · reviewer"
+                    } else {
+                        "coder"
+                    };
+                    ui.label(format!("{}: {agents}", l.text("Агенты")));
+                    if !self.prefs.active_skill.is_empty() {
+                        ui.label(format!("Skill: {}", self.prefs.active_skill));
+                    }
+                });
+            });
             let edit = egui::ScrollArea::vertical()
                 .id_salt("composer-scroll")
                 .min_scrolled_height(42.0)
@@ -406,6 +494,9 @@ impl Desktop {
                     )
                 })
                 .inner;
+            if edit.changed() {
+                self.capture_session();
+            }
             let enter = edit.has_focus()
                 && ui.input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::Enter));
             ui.horizontal(|ui| {
@@ -438,7 +529,7 @@ impl Desktop {
                             }
                             ChatMode::Task => {
                                 #[cfg(feature = "gateway-http")]
-                                if self.prefs.cloud_task {
+                                if self.prefs.cloud_task && self.prefs.repo.is_some() {
                                     true
                                 } else {
                                     self.prefs.model.is_some()
@@ -448,7 +539,6 @@ impl Desktop {
                                     self.prefs.model.is_some()
                                 }
                             }
-                            ChatMode::Project => self.prefs.model.is_some(),
                         };
                         let ready = model_ready && !self.task.trim().is_empty();
                         let clicked = ui
@@ -476,103 +566,21 @@ impl Desktop {
     pub(super) fn chat_home(&mut self, ui: &mut egui::Ui) {
         let c = self.prefs.palette.colors();
         let l = self.prefs.language;
-        ui.horizontal(|ui| {
-            let repo = self.prefs.repo.as_ref();
-            let title = repo
-                .and_then(|p| p.file_name())
-                .map(|s| {
-                    let s = s.to_string_lossy();
-                    let mut title = s.chars().take(36).collect::<String>();
-                    if s.chars().count() > 36 {
-                        title.push('…');
-                    }
-                    title
-                })
-                .unwrap_or_else(|| l.text("Выбрать проект").into());
-            if ui
-                .allocate_ui_with_layout(
-                    egui::vec2((ui.available_width() - 100.0).max(160.0), 28.0),
-                    egui::Layout::left_to_right(egui::Align::Center),
-                    |ui| {
-                        ui.add_enabled(
-                            self.job.is_none(),
-                            egui::Button::image_and_text(Icon::Folder.image(c.muted), title)
-                                .frame(false)
-                                .wrap_mode(egui::TextWrapMode::Truncate),
-                        )
-                    },
-                )
-                .inner
-                .on_hover_text(
-                    repo.map(|p| p.display().to_string())
-                        .unwrap_or_else(|| l.text("Выбрать существующий проект").into()),
-                )
-                .clicked()
-            {
-                self.choose_path(false);
-            }
-            if self.prefs.repo.is_some()
-                && ui
-                    .add_enabled(
-                        self.job.is_none(),
-                        egui::Button::image(Icon::Close.image(c.muted)).frame(false),
-                    )
-                    .on_hover_text(l.text("Без проекта · создавать с нуля"))
-                    .clicked()
-            {
-                self.reset_chat();
-                self.prefs.repo = None;
-                self.prefs.files.clear();
-            }
-            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                if ui
-                    .add_enabled(
-                        self.job.is_none(),
-                        egui::Button::image(Icon::NewChat.image(c.accent)).frame(false),
-                    )
-                    .on_hover_text(l.text("Новый чат"))
-                    .clicked()
-                {
-                    self.reset_chat();
+        if self.prefs.model.is_none() {
+            ui.horizontal(|ui| {
+                ui.label(l.text("Локальная модель не выбрана"));
+                if ui.button(l.text("Подобрать и установить GGUF")).clicked() {
+                    self.settings_open = true;
+                    self.settings_page = SettingsPage::Model;
                 }
             });
-        });
-        ui.add_enabled_ui(self.job.is_none(), |ui| {
-            ui.horizontal(|ui| {
-                ui.selectable_value(&mut self.chat_mode, ChatMode::Chat, "Чат");
-                ui.selectable_value(&mut self.chat_mode, ChatMode::Task, "Задача");
-                ui.selectable_value(&mut self.chat_mode, ChatMode::Project, "Новый проект");
-            });
-        });
-        if self.chat_mode == ChatMode::Task && self.prefs.repo.is_none() {
-            ui.label(
-                RichText::new("Для выполнения задачи выбери папку проекта.")
-                    .small()
-                    .weak(),
-            );
         }
-        #[cfg(feature = "gateway-http")]
-        ui.horizontal(|ui| {
-            ui.checkbox(&mut self.prefs.cloud_chat, "HTTP Gateway");
-            if self.prefs.cloud_chat {
-                ui.label(format!(
-                    "{} / {}",
-                    self.prefs.cloud_provider, self.prefs.cloud_model
-                ));
-                ui.label(
-                    RichText::new("Запросы отправляются выбранному провайдеру")
-                        .small()
-                        .weak(),
-                );
-            } else {
-                ui.label(RichText::new("Локальный GGUF").small().weak());
-            }
-        });
         ui.add_space(5.0);
-        let reserve = if self.error { 176.0 } else { 152.0 };
+        let reserve = if self.error { 208.0 } else { 184.0 };
         let height = (ui.available_height() - reserve).max(100.0);
         egui::ScrollArea::vertical()
             .id_salt("conversation")
+            .min_scrolled_height(height)
             .max_height(height)
             .auto_shrink([false, false])
             .stick_to_bottom(true)
@@ -586,17 +594,20 @@ impl Desktop {
                         ui.add_space(offset);
                     }
                     ui.vertical(|ui| {
-                        ui.set_min_width(column_width);
+                        ui.set_width(column_width);
                         if self.chat.messages.is_empty() {
-                            ui.add_space((height * 0.18).min(42.0));
-                            ui.vertical_centered(|ui| {
-                                ui.add(
-                                    Icon::Sparkles
-                                        .image(c.accent)
-                                        .fit_to_exact_size(egui::vec2(28.0, 28.0)),
-                                );
-                                ui.label(RichText::new(l.text("Что сделаем?")).size(24.0).strong());
-                            });
+                            let rect = egui::Rect::from_min_size(
+                                ui.cursor().min,
+                                egui::vec2(column_width, height),
+                            );
+                            ui.painter().text(
+                                rect.center(),
+                                egui::Align2::CENTER_CENTER,
+                                l.text("Что сделаем?"),
+                                egui::FontId::proportional(24.0),
+                                c.accent,
+                            );
+                            ui.allocate_space(egui::vec2(column_width, height));
                         }
                         for message in &self.chat.messages {
                             ui.add_space(14.0);
@@ -794,7 +805,7 @@ mod tests {
         let mut app = Desktop::default();
         app.chat.sent("Создай Paper плагин для 1.20.6".into());
         app.chat.finish("Предлагаю вместо этого 1.21.10".into());
-        app.chat_mode = ChatMode::Project;
+        app.chat_mode = ChatMode::Task;
         app.task = "Используй 1.21.11".into();
         assert!(app.submit_chat(&egui::Context::default()).is_err()); // No model selected.
         assert_eq!(app.draft.version, "1.21.11");
@@ -809,7 +820,7 @@ mod tests {
         assert!(matches!(app.chat_operation(), Operation::LocalChat));
         app.chat_mode = ChatMode::Task;
         assert!(matches!(app.chat_operation(), Operation::Task));
-        app.chat_mode = ChatMode::Project;
+        app.prefs.repo = None;
         assert!(matches!(app.chat_operation(), Operation::ProjectPlan));
         #[cfg(feature = "gateway-http")]
         {
