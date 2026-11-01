@@ -38,7 +38,7 @@ pub struct GenerateArgs {
     pub max_tokens: u32,
     #[arg(long, default_value_t=default_threads(), value_parser=clap::value_parser!(u32).range(1..=256))]
     pub threads: u32,
-    /// Требует сборку --features cuda; 0 означает CPU
+    /// 0=CPU, 1..1022=manual CUDA layers, 1023=balanced, 1024=auto GPU
     #[arg(long, default_value_t=0, value_parser=clap::value_parser!(u32).range(0..=1024))]
     pub gpu_layers: u32,
     /// Кооперативный таймаут, включая загрузку модели
@@ -150,17 +150,60 @@ pub fn with_session<T>(
     let started = Instant::now();
     let timeout = Duration::from_secs(args.timeout_secs);
     let backend = LlamaBackend::init().map_err(|e| fail(e.to_string()))?;
-    if args.gpu_layers > 0
-        && !llama_cpp_2::list_llama_ggml_backend_devices()
+    let model_bytes = std::fs::metadata(&args.model)?.len();
+    let free_ram = sysinfo::System::new_with_specifics(
+        sysinfo::RefreshKind::nothing()
+            .with_memory(sysinfo::MemoryRefreshKind::nothing().with_ram()),
+    )
+    .ok()
+    .map(|system| system.available_memory())
+    .filter(|available| *available > 0);
+    let mut gpu_layers = args.gpu_layers;
+    let mut gpu_budget = 0u64;
+    if args.gpu_layers > 0 {
+        let devices = llama_cpp_2::list_llama_ggml_backend_devices();
+        let device = devices
             .iter()
-            .any(|device| device.backend == "CUDA")
-    {
-        return Err(fail(
-            "CUDA-устройство недоступно; CPU fallback не выполняется.",
-        ));
+            .filter(|device| device.backend == "CUDA")
+            .max_by_key(|device| device.memory_free)
+            .ok_or_else(|| {
+                fail("CUDA-устройство недоступно; CPU fallback не выполняется.")
+            })?;
+        gpu_budget = crate::resources::gpu_weight_budget(
+            device.memory_free as u64,
+            args.context,
+        );
+        if matches!(
+            args.gpu_layers,
+            crate::resources::GPU_AUTO | crate::resources::GPU_BALANCED
+        ) {
+            let blocks = crate::resources::gguf_block_count(&args.model)?;
+            gpu_layers = crate::resources::recommended_layers(
+                model_bytes,
+                blocks,
+                device.memory_free as u64,
+                args.context,
+                args.gpu_layers == crate::resources::GPU_BALANCED,
+            );
+            if gpu_layers == 0 {
+                return Err(fail(
+                    "Недостаточно свободной VRAM для безопасного CUDA-offload. \
+                     Освободите видеопамять, уменьшите контекст или используйте CPU.",
+                ));
+            }
+        }
+        let _ = writeln!(
+            io::stderr().lock(),
+            "Lyra CUDA: {} · {} слоёв на GPU · свободно {:.2} GiB VRAM · бюджет весов {:.2} GiB.",
+            device.description,
+            gpu_layers,
+            device.memory_free as f64 / 1_073_741_824.0,
+            gpu_budget as f64 / 1_073_741_824.0,
+        );
     }
+    crate::resources::memory_preflight(model_bytes, free_ram, gpu_budget)?;
     progress_event("load");
-    let params = LlamaModelParams::default().with_n_gpu_layers(args.gpu_layers);
+    let params = LlamaModelParams::default().with_n_gpu_layers(gpu_layers);
     let model = LlamaModel::load_from_file(&backend, &args.model, &params)
         .map_err(|e| fail(format!("Не удалось загрузить GGUF: {e}")))?;
     check(&cancelled, started, timeout)?;
