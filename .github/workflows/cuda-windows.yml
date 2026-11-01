@@ -1,0 +1,77 @@
+name: Windows NVIDIA CUDA build (RTX 4060)
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - plan/ecc-omniroute-unified-platform
+    paths:
+      - '.github/workflows/cuda-windows.yml'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: lyra-cuda-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  cuda:
+    name: Windows 2022 / CUDA 12.9 / sm_89
+    runs-on: windows-2022
+    timeout-minutes: 95
+    defaults:
+      run:
+        shell: pwsh
+    env:
+      CMAKE_CUDA_ARCHITECTURES: '89'
+      GGML_NATIVE: 'OFF'
+      LIBCLANG_PATH: 'C:\Program Files\LLVM\bin'
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Install pinned Rust
+        run: rustup show active-toolchain
+      - name: Install CUDA Toolkit 12.9
+        uses: Jimver/cuda-toolkit@3d45d157f327c09c04b50ee6ccdea2d9d017ec76 # v0.2.35
+        with:
+          cuda: '12.9.0'
+          method: 'network'
+          sub-packages: '["nvcc","cudart","cublas","cublas_dev","cusparse","cusparse_dev","nvrtc","nvrtc_dev"]'
+      - name: Check NVIDIA compiler
+        run: |
+          nvcc --version
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          Write-Host "CUDA_PATH=$env:CUDA_PATH"
+      - name: Compile CUDA Desktop and CLI (no GPU in runner)
+        timeout-minutes: 60
+        run: cargo build --release --locked --features desktop,gateway-http,cuda --bins --target x86_64-pc-windows-msvc
+      - name: Package CUDA portable test build
+        run: |
+          New-Item -ItemType Directory -Force -Path dist | Out-Null
+          Copy-Item -LiteralPath target/x86_64-pc-windows-msvc/release/lyra.exe -Destination dist/
+          Copy-Item -LiteralPath target/x86_64-pc-windows-msvc/release/lyra-desktop.exe -Destination dist/
+          Copy-Item -LiteralPath examples/buggy-add -Destination dist/examples/buggy-add -Recurse
+          Copy-Item -LiteralPath docs/LOCAL_MODELS.md -Destination dist/LOCAL_MODELS.md
+          @'
+          RTX 4060 test: CUDA sm_89 build. This CI runner has no NVIDIA GPU.
+          Compilation does not prove actual runtime compatibility or VRAM safety.
+          Use Settings > Model and Resources > Qwen3.5-9B preset / Auto GPU.
+          Required NVIDIA driver must be installed separately on the test PC.
+          '@ | Set-Content -Encoding utf8NoBOM -LiteralPath dist/README-CUDA.txt
+          $cudaBin = Join-Path $env:CUDA_PATH 'bin'
+          foreach ($name in @('cudart64_12.dll','cublas64_12.dll','cublasLt64_12.dll')) {
+            $source = Join-Path $cudaBin $name
+            if (-not (Test-Path -LiteralPath $source)) { throw "Missing required runtime: $source" }
+            Copy-Item -LiteralPath $source -Destination dist/
+          }
+          Get-ChildItem -LiteralPath dist | Select-Object Name,Length | Format-Table
+      - name: Upload CUDA test package
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: lyra-windows-cuda-rtx4060-sm89
+          path: dist/
+          retention-days: 14
+          if-no-files-found: error
