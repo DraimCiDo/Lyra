@@ -274,6 +274,19 @@ mod tests {
     }
 
     #[test]
+    fn bundled_qwen3_coder_480b_profile_is_valid_and_secretless() {
+        let config = include_bytes!("../examples/qwen3-coder-openrouter.json");
+        let providers = parse_registry(config).unwrap();
+        assert_eq!(providers.len(), 1);
+        let provider = &providers[0];
+        assert_eq!(provider.descriptor.provider, "openrouter");
+        assert_eq!(provider.descriptor.model, "qwen/qwen3-coder");
+        assert_eq!(provider.api_key_env.as_deref(), Some("OPENROUTER_API_KEY"));
+        assert!(provider.endpoint.starts_with("https://"));
+        assert!(OpenAiCompatibleBackend::new(provider.clone()).is_ok());
+    }
+
+    #[test]
     fn rejects_insecure_remote_endpoints_and_embedded_credentials() {
         assert!(
             OpenAiCompatibleBackend::new(config("http://example.com/v1/chat/completions")).is_err()
