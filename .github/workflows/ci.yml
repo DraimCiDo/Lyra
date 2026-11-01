@@ -82,7 +82,7 @@ jobs:
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           Remove-Item -LiteralPath $model
       - name: Release build
-        run: cargo build --release --locked --features desktop --bins --target ${{ matrix.target }}
+        run: cargo build --release --locked --features desktop,gateway-http --bins --target ${{ matrix.target }}
       - name: Set up full JDK 21 for trusted starter acceptance
         uses: actions/setup-java@b843ebf9b913146b38da2eaa7aeddf76074ae1ad # v6.1.0
         with:
@@ -127,7 +127,8 @@ jobs:
           New-Item -ItemType Directory -Force -Path dist/docs, dist/examples | Out-Null
           Copy-Item -LiteralPath docs/ACCEPTANCE.md, docs/LOCAL_MODELS.md, docs/DESKTOP.md, docs/UPDATES.md, docs/PROJECTS.md, docs/KNOWLEDGE.md, docs/WEB_PROJECTS.md -Destination dist/docs
           Copy-Item -LiteralPath examples/buggy-add -Destination dist/examples -Recurse
-          python tools/collect_licenses.py --features desktop --target ${{ matrix.target }} --output dist/THIRD_PARTY_NOTICES.txt
+          Copy-Item -LiteralPath examples/qwen3-coder-openrouter.json -Destination dist/examples/qwen3-coder-openrouter.json
+          python tools/collect_licenses.py --features desktop,gateway-http --target ${{ matrix.target }} --output dist/THIRD_PARTY_NOTICES.txt
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           $hashes = @('${{ matrix.binary }}', $desktop) | ForEach-Object {
             $hash = (Get-FileHash -Algorithm SHA256 -LiteralPath "dist/$_").Hash.ToLowerInvariant()
