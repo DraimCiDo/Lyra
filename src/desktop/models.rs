@@ -104,10 +104,11 @@ async fn cancelled(cancel: Arc<AtomicBool>) {
 fn check_disk(directory: &std::path::Path, size: u64) -> io::Result<()> {
     let directory = directory.canonicalize()?;
     let disks = sysinfo::Disks::new_with_refreshed_list().map_err(io::Error::other)?;
-    let disk = disks
+    let (disk, _) = disks
         .iter()
-        .filter(|d| directory.starts_with(d.mount_point()))
-        .max_by_key(|d| d.mount_point().as_os_str().len())
+        .filter_map(|d| d.mount_point().canonicalize().ok().map(|root| (d, root)))
+        .filter(|(_, root)| directory.starts_with(root))
+        .max_by_key(|(_, root)| root.as_os_str().len())
         .ok_or_else(|| io::Error::other("Не удалось проверить свободное место"))?;
     if disk.available_space() < size + 256 * 1024 * 1024 {
         return Err(io::Error::other("Недостаточно места для GGUF"));
@@ -310,6 +311,8 @@ mod tests {
         use std::io::Read;
         use std::net::TcpListener;
         let dir = tempfile::tempdir().unwrap();
+        // On Windows canonical directories use the verbatim prefix (\\?\).
+        check_disk(dir.path(), 16).unwrap();
         let bytes = b"GGUFtest weights";
         let hash: String = Sha256::digest(bytes)
             .iter()
