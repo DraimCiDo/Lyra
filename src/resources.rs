@@ -64,8 +64,8 @@ fn skip_value(file: &mut File, ty: u32) -> io::Result<Option<u64>> {
             let width: Option<u64> = match element {
                 0 | 1 | 7 => Some(1),
                 2 | 3 => Some(2),
-                4 | 5 | 6 => Some(4),
-                10 | 11 | 12 => Some(8),
+                4..=6 => Some(4),
+                10..=12 => Some(8),
                 _ => None,
             };
             if let Some(width) = width {
