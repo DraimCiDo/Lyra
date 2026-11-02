@@ -15,22 +15,6 @@ pub enum Optimization {
     Balanced,
     Aggressive,
 }
-impl Optimization {
-    pub fn from_slider(value: u32) -> Self {
-        match value {
-            0 => Self::Safe,
-            2 => Self::Aggressive,
-            _ => Self::Balanced,
-        }
-    }
-    pub fn slider(self) -> u32 {
-        match self {
-            Self::Safe => 0,
-            Self::Balanced => 1,
-            Self::Aggressive => 2,
-        }
-    }
-}
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct Preferences {
@@ -91,7 +75,11 @@ impl Default for Preferences {
             tokens: 512,
             calls: 12,
             threads: crate::inference::default_threads(),
-            gpu_layers: 0,
+            gpu_layers: if cfg!(feature = "cuda") {
+                crate::resources::GPU_AUTO
+            } else {
+                0
+            },
             timeout: 600,
         }
     }
@@ -260,11 +248,17 @@ mod tests {
         let mut legacy = serde_json::to_value(&prefs).unwrap();
         legacy.as_object_mut().unwrap().remove("gpu_layers");
         std::fs::write(&path, serde_json::to_vec(&legacy).unwrap()).unwrap();
+        assert_eq!(
+            Preferences::load(&path).unwrap().gpu_layers,
+            Preferences::default().gpu_layers
+        );
+        prefs.gpu_layers = 0;
+        prefs.save(&path).unwrap();
         assert_eq!(Preferences::load(&path).unwrap().gpu_layers, 0);
         prefs.gpu_layers = 1025;
         assert!(prefs.save(&path).is_err());
         prefs.reset_inference();
-        assert_eq!(prefs.gpu_layers, 0);
+        assert_eq!(prefs.gpu_layers, Preferences::default().gpu_layers);
     }
 
     #[test]
@@ -282,7 +276,6 @@ mod tests {
             };
             prefs.save(&path).unwrap();
             assert_eq!(Preferences::load(&path).unwrap().optimization, mode);
-            assert_eq!(Optimization::from_slider(mode.slider()), mode);
         }
         let mut legacy = serde_json::to_value(Preferences::default()).unwrap();
         legacy.as_object_mut().unwrap().remove("optimization");
@@ -336,8 +329,6 @@ mod tests {
         assert!(Preferences::load(&path).is_err());
         let json = serde_json::to_value(p).unwrap();
         assert_eq!(json["optimization"], "balanced");
-        assert_eq!(Optimization::from_slider(0), Optimization::Safe);
-        assert_eq!(Optimization::from_slider(2), Optimization::Aggressive);
         assert!(json.get("task").is_none());
         assert!(json.get("report").is_none());
         assert!(json.get("api_key").is_none());

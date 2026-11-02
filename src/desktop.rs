@@ -7,6 +7,7 @@ mod job;
 mod models;
 mod preferences;
 mod projects;
+mod settings;
 mod skills;
 mod theme;
 pub mod updater;
@@ -26,7 +27,8 @@ use theme::{Language, Palette};
 
 const WINDOW_SIZE: [f32; 2] = [1160.0, 760.0];
 const MIN_SIZE: [f32; 2] = [820.0, 600.0];
-const SMOKE_STEPS: usize = 72;
+const SETTINGS_CYCLE: usize = SettingsPage::ALL.len() + 2;
+const SMOKE_STEPS: usize = SETTINGS_CYCLE * Palette::ALL.len() * 2;
 
 pub fn worker_main() -> ExitCode {
     use clap::Parser;
@@ -112,18 +114,20 @@ enum SettingsPage {
     Providers,
     Context,
     Workers,
+    Skills,
     Appearance,
     Hardware,
     Updates,
     Knowledge,
 }
 impl SettingsPage {
-    const ALL: [Self; 7 + cfg!(feature = "gateway-http") as usize] = [
+    const ALL: [Self; 8 + cfg!(feature = "gateway-http") as usize] = [
         Self::Model,
         #[cfg(feature = "gateway-http")]
         Self::Providers,
         Self::Context,
         Self::Workers,
+        Self::Skills,
         Self::Appearance,
         Self::Hardware,
         Self::Updates,
@@ -135,7 +139,8 @@ impl SettingsPage {
             #[cfg(feature = "gateway-http")]
             Self::Providers => "HTTP-провайдеры",
             Self::Context => "Контекст проекта",
-            Self::Workers => "Помощники",
+            Self::Workers => "Агенты",
+            Self::Skills => "Навыки ECC",
             Self::Appearance => "Оформление",
             Self::Hardware => "Мой компьютер",
             Self::Updates => "Обновления",
@@ -149,10 +154,37 @@ impl SettingsPage {
             Self::Providers => Icon::Model,
             Self::Context => Icon::Folder,
             Self::Workers => Icon::Workers,
+            Self::Skills => Icon::BookOpen,
             Self::Appearance => Icon::Palette,
             Self::Hardware => Icon::Monitor,
             Self::Updates => Icon::Download,
             Self::Knowledge => Icon::BookOpen,
+        }
+    }
+    fn description(self) -> &'static str {
+        match self {
+            Self::Model => {
+                "Выберите GGUF и устройство для локальной модели. Для HTTP-моделей используйте раздел провайдеров."
+            }
+            #[cfg(feature = "gateway-http")]
+            Self::Providers => {
+                "Подключение внешних AI-сервисов. Запросы отправляются только при включении соответствующего режима."
+            }
+            Self::Context => "Выберите файлы проекта и объём истории, передаваемой модели.",
+            Self::Workers => {
+                "Дополнительные роли для задач проекта и общий лимит их обращений к модели."
+            }
+            Self::Skills => {
+                "Инструкции ECC для модели: выбор, просмотр, локальная установка и откат пакетов."
+            }
+            Self::Appearance => "Тема, язык и анимации интерфейса.",
+            Self::Hardware => "Проверьте доступные CPU, RAM и NVIDIA GPU перед выбором модели.",
+            Self::Updates => {
+                "Версия приложения и обновления. CPU и CUDA поставляются отдельными пакетами."
+            }
+            Self::Knowledge => {
+                "Подключите справочные материалы проекта. Это источники для агента, а не веса модели."
+            }
         }
     }
 }
@@ -784,29 +816,31 @@ impl Desktop {
     fn settings(&mut self, ui: &mut egui::Ui) {
         let c = self.prefs.palette.colors();
         let l = self.prefs.language;
-        ui.horizontal(|ui| {
+        ui.horizontal_wrapped(|ui| {
             for page in SettingsPage::ALL {
-                if icons::button(
-                    ui,
-                    page.icon(),
-                    l.text(page.title()),
-                    self.settings_page == page,
-                    if self.settings_page == page {
-                        c.accent
-                    } else {
-                        c.muted
-                    },
-                )
-                .clicked()
+                if ui
+                    .add(
+                        egui::Button::image_and_text(
+                            page.icon().image(c.accent),
+                            l.text(page.title()),
+                        )
+                        .selected(self.settings_page == page),
+                    )
+                    .clicked()
                     && self.settings_page != page
                 {
                     self.settings_page = page;
                     self.transition = Some(Instant::now());
                 }
             }
-            ui.separator();
-            ui.label(RichText::new(l.text(self.settings_page.title())).strong());
         });
+        ui.add_space(6.0);
+        ui.label(RichText::new(l.text(self.settings_page.title())).strong());
+        ui.label(
+            RichText::new(l.text(self.settings_page.description()))
+                .small()
+                .weak(),
+        );
         ui.add_space(4.0);
         egui::ScrollArea::vertical().id_salt(("settings",self.settings_page as u8)).auto_shrink([false,false]).show(ui,|ui|{
             card(c).show(ui,|ui|{
@@ -877,61 +911,8 @@ impl Desktop {
                             }
                         }
                     }).response,
-                    SettingsPage::Model=>ui.add_enabled_ui(self.job.is_none(),|ui|{
-                        self.model_suggestion(ui);
-                        let title=self.prefs.model.as_ref().and_then(|p|p.file_name())
-                            .map(|s|s.to_string_lossy().into_owned()).unwrap_or_else(||l.text("Выбрать…").into());
-                        let full=self.prefs.model.as_ref().map(|p|p.display().to_string()).unwrap_or_else(||l.text("Модель GGUF").into());
-                        if ui.add(egui::Button::image_and_text(Icon::Model.image(c.accent),format!("{} · {}",l.text("Модель GGUF"),title))
-                            .min_size(egui::vec2(ui.available_width(),32.0)).wrap_mode(egui::TextWrapMode::Truncate))
-                            .on_hover_text(full).clicked() {self.choose_path(true);}
-                        ui.add_space(8.0);
-                        ui.columns(2,|columns|{
-                            columns[0].horizontal(|ui|{
-                                ui.label(l.text("Контекст"));
-                                help(ui,l.text("Контекст включает задание, код, историю и ответ. Большое окно требует больше памяти."),c.muted);
-                            });
-                            egui::ComboBox::from_id_salt("context").selected_text(self.prefs.context.to_string()).show_ui(&mut columns[0],|ui|{
-                                for size in[1024,2048,4096,8192,16384,32768]{ui.selectable_value(&mut self.prefs.context,size,size.to_string());}
-                            });
-                            columns[0].add_space(8.0);
-                            setting_slider(&mut columns[0],l.text("CPU-потоки"),&mut self.prefs.threads,1..=256,true,l.text("Больше потоков не всегда быстрее. Начальное значение учитывает доступные CPU, максимум 8."),c.muted);
-                            setting_slider(&mut columns[1],l.text("Токенов на ответ"),&mut self.prefs.tokens,1..=8192,true,l.text("Максимум токенов одного действия модели."),c.muted);
-                            columns[1].add_space(8.0);
-                            columns[1].horizontal(|ui|{ui.label(l.text("Таймаут, с"));help(ui,l.text("Общее время задачи, включая загрузку модели."),c.muted);});
-                            columns[1].add(egui::Slider::new(&mut self.prefs.timeout,1..=3600).logarithmic(true));
-                        });
-                        ui.add_space(8.0);
-                        ui.separator();
-                        ui.label(RichText::new("Распределение GGUF: GPU / CPU / ОЗУ").strong());
-                        ui.label(RichText::new("Авто использует максимум безопасных слоёв на NVIDIA GPU, остальное обрабатывается CPU с использованием RAM. Сбалансированный режим оставляет часть слоёв на CPU; он не обязательно быстрее.").small().weak());
-                        let mode = &mut self.prefs.gpu_layers;
-                        ui.horizontal_wrapped(|ui| {
-                            ui.selectable_value(mode, 0, "Только CPU");
-                            ui.selectable_value(mode, crate::resources::GPU_BALANCED, "Сбалансированный");
-                            ui.selectable_value(mode, crate::resources::GPU_AUTO, "Авто GPU");
-                            if (*mode == 0 || *mode == crate::resources::GPU_BALANCED || *mode == crate::resources::GPU_AUTO)
-                                && ui.button("Ручная настройка").clicked() { *mode = 16; }
-                        });
-                        if (1..crate::resources::GPU_BALANCED).contains(mode) {
-                            ui.add(egui::Slider::new(mode, 1..=256).text("Слоёв на CUDA"));
-                        }
-                        if !cfg!(feature = "cuda") {
-                            ui.label(RichText::new("Эта сборка CPU-only. Для выбранного GPU-режима нужна отдельная Windows-сборка с CUDA. CPU fallback будет запрещён, чтобы не скрывать отсутствие ускорения.").color(c.error).small());
-                        }
-                        if ui.button("Профиль Qwen3.5-9B · RTX 4060 8 GB").clicked() {
-                            self.prefs.context = 4096;
-                            self.prefs.tokens = 1536;
-                            self.prefs.threads = 6;
-                            self.prefs.gpu_layers = if cfg!(feature = "cuda") {
-                                crate::resources::GPU_AUTO
-                            } else {
-                                0
-                            };
-                        }
-                        ui.add_space(8.0);
-                        if ui.small_button(l.text("Сбросить числовые параметры")).clicked(){self.prefs.reset_inference();}
-                    }).response,
+                    SettingsPage::Model=>ui.add_enabled_ui(self.job.is_none(),|ui|self.model_settings(ui)).response,
+                    SettingsPage::Skills=>ui.add_enabled_ui(self.job.is_none(),|ui|self.skill_settings(ui)).response,
                     SettingsPage::Context=>ui.add_enabled_ui(self.job.is_none(),|ui|{
                         ui.label(l.text("Файлы контекста · до 32 путей, по одному на строке"));
                         ui.label(RichText::new(l.text("Пусто — ограниченный индекс проекта. Секретные и служебные файлы исключаются движком.")).small().weak());
@@ -939,15 +920,16 @@ impl Desktop {
                         ui.label(format!("{} / 32",self.prefs.files.lines().filter(|s|!s.trim().is_empty()).count()));
                         ui.separator();
                         ui.label(RichText::new(l.text("Оптимизация контекста")).strong());
-                        let mut level = self.prefs.optimization.slider();
-                        ui.add(egui::Slider::new(&mut level, 0..=2)
-                            .step_by(1.0)
-                            .custom_formatter(|v, _| match v.round() as u32 {
-                                0 => "Safe".to_owned(),
-                                2 => "Aggressive".to_owned(),
-                                _ => "Balanced".to_owned(),
-                            }));
-                        self.prefs.optimization = preferences::Optimization::from_slider(level);
+                        egui::ComboBox::from_id_salt("history-window")
+                            .selected_text(l.text(match self.prefs.optimization {
+                                preferences::Optimization::Safe => "Полная история",
+                                preferences::Optimization::Balanced => "Последние 12 сообщений",
+                                preferences::Optimization::Aggressive => "Последние 6 сообщений",
+                            })).show_ui(ui, |ui| {
+                                ui.selectable_value(&mut self.prefs.optimization, preferences::Optimization::Safe, l.text("Полная история"));
+                                ui.selectable_value(&mut self.prefs.optimization, preferences::Optimization::Balanced, l.text("Последние 12 сообщений"));
+                                ui.selectable_value(&mut self.prefs.optimization, preferences::Optimization::Aggressive, l.text("Последние 6 сообщений"));
+                            });
                         let description = match self.prefs.optimization {
                             preferences::Optimization::Safe => "Полная история переписки, без сокращения.",
                             preferences::Optimization::Balanced => "До 12 последних сообщений в запросе.",
@@ -960,8 +942,6 @@ impl Desktop {
                         ui.label(RichText::new(l.text("Повторные старые результаты передаются один раз со ссылками. Последний результат, ошибки и патчи сохраняются дословно. Экономия показывается в байтах; токены не оцениваются.")).small().weak());
                     }).response,
                     SettingsPage::Workers=>ui.add_enabled_ui(self.job.is_none(),|ui|{
-                        self.skill_settings(ui);
-                        ui.separator();
                         icons::toggle(ui,&mut self.prefs.subagents,l.text("Исследователь и ревьюер"),self.prefs.animations,c.accent,c.on_accent);
                         if self.prefs.subagents{self.prefs.calls=self.prefs.calls.max(3);}
                         ui.label(RichText::new(l.text("Роли работают последовательно с одной моделью. Дополнительные проверки требуют времени.")).small().weak());
@@ -998,8 +978,13 @@ impl Desktop {
         let c = self.prefs.palette.colors();
         let l = self.prefs.language;
         ui.label(format!(
-            "Lyra {} · Windows x64 CPU",
-            env!("CARGO_PKG_VERSION")
+            "Lyra {} · Windows x64 {}",
+            env!("CARGO_PKG_VERSION"),
+            if cfg!(feature = "cuda") {
+                "CUDA"
+            } else {
+                "CPU"
+            }
         ));
         ui.label(
             RichText::new(l.text("GitHub Releases · скачивание и установка только по кнопке."))
@@ -1523,16 +1508,19 @@ impl eframe::App for Desktop {
             let step = counter
                 .load(std::sync::atomic::Ordering::Relaxed)
                 .min(SMOKE_STEPS - 1);
-            self.prefs.palette = Palette::ALL[step / 18];
-            self.prefs.language = if (step / 9) % 2 == 0 {
+            self.prefs.palette = Palette::ALL[step / (SETTINGS_CYCLE * 2)];
+            self.prefs.language = if (step / SETTINGS_CYCLE) % 2 == 0 {
                 Language::Ru
             } else {
                 Language::En
             };
             self.prefs.animations = self.prefs.language == Language::Ru;
-            self.settings_open = step % 9 != 0 && step % 9 != 8;
-            self.smoke_conversation(step % 9 == 8);
-            self.settings_page = SettingsPage::ALL[(step % 9).saturating_sub(1).min(6)];
+            self.settings_open =
+                step % SETTINGS_CYCLE != 0 && step % SETTINGS_CYCLE != SETTINGS_CYCLE - 1;
+            self.smoke_conversation(step % SETTINGS_CYCLE == SETTINGS_CYCLE - 1);
+            self.settings_page = SettingsPage::ALL[(step % SETTINGS_CYCLE)
+                .saturating_sub(1)
+                .min(SettingsPage::ALL.len() - 1)];
         }
         self.draw(ui);
         if self.real_app {
@@ -1671,10 +1659,11 @@ mod tests {
                     app.prefs.palette = palette;
                     app.prefs.language = language;
                     app.prefs.animations = false;
-                    for page in 0usize..9 {
-                        app.settings_open = page != 0 && page != 8;
-                        app.smoke_conversation(page == 8);
-                        app.settings_page = SettingsPage::ALL[page.saturating_sub(1).min(6)];
+                    for page in 0usize..SETTINGS_CYCLE {
+                        app.settings_open = page != 0 && page != SETTINGS_CYCLE - 1;
+                        app.smoke_conversation(page == SETTINGS_CYCLE - 1);
+                        app.settings_page = SettingsPage::ALL
+                            [page.saturating_sub(1).min(SettingsPage::ALL.len() - 1)];
                         let mut output = ctx.run_ui(
                             egui::RawInput {
                                 screen_rect: Some(egui::Rect::from_min_size(

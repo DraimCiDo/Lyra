@@ -175,6 +175,78 @@ impl Language {
             return ru;
         }
         match ru {
+            "Навыки ECC" => "ECC skills",
+            "Выберите GGUF и устройство для локальной модели. Для HTTP-моделей используйте раздел провайдеров." => {
+                "Choose a GGUF and device for local inference. HTTP models are configured under providers."
+            }
+            "Подключение внешних AI-сервисов. Запросы отправляются только при включении соответствующего режима." => {
+                "Connect external AI services. Requests are sent only when the corresponding mode is enabled."
+            }
+            "Выберите файлы проекта и объём истории, передаваемой модели." => {
+                "Choose project files and how much conversation history to send to the model."
+            }
+            "Дополнительные роли для задач проекта и общий лимит их обращений к модели." => {
+                "Additional roles for project tasks and their shared model-call budget."
+            }
+            "Инструкции ECC для модели: выбор, просмотр, локальная установка и откат пакетов." => {
+                "ECC guidance for the model: selection, preview, local installation and package rollback."
+            }
+            "Тема, язык и анимации интерфейса." => {
+                "Interface theme, language and animations."
+            }
+            "Проверьте доступные CPU, RAM и NVIDIA GPU перед выбором модели." => {
+                "Check available CPU, RAM and NVIDIA GPU before choosing a model."
+            }
+            "Версия приложения и обновления. CPU и CUDA поставляются отдельными пакетами." => {
+                "Application version and updates. CPU and CUDA are distributed as separate packages."
+            }
+            "Подключите справочные материалы проекта. Это источники для агента, а не веса модели." => {
+                "Connect project reference material. These are sources for the agent, not model weights."
+            }
+            "Где выполнять локальную модель" => {
+                "Where to run the local model"
+            }
+            "NVIDIA GPU · Авто (рекомендуется)" => {
+                "NVIDIA GPU · Auto (recommended)"
+            }
+            "Только CPU" => "CPU only",
+            "Это CPU-сборка. Для NVIDIA GPU скачайте отдельный пакет CUDA; веса GGUF можно использовать те же." => {
+                "This is a CPU build. Download the separate CUDA package for NVIDIA GPU; the same GGUF weights can be used."
+            }
+            "Выбран CPU. Для ускорения на NVIDIA выберите GPU Авто; существующий выбор не меняется автоматически." => {
+                "CPU is selected. Choose GPU Auto for NVIDIA acceleration; your existing selection is preserved."
+            }
+            "GPU Авто оценивает доступную VRAM и переносит подходящее число слоёв на NVIDIA GPU. Остальная часть использует CPU и RAM." => {
+                "GPU Auto estimates available VRAM and offloads a suitable number of layers to NVIDIA GPU. The remainder uses CPU and RAM."
+            }
+            "Выбрано ручное или сбалансированное распределение. Настройка слоёв находится в разделе Дополнительно." => {
+                "Manual or balanced allocation is selected. Layer controls are under Advanced."
+            }
+            "В настройках сохранён GPU-режим. Выберите Только CPU или запустите CUDA-сборку." => {
+                "A GPU mode is saved in settings. Select CPU only or run the CUDA build."
+            }
+            "Нет модели? Подобрать и установить GGUF" => {
+                "No model? Choose and install a GGUF"
+            }
+            "Дополнительно · память, длина ответа и время" => {
+                "Advanced · memory, response length and time"
+            }
+            "Начните с контекста 4096. Большое окно требует больше RAM/VRAM; длинный ответ и загрузка весов требуют времени." => {
+                "Start with a 4096 context. Larger windows need more RAM/VRAM; longer responses and loading weights take time."
+            }
+            "Таймаут включает загрузку модели и все шаги задачи." => {
+                "The timeout includes model loading and all task steps."
+            }
+            "Ручное распределение GPU / CPU" => "Manual GPU / CPU allocation",
+            "Сбалансированный режим оставляет часть слоёв на CPU и не обязательно быстрее Авто." => {
+                "Balanced mode leaves some layers on CPU and is not necessarily faster than Auto."
+            }
+            "Сбалансированный" => "Balanced",
+            "Ручная настройка" => "Manual",
+            "Слоёв на CUDA" => "Layers on CUDA",
+            "Полная история" => "Full history",
+            "Последние 12 сообщений" => "Latest 12 messages",
+            "Последние 6 сообщений" => "Latest 6 messages",
             "Пакет навыков · установка и версии" => {
                 "Skill package · installation and versions"
             }
