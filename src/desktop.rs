@@ -1509,7 +1509,7 @@ impl eframe::App for Desktop {
                 .load(std::sync::atomic::Ordering::Relaxed)
                 .min(SMOKE_STEPS - 1);
             self.prefs.palette = Palette::ALL[step / (SETTINGS_CYCLE * 2)];
-            self.prefs.language = if (step / SETTINGS_CYCLE) % 2 == 0 {
+            self.prefs.language = if (step / SETTINGS_CYCLE).is_multiple_of(2) {
                 Language::Ru
             } else {
                 Language::En
