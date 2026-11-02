@@ -18,6 +18,7 @@ The complete feature inventory/SBOM in P00 remains pending; see
 | ECC | Explicit role contracts, scoped tools, structured recovery feedback | src/agent_runtime.rs / src/agent.rs | verified in stage 1 | Recovery/read_only/native fixture tests; plan 0012 |
 | ECC | JSON packs, bounded SKILL.md/catalog import, explicit multiple selection | src/skills.rs / src/desktop/skills.rs / src/agent_runtime.rs | verified in stage 2a (CPU) | Catalog/CLI/migration tests + native Windows; plan 0015; full YAML, versioning and resources pending |
 | ECC | Selective install of complete upstream packs | Skills Registry | planned | P06 |
+| ECC | Local selective declarative snapshots, provenance hash, one-version rollback | src/skill_package.rs / Desktop | implemented; stage-2b verification pending | Install/update/tamper/lock/CLI tests; no resources or upstream updater |
 | ECC | Rules, commands, language packs | Rules/Commands | planned | P06/P12 |
 | ECC | Hooks | Event Bus | planned | P08 |
 | ECC | MCP | Tools Adapter | planned | P08 |

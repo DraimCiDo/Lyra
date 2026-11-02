@@ -175,6 +175,26 @@ impl Language {
             return ru;
         }
         match ru {
+            "Пакет навыков · установка и версии" => {
+                "Skill package · installation and versions"
+            }
+            "Локальный снимок выбранных навыков. Версия и источник указываются вами; SHA256 не является подписью автора." => {
+                "A local snapshot of selected skills. Version and origin are declared by you; SHA256 is not an author signature."
+            }
+            "ID пакета (a-z, 0-9, дефис)" => "Package ID (a-z, 0-9, hyphen)",
+            "Версия пакета" => "Package version",
+            "Источник / ревизия" => "Origin / revision",
+            "Установить выбранные навыки и использовать снимок" => {
+                "Install selected skills and use snapshot"
+            }
+            "Пакет установлен локально." => "Package installed locally.",
+            "Предыдущая версия" => "Previous version",
+            "Переключить на предыдущую версию" => {
+                "Switch to previous version"
+            }
+            "Версия пакета переключена. Проверьте выбранные навыки." => {
+                "Package version switched. Check selected skills."
+            }
             "ECC Skills · файл или каталог" => "ECC Skills · file or directory",
             "Загрузить каталог навыков" => "Load skill catalog",
             "Навыки — инструкции для модели. Скрипты и hooks не исполняются. Выбранные навыки применяются в порядке выбора." => {

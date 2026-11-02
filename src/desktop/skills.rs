@@ -1,6 +1,14 @@
 //! Explicit local catalog selection, shared by local and HTTP workers.
 use super::*;
 
+#[derive(Default)]
+pub(super) struct PackageUi {
+    id: String,
+    version: String,
+    origin: String,
+    installed: Option<crate::skill_package::Store>,
+}
+
 impl Desktop {
     pub(super) fn skill_args(&self) -> io::Result<Vec<OsString>> {
         let selected = self.prefs.selected_skills();
@@ -41,14 +49,23 @@ impl Desktop {
             self.prefs.skill_manifest =
                 (!path.trim().is_empty()).then(|| PathBuf::from(path.trim()));
             self.skill_catalog = None;
+            self.skill_package_ui.installed = None;
         }
         if ui.button(l.text("Загрузить каталог навыков")).clicked() {
+            self.skill_package_ui.installed = None;
             self.skill_catalog = Some(
                 self.prefs
                     .skill_manifest
                     .as_ref()
                     .ok_or_else(|| "Укажите файл или каталог ECC Skills.".to_owned())
                     .and_then(|path| {
+                        if crate::skill_package::is_store(path) {
+                            let store = crate::skill_package::Store::load(path)
+                                .map_err(|error| error.to_string())?;
+                            let pack = store.current.pack.clone();
+                            self.skill_package_ui.installed = Some(store);
+                            return Ok(pack);
+                        }
                         crate::skills::SkillPack::load_source(path)
                             .map_err(|error| error.to_string())
                     }),
@@ -98,6 +115,67 @@ impl Desktop {
         }
         self.prefs.active_skill.clear();
         self.prefs.active_skills = selected;
+        self.package_settings(ui);
+    }
+
+    fn package_settings(&mut self, ui: &mut egui::Ui) {
+        let l = self.prefs.language;
+        egui::CollapsingHeader::new(l.text("Пакет навыков · установка и версии")).show(ui, |ui| {
+            ui.label(RichText::new(l.text("Локальный снимок выбранных навыков. Версия и источник указываются вами; SHA256 не является подписью автора.")).small().weak());
+            ui.label(l.text("ID пакета (a-z, 0-9, дефис)"));
+            ui.text_edit_singleline(&mut self.skill_package_ui.id);
+            ui.label(l.text("Версия пакета"));
+            ui.text_edit_singleline(&mut self.skill_package_ui.version);
+            ui.label(l.text("Источник / ревизия"));
+            ui.text_edit_singleline(&mut self.skill_package_ui.origin);
+            if ui.button(l.text("Установить выбранные навыки и использовать снимок")).clicked() {
+                let result = (|| -> io::Result<(PathBuf, crate::skill_package::Store)> {
+                    let id = &self.skill_package_ui.id;
+                    if !crate::skill_package::valid_id(id) { return Err(io::Error::other("Invalid package id")); }
+                    let parent = self.storage.as_ref().and_then(|path| path.parent())
+                        .ok_or_else(|| io::Error::other("Local settings directory unavailable"))?;
+                    let target = parent.join("skills").join(format!("{id}.lyra-skills.json"));
+                    let source = self.prefs.skill_manifest.as_ref()
+                        .ok_or_else(|| io::Error::other("Select a skill source first"))?;
+                    let store = crate::skill_package::install(source, &target, id,
+                        &self.skill_package_ui.version, &self.skill_package_ui.origin, &self.prefs.selected_skills())?;
+                    Ok((target, store))
+                })();
+                match result {
+                    Ok((target, store)) => {
+                        self.prefs.skill_manifest = Some(target);
+                        self.skill_catalog = Some(Ok(store.current.pack.clone()));
+                        self.skill_package_ui.installed = Some(store);
+                        self.error = false;
+                        self.message = l.text("Пакет установлен локально.").into();
+                    }
+                    Err(error) => self.fail(error),
+                }
+            }
+            if let Some(store) = &self.skill_package_ui.installed {
+                let metadata = &store.current.metadata;
+                ui.label(format!("{} · {}", metadata.id, metadata.version));
+                ui.label(format!("{}: {}", l.text("Источник / ревизия"), metadata.origin));
+                ui.label(format!("SHA256: {}", metadata.sha256));
+                if let Some(previous) = &store.previous {
+                    ui.label(format!("{}: {}", l.text("Предыдущая версия"), previous.metadata.version));
+                    if ui.button(l.text("Переключить на предыдущую версию")).clicked() {
+                        let result = self.prefs.skill_manifest.as_ref()
+                            .ok_or_else(|| io::Error::other("Select an installed package first"))
+                            .and_then(|path| crate::skill_package::rollback(path));
+                        match result {
+                            Ok(store) => {
+                                self.skill_catalog = Some(Ok(store.current.pack.clone()));
+                                self.skill_package_ui.installed = Some(store);
+                                self.error = false;
+                                self.message = l.text("Версия пакета переключена. Проверьте выбранные навыки.").into();
+                            }
+                            Err(error) => self.fail(error),
+                        }
+                    }
+                }
+            }
+        });
     }
 }
 

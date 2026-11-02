@@ -89,3 +89,43 @@ guidance budget still applies. Resources and nested directories are not read.
 A complete upstream checkout can exceed these bounds; use a curated local
 directory. Package versioning/rollback, rules, role scopes and command palettes
 remain separate work; see [stage 2a](../plans/0015-ecc-skill-catalog.md).
+
+## Installed snapshots and rollback
+
+Install a selected subset into a local `*.lyra-skills.json` snapshot:
+
+```sh
+lyra skill-package install --source ./selected-skills --store ./ecc.lyra-skills.json --id ecc-local --version revision-1 --origin "ECC pinned local checkout" --skill rust-patterns --skill review
+lyra skill-package show --store ./ecc.lyra-skills.json
+lyra task --repo ./project --model ./model.gguf --task-file task.txt --skills ./ecc.lyra-skills.json --skill review
+lyra skill-package rollback --store ./ecc.lyra-skills.json
+```
+
+The snapshot stores normalized declarative content, package id, declared version
+and origin, and a SHA256 over the serialized SkillPack. Source edits do not change
+an installed snapshot. Installation does not copy resources/scripts or access
+the network. Metadata is user-declared provenance, not a verified upstream
+signature or license grant; preserve third-party attribution when distributing
+the snapshot. Never publish private skill content accidentally.
+
+Update the same store with a different version label to retain the previous
+current revision. One previous revision is kept; rollback swaps the two revisions
+and can be reversed. A retained version cannot be redefined with different content
+or origin. Exact reinstall is a no-op. There is no global version history or
+semantic-version upgrade policy. Stores are bounded to 16 MiB serialized, each
+revision to 4 MiB content and the existing per-skill limits. Runtime selection
+still applies its 32 KiB guidance budget independently of installation.
+
+Writes use a same-directory temporary file and replacement under a create-new
+`.lock` file. Failed validation leaves the old store intact. A leftover lock after
+a crash is never stolen automatically: ensure no Lyra operation uses the store
+before manually removing that lock. This coordinates cooperating Lyra processes;
+it is not an OS sandbox or protection against another writer modifying files.
+
+Desktop: in **Помощники**, select skills, expand **Пакет навыков · установка и
+версии**, enter id/version/origin and choose **Установить выбранные навыки и
+использовать снимок**. The store is placed beside local settings in `skills/`;
+the manifest path switches to the snapshot and the selection is retained.
+Load an installed snapshot to inspect metadata and switch to its previous version.
+Rollback preserves selected ids; missing ids are reported and block worker startup.
+See [stage 2b](../plans/0016-ecc-package-versions.md) for acceptance status.

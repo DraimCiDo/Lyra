@@ -32,6 +32,8 @@ alpha добавляет task/предложения/apply и ограничен
 Каталог ECC: [общий загрузчик](../src/skills.rs),
 [Desktop](../src/desktop/skills.rs), [этап 2a](plans/0015-ecc-skill-catalog.md).
 Явно выбранные локальные навыки, без исполнения scripts/hooks и автоустановки.
+Установленные снимки/версии: [src/skill_package.rs](../src/skill_package.rs),
+CLI `skill-package`, [этап 2b](plans/0016-ecc-package-versions.md).
 
 ## Следующий этап
 

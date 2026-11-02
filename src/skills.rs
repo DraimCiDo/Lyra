@@ -34,6 +34,9 @@ impl SkillPack {
     /// resource execution, network access, or implicit skill activation.
     pub fn load_source(path: &Path) -> io::Result<Self> {
         if !path.is_dir() {
+            if crate::skill_package::is_store(path) {
+                return Ok(crate::skill_package::Store::load(path)?.current.pack);
+            }
             return if path.file_name().is_some_and(|name| name == "SKILL.md") {
                 Self::load_markdown(path)
             } else {

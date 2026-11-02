@@ -12,6 +12,7 @@ pub mod project;
 pub mod provider_http;
 pub mod resources;
 pub mod routing;
+pub mod skill_package;
 pub mod skills;
 pub mod workspace;
 
@@ -96,6 +97,8 @@ pub enum Command {
         #[arg(long)]
         id: Option<String>,
     },
+    /// Установить, проверить или откатить локальный снимок навыков
+    SkillPackage(skill_package::PackageArgs),
     /// Показать характеристики компьютера, на котором запущена Lyra
     Doctor {
         /// Вывести JSON (схема v1), пригодный для подбора локальной модели
@@ -268,6 +271,7 @@ pub fn run(cli: Cli, output: &mut impl Write) -> io::Result<()> {
                 model_gateway::select_priority(&descriptors, &allowed_providers, &request)?;
             writeln!(output, "{}/{}", selected.provider, selected.model)
         }
+        Command::SkillPackage(args) => skill_package::run(args, output),
         Command::Skills { manifest, id } => {
             let pack = skills::SkillPack::load_source(&manifest)?;
             if let Some(id) = id {
