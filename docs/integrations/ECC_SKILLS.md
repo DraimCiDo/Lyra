@@ -106,7 +106,7 @@ and origin, and a SHA256 over the serialized SkillPack. Source edits do not chan
 an installed snapshot. Installation does not copy resources/scripts or access
 the network. Metadata is user-declared provenance, not a verified upstream
 signature or license grant; preserve third-party attribution when distributing
-the snapshot. Never publish private skill content accidentally.
+the snapshot.
 
 Update the same store with a different version label to retain the previous
 current revision. One previous revision is kept; rollback swaps the two revisions
