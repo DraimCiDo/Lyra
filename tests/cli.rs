@@ -11,6 +11,117 @@ fn lyra(args: &[&str]) -> Output {
 }
 
 #[test]
+fn skill_catalog_lists_and_selects_without_model_or_network() {
+    let dir = tempfile::tempdir().unwrap();
+    for (folder, id) in [("z", "rust"), ("a", "review")] {
+        let child = dir.path().join(folder);
+        std::fs::create_dir(&child).unwrap();
+        std::fs::write(
+            child.join("SKILL.md"),
+            format!("---\nname: {id}\ndescription: Review code\n---\nGuidance for {id}"),
+        )
+        .unwrap();
+    }
+    let path = dir.path().to_str().unwrap();
+    let listed = lyra(&["skills", "--manifest", path]);
+    assert!(
+        listed.status.success(),
+        "{}",
+        String::from_utf8_lossy(&listed.stderr)
+    );
+    assert_eq!(
+        String::from_utf8(listed.stdout)
+            .unwrap()
+            .replace("\r\n", "\n"),
+        "review: Review code\nrust: Review code\n"
+    );
+    let selected = lyra(&["skills", "--manifest", path, "--id", "rust"]);
+    assert!(selected.status.success());
+    assert_eq!(
+        String::from_utf8(selected.stdout).unwrap().trim(),
+        "Guidance for rust"
+    );
+    assert!(
+        !lyra(&["skills", "--manifest", path, "--id", "missing"])
+            .status
+            .success()
+    );
+}
+
+#[test]
+fn skill_package_install_show_and_rollback_are_offline() {
+    let dir = tempfile::tempdir().unwrap();
+    let input = dir.path().join("SKILL.md");
+    let store = dir.path().join("fixture.lyra-skills.json");
+    std::fs::write(
+        &input,
+        "---\nname: review\ndescription: Review\n---\nFirst version",
+    )
+    .unwrap();
+    let input_str = input.to_str().unwrap();
+    let store_str = store.to_str().unwrap();
+    let installed = lyra(&[
+        "skill-package",
+        "install",
+        "--source",
+        input_str,
+        "--store",
+        store_str,
+        "--id",
+        "fixture",
+        "--version",
+        "1",
+        "--origin",
+        "Local test",
+        "--skill",
+        "review",
+    ]);
+    assert!(
+        installed.status.success(),
+        "{}",
+        String::from_utf8_lossy(&installed.stderr)
+    );
+    std::fs::write(
+        &input,
+        "---\nname: review\ndescription: Review\n---\nSecond version",
+    )
+    .unwrap();
+    let updated = lyra(&[
+        "skill-package",
+        "install",
+        "--source",
+        input_str,
+        "--store",
+        store_str,
+        "--id",
+        "fixture",
+        "--version",
+        "2",
+        "--origin",
+        "Local test",
+        "--skill",
+        "review",
+    ]);
+    assert!(updated.status.success());
+    let shown = lyra(&["skill-package", "show", "--store", store_str]);
+    assert!(shown.status.success());
+    let metadata: serde_json::Value = serde_json::from_slice(&shown.stdout).unwrap();
+    assert_eq!(metadata["current"]["version"], "2");
+    assert_eq!(metadata["previous"]["version"], "1");
+    assert!(
+        lyra(&["skill-package", "rollback", "--store", store_str])
+            .status
+            .success()
+    );
+    let selected = lyra(&["skills", "--manifest", store_str, "--id", "review"]);
+    assert!(selected.status.success());
+    assert_eq!(
+        String::from_utf8(selected.stdout).unwrap().trim(),
+        "First version"
+    );
+}
+
+#[test]
 fn help_and_version_do_not_require_a_model_or_api_key() {
     let help = lyra(&["--help"]);
     assert!(help.status.success());

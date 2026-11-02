@@ -15,22 +15,6 @@ pub enum Optimization {
     Balanced,
     Aggressive,
 }
-impl Optimization {
-    pub fn from_slider(value: u32) -> Self {
-        match value {
-            0 => Self::Safe,
-            2 => Self::Aggressive,
-            _ => Self::Balanced,
-        }
-    }
-    pub fn slider(self) -> u32 {
-        match self {
-            Self::Safe => 0,
-            Self::Balanced => 1,
-            Self::Aggressive => 2,
-        }
-    }
-}
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct Preferences {
@@ -45,6 +29,7 @@ pub struct Preferences {
     pub provider_registry: Option<PathBuf>,
     pub skill_manifest: Option<PathBuf>,
     pub active_skill: String,
+    pub active_skills: Vec<String>,
     pub cloud_chat: bool,
     pub cloud_task: bool,
     pub cloud_provider: String,
@@ -76,6 +61,7 @@ impl Default for Preferences {
             provider_registry: None,
             skill_manifest: None,
             active_skill: String::new(),
+            active_skills: Vec::new(),
             cloud_chat: false,
             cloud_task: false,
             cloud_provider: String::new(),
@@ -89,12 +75,26 @@ impl Default for Preferences {
             tokens: 512,
             calls: 12,
             threads: crate::inference::default_threads(),
-            gpu_layers: 0,
+            gpu_layers: if cfg!(feature = "cuda") {
+                crate::resources::GPU_AUTO
+            } else {
+                0
+            },
             timeout: 600,
         }
     }
 }
 impl Preferences {
+    /// Keep old settings compatible; once the catalog is edited the UI clears
+    /// active_skill and stores the explicit ordered selection in active_skills.
+    pub fn selected_skills(&self) -> Vec<String> {
+        if self.active_skills.is_empty() && !self.active_skill.is_empty() {
+            vec![self.active_skill.clone()]
+        } else {
+            self.active_skills.clone()
+        }
+    }
+
     fn valid(&self) -> bool {
         self.schema_version == 1
             && (128..=32768).contains(&self.context)
@@ -105,6 +105,17 @@ impl Preferences {
             && self.gpu_layers <= 1024
             && (1..=3600).contains(&self.timeout)
             && self.active_skill.len() <= 64
+            && self.active_skills.len() <= 32
+            && self
+                .active_skills
+                .iter()
+                .all(|id| !id.is_empty() && id.len() <= 64)
+            && self
+                .active_skills
+                .iter()
+                .collect::<std::collections::HashSet<_>>()
+                .len()
+                == self.active_skills.len()
             && self.cloud_provider.len() <= 128
             && self.cloud_model.len() <= 256
             && self.files.len() <= 32768
@@ -185,6 +196,30 @@ pub fn config_path() -> Option<PathBuf> {
 mod tests {
     use super::*;
     #[test]
+    fn multiple_skills_roundtrip_and_legacy_selection_survives() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("settings.json");
+        let mut prefs = Preferences {
+            active_skills: vec!["rust".into(), "review".into()],
+            ..Preferences::default()
+        };
+        prefs.save(&path).unwrap();
+        assert_eq!(
+            Preferences::load(&path).unwrap().selected_skills(),
+            prefs.active_skills
+        );
+        let mut legacy = serde_json::to_value(&prefs).unwrap();
+        legacy.as_object_mut().unwrap().remove("active_skills");
+        legacy["active_skill"] = "rust".into();
+        std::fs::write(&path, serde_json::to_vec(&legacy).unwrap()).unwrap();
+        assert_eq!(
+            Preferences::load(&path).unwrap().selected_skills(),
+            ["rust"]
+        );
+        prefs.active_skills.push("rust".into());
+        assert!(prefs.save(&path).is_err());
+    }
+    #[test]
     fn provider_registry_path_roundtrip_and_legacy_settings() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("settings.json");
@@ -213,11 +248,17 @@ mod tests {
         let mut legacy = serde_json::to_value(&prefs).unwrap();
         legacy.as_object_mut().unwrap().remove("gpu_layers");
         std::fs::write(&path, serde_json::to_vec(&legacy).unwrap()).unwrap();
+        assert_eq!(
+            Preferences::load(&path).unwrap().gpu_layers,
+            Preferences::default().gpu_layers
+        );
+        prefs.gpu_layers = 0;
+        prefs.save(&path).unwrap();
         assert_eq!(Preferences::load(&path).unwrap().gpu_layers, 0);
         prefs.gpu_layers = 1025;
         assert!(prefs.save(&path).is_err());
         prefs.reset_inference();
-        assert_eq!(prefs.gpu_layers, 0);
+        assert_eq!(prefs.gpu_layers, Preferences::default().gpu_layers);
     }
 
     #[test]
@@ -235,7 +276,6 @@ mod tests {
             };
             prefs.save(&path).unwrap();
             assert_eq!(Preferences::load(&path).unwrap().optimization, mode);
-            assert_eq!(Optimization::from_slider(mode.slider()), mode);
         }
         let mut legacy = serde_json::to_value(Preferences::default()).unwrap();
         legacy.as_object_mut().unwrap().remove("optimization");
@@ -289,8 +329,6 @@ mod tests {
         assert!(Preferences::load(&path).is_err());
         let json = serde_json::to_value(p).unwrap();
         assert_eq!(json["optimization"], "balanced");
-        assert_eq!(Optimization::from_slider(0), Optimization::Safe);
-        assert_eq!(Optimization::from_slider(2), Optimization::Aggressive);
         assert!(json.get("task").is_none());
         assert!(json.get("report").is_none());
         assert!(json.get("api_key").is_none());

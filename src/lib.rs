@@ -12,6 +12,7 @@ pub mod project;
 pub mod provider_http;
 pub mod resources;
 pub mod routing;
+pub mod skill_package;
 pub mod skills;
 pub mod workspace;
 
@@ -89,13 +90,15 @@ pub enum Command {
         #[arg(long)]
         require_tools: bool,
     },
-    /// Просмотреть проверенный набор навыков ECC-совместимого формата JSON
+    /// Просмотреть JSON, SKILL.md или каталог навыков ECC
     Skills {
         #[arg(long)]
         manifest: std::path::PathBuf,
         #[arg(long)]
         id: Option<String>,
     },
+    /// Установить, проверить или откатить локальный снимок навыков
+    SkillPackage(skill_package::PackageArgs),
     /// Показать характеристики компьютера, на котором запущена Lyra
     Doctor {
         /// Вывести JSON (схема v1), пригодный для подбора локальной модели
@@ -117,13 +120,7 @@ pub fn run(cli: Cli, output: &mut impl Write) -> io::Result<()> {
                 let pack = args
                     .skills
                     .as_ref()
-                    .map(|path| {
-                        if path.file_name().is_some_and(|name| name == "SKILL.md") {
-                            skills::SkillPack::load_markdown(path)
-                        } else {
-                            skills::SkillPack::load(path)
-                        }
-                    })
+                    .map(|path| crate::skills::SkillPack::load_source(path))
                     .transpose()?;
                 let request = model_gateway::Request {
                     messages: vec![model_gateway::Message {
@@ -163,13 +160,7 @@ pub fn run(cli: Cli, output: &mut impl Write) -> io::Result<()> {
             let pack = generate
                 .skills
                 .as_ref()
-                .map(|path| {
-                    if path.file_name().is_some_and(|name| name == "SKILL.md") {
-                        skills::SkillPack::load_markdown(path)
-                    } else {
-                        skills::SkillPack::load(path)
-                    }
-                })
+                .map(|path| crate::skills::SkillPack::load_source(path))
                 .transpose()?;
             let response = agent_runtime::complete_gguf_chat(
                 &generate,
@@ -226,13 +217,7 @@ pub fn run(cli: Cli, output: &mut impl Write) -> io::Result<()> {
             };
             let pack = skills
                 .as_ref()
-                .map(|path| {
-                    if path.file_name().is_some_and(|name| name == "SKILL.md") {
-                        skills::SkillPack::load_markdown(path)
-                    } else {
-                        skills::SkillPack::load(path)
-                    }
-                })
+                .map(|path| crate::skills::SkillPack::load_source(path))
                 .transpose()?;
             let request =
                 agent_runtime::prepare_request(&request, pack.as_ref(), &selected_skills)?;
@@ -286,12 +271,9 @@ pub fn run(cli: Cli, output: &mut impl Write) -> io::Result<()> {
                 model_gateway::select_priority(&descriptors, &allowed_providers, &request)?;
             writeln!(output, "{}/{}", selected.provider, selected.model)
         }
+        Command::SkillPackage(args) => skill_package::run(args, output),
         Command::Skills { manifest, id } => {
-            let pack = if manifest.file_name().is_some_and(|name| name == "SKILL.md") {
-                skills::SkillPack::load_markdown(&manifest)?
-            } else {
-                skills::SkillPack::load(&manifest)?
-            };
+            let pack = skills::SkillPack::load_source(&manifest)?;
             if let Some(id) = id {
                 let skill = pack
                     .find(&id)

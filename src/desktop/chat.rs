@@ -513,8 +513,11 @@ impl Desktop {
                         "coder"
                     };
                     ui.label(format!("{}: {agents}", l.text("Агенты")));
-                    if !self.prefs.active_skill.is_empty() {
-                        ui.label(format!("Skill: {}", self.prefs.active_skill));
+                    if !self.prefs.selected_skills().is_empty() {
+                        ui.label(format!(
+                            "Skills: {}",
+                            self.prefs.selected_skills().join(", ")
+                        ));
                     }
                 });
             });
