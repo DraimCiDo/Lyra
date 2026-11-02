@@ -15,8 +15,8 @@ The complete feature inventory/SBOM in P00 remains pending; see
 | --- | --- | --- | --- | --- |
 | ECC | Sequential researcher/coder/reviewer roles and proposal/apply | src/agent.rs | implemented before integration | Existing agent tests; not worktree orchestration |
 | ECC | Worktrees, checkpoints and extended orchestration | Agent Runtime | planned | P07 |
-| ECC | Explicit role contracts, scoped tools, structured recovery feedback | src/agent_runtime.rs / src/agent.rs | implemented; stage-1 verification pending | Recovery/read_only/native fixture tests |
-| ECC | JSON packs, bounded SKILL.md/catalog import, explicit multiple selection | src/skills.rs / src/desktop/skills.rs / src/agent_runtime.rs | implemented; stage-2a verification pending | Catalog/CLI/migration tests; full YAML, versioning and resources pending |
+| ECC | Explicit role contracts, scoped tools, structured recovery feedback | src/agent_runtime.rs / src/agent.rs | verified in stage 1 | Recovery/read_only/native fixture tests; plan 0012 |
+| ECC | JSON packs, bounded SKILL.md/catalog import, explicit multiple selection | src/skills.rs / src/desktop/skills.rs / src/agent_runtime.rs | verified in stage 2a (CPU) | Catalog/CLI/migration tests + native Windows; plan 0015; full YAML, versioning and resources pending |
 | ECC | Selective install of complete upstream packs | Skills Registry | planned | P06 |
 | ECC | Rules, commands, language packs | Rules/Commands | planned | P06/P12 |
 | ECC | Hooks | Event Bus | planned | P08 |
@@ -24,7 +24,7 @@ The complete feature inventory/SBOM in P00 remains pending; see
 | ECC | Session memory and checkpoints | Memory | planned | P09 |
 | ECC | Instincts/continuous learning | Learning | planned | P09 |
 | ECC | Token optimization | Context Optimizer | planned | P04/P05 |
-| OmniRoute | Request-local lossless pooling of repeated tool results | src/context_optimizer.rs | implemented; stage-1 verification pending | Exact round-trip / actual HTTP body comparison |
+| OmniRoute | Request-local lossless pooling of repeated tool results | src/context_optimizer.rs | verified in stage 1 | Exact round-trip / actual HTTP body comparison; plan 0012 |
 | ECC | Security/verification/evals | Security/Verification | planned | P10 |
 | OmniRoute | Provider-neutral DTOs, output budget/capability validation, allowlist | src/model_gateway.rs | implemented | Contract unit tests; complete P01 not claimed |
 | OmniRoute | OpenAI-compatible text HTTP and local GGUF adapters | src/provider_http.rs / src/agent_runtime.rs | implemented | Loopback HTTP tests / CPU GGUF smoke; paid APIs unverified |
@@ -61,8 +61,13 @@ Its portable package also passed a native Windows partial-offload GGUF chat smok
 on a real NVIDIA device. This verifies that specific runtime path, not all GPUs,
 OOM safety across configurations or coding quality. No paid provider was called.
 
-Live coding acceptance remains open: a small CRLF Python fixture did not finish
-the task protocol with either tested real model. One produced a correct proposal
-but repeated it; the other exhausted its steps after rejected exact edits.
-Incomplete reports were refused by apply and no file was changed. See the
-integration-fixes plan for this separate finding; do not mark P07/P10 complete.
+After stage-1 recovery fixes, the small CRLF Python fixture completed with both
+7B and 9B, followed by separate apply and unittest exit 0. See
+[stage 1](../plans/0012-ecc-omniroute-stage-1.md) for scope and native evidence.
+This narrow fixture does not establish general coding quality or complete P07/P10.
+
+PR #3 was merged on 2026-11-01. Its final code head 688f3aa passed
+[Windows/Linux checks](https://github.com/DraimCiDo/Lyra/actions/runs/41347699325)
+and [CUDA compilation](https://github.com/DraimCiDo/Lyra/actions/runs/41347699259).
+The subsequent catalog increment is tracked separately in
+[stage 2a](../plans/0015-ecc-skill-catalog.md); these earlier checks do not verify it.
