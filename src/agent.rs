@@ -692,13 +692,7 @@ pub fn task(args: TaskArgs, output: &mut impl Write) -> io::Result<()> {
     let skill_pack = args
         .skills
         .as_ref()
-        .map(|path| {
-            if path.file_name().is_some_and(|name| name == "SKILL.md") {
-                crate::skills::SkillPack::load_markdown(path)
-            } else {
-                crate::skills::SkillPack::load(path)
-            }
-        })
+        .map(|path| crate::skills::SkillPack::load_source(path))
         .transpose()?;
     let skill_guidance =
         crate::agent_runtime::skill_instructions(skill_pack.as_ref(), &args.selected_skills)?;

@@ -4,9 +4,16 @@ Lyra supports importing an individual declarative `SKILL.md` file from
 [Everything Claude Code](https://github.com/affaan-m/ECC) or other Agent Skills
 packs, alongside Lyra's JSON skill manifests.
 
+An explicitly selected directory is also accepted: `SKILL.md` in its root and
+in immediate child directories forms one catalog, sorted by skill id.
+Duplicate ids or any invalid member reject the entire catalog. Directory
+symlinks are not discovery roots; canonical paths outside the catalog are
+rejected. This is bounded path validation, not a filesystem sandbox.
+
 ```bash
 cargo run -- skills --manifest path/to/SKILL.md
 cargo run -- skills --manifest path/to/SKILL.md --id rust-review
+cargo run -- skills --manifest path/to/selected-skills
 ```
 
 The importer reads the `name` and `description` frontmatter fields and
@@ -48,11 +55,15 @@ automatically switch to cloud providers.
 
 ### Desktop integration
 
-When built with `desktop,gateway-http`, Desktop HTTP provider settings also
-accept a skill manifest path (`skills.json` or `SKILL.md`). Select a skill
-from the validated manifest or choose **Без навыка**. The selected skill is
-injected into HTTP chat requests by the shared runtime; it is never executed
-as a script. The local project task workflow now consumes the same Desktop skill selection.
+In **Помощники**, provide a directory, `skills.json`, or `SKILL.md`, then click
+**Загрузить каталог навыков**. Descriptions and instruction previews are available;
+select multiple skills or clear the selection. HTTP support is not required.
+The catalog is read on explicit reload and validated again at worker startup.
+Selections persist in order of selection, which is also the guidance order.
+Missing skills and context-budget overflow fail before the model request.
+Legacy single-skill settings remain readable. Selected guidance is injected into
+local/HTTP chat and project tasks by the shared runtime; project planning does
+not consume it yet. No scripts are executed.
 The skill guidance is injected into each local agent role's task envelope
 (researcher, coder, reviewer) without granting new file or shell permissions.
 
@@ -65,3 +76,16 @@ lyra task --repo ./project --model ./model.gguf --task-file task.txt --skills sk
 The task pipeline retains its existing constrained JSON tool grammar and
 proposal-only editing. Skill guidance does not override read-only agent roles
 or permit unapproved writes.
+
+Repeat `--skill` to select several skills from a catalog or JSON pack:
+
+```sh
+lyra task --repo ./project --model ./model.gguf --task-file task.txt --skills ./selected-skills --skill rust-patterns --skill review
+```
+
+Catalog limits: 512 root entries, 256 skills, 4 MiB aggregate content; each file
+is bounded to 64 KiB and each instruction body to 16 KiB. The existing selected
+guidance budget still applies. Resources and nested directories are not read.
+A complete upstream checkout can exceed these bounds; use a curated local
+directory. Package versioning/rollback, rules, role scopes and command palettes
+remain separate work; see [stage 2a](../plans/0015-ecc-skill-catalog.md).

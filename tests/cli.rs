@@ -11,6 +11,44 @@ fn lyra(args: &[&str]) -> Output {
 }
 
 #[test]
+fn skill_catalog_lists_and_selects_without_model_or_network() {
+    let dir = tempfile::tempdir().unwrap();
+    for (folder, id) in [("z", "rust"), ("a", "review")] {
+        let child = dir.path().join(folder);
+        std::fs::create_dir(&child).unwrap();
+        std::fs::write(
+            child.join("SKILL.md"),
+            format!("---\nname: {id}\ndescription: Review code\n---\nGuidance for {id}"),
+        )
+        .unwrap();
+    }
+    let path = dir.path().to_str().unwrap();
+    let listed = lyra(&["skills", "--manifest", path]);
+    assert!(
+        listed.status.success(),
+        "{}",
+        String::from_utf8_lossy(&listed.stderr)
+    );
+    assert_eq!(
+        String::from_utf8(listed.stdout)
+            .unwrap()
+            .replace("\r\n", "\n"),
+        "review: Review code\nrust: Review code\n"
+    );
+    let selected = lyra(&["skills", "--manifest", path, "--id", "rust"]);
+    assert!(selected.status.success());
+    assert_eq!(
+        String::from_utf8(selected.stdout).unwrap().trim(),
+        "Guidance for rust"
+    );
+    assert!(
+        !lyra(&["skills", "--manifest", path, "--id", "missing"])
+            .status
+            .success()
+    );
+}
+
+#[test]
 fn help_and_version_do_not_require_a_model_or_api_key() {
     let help = lyra(&["--help"]);
     assert!(help.status.success());

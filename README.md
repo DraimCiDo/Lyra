@@ -79,6 +79,9 @@ Safe/Balanced/Aggressive выбирают всю историю / последн
 [HTTP gateway](docs/integrations/HTTP_GATEWAY.md),
 [навыки](docs/integrations/ECC_SKILLS.md),
 [фактический статус интеграции](docs/integrations/PARITY.md).
+В «Помощники» можно явно загрузить локальный каталог SKILL.md, просмотреть
+инструкции и выбрать несколько навыков. Они используются локальным и HTTP
+runtime; scripts/hooks не исполняются. Версии пакетов, rules и команды ещё в работе.
 Следующий рабочий инкремент PR #3 добавляет явные контракты ролей и recovery
 инструментов, opt-in дедупликацию повторных tool results и измерение байтов.
 [Как включить и что сохраняется дословно](docs/integrations/TOOL_CONTEXT.md).

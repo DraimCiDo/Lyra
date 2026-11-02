@@ -29,6 +29,10 @@ alpha добавляет task/предложения/apply и ограничен
 [lossless optimizer](../src/context_optimizer.rs).
 Это план, а не доказательство наличия подсистем.
 
+Каталог ECC: [общий загрузчик](../src/skills.rs),
+[Desktop](../src/desktop/skills.rs), [этап 2a](plans/0015-ecc-skill-catalog.md).
+Явно выбранные локальные навыки, без исполнения scripts/hooks и автоустановки.
+
 ## Следующий этап
 
 Текущее состояние M1 — в [плане](plans/0002-local-cli.md).

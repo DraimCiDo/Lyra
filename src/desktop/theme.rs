@@ -175,6 +175,17 @@ impl Language {
             return ru;
         }
         match ru {
+            "ECC Skills · файл или каталог" => "ECC Skills · file or directory",
+            "Загрузить каталог навыков" => "Load skill catalog",
+            "Навыки — инструкции для модели. Скрипты и hooks не исполняются. Выбранные навыки применяются в порядке выбора." => {
+                "Skills guide the model. Scripts and hooks are not executed. Selected skills are applied in selection order."
+            }
+            "Выбрано" => "Selected",
+            "Снять выбор навыков" => "Clear skill selection",
+            "Инструкции" => "Instructions",
+            "Выбранный навык отсутствует в каталоге. Снимите выбор или верните источник." => {
+                "A selected skill is missing from this catalog. Clear the selection or restore its source."
+            }
             "Сокращено контекста:" => "Context saved:",
             "байт" => "bytes",
             "Дедупликация результатов инструментов (задачи)" => {

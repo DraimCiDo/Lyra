@@ -16,7 +16,7 @@ The complete feature inventory/SBOM in P00 remains pending; see
 | ECC | Sequential researcher/coder/reviewer roles and proposal/apply | src/agent.rs | implemented before integration | Existing agent tests; not worktree orchestration |
 | ECC | Worktrees, checkpoints and extended orchestration | Agent Runtime | planned | P07 |
 | ECC | Explicit role contracts, scoped tools, structured recovery feedback | src/agent_runtime.rs / src/agent.rs | implemented; stage-1 verification pending | Recovery/read_only/native fixture tests |
-| ECC | JSON packs, bounded SKILL.md import, explicit selection | src/skills.rs / src/agent_runtime.rs | implemented | Unit tests / gateway tests; full YAML and resources pending |
+| ECC | JSON packs, bounded SKILL.md/catalog import, explicit multiple selection | src/skills.rs / src/desktop/skills.rs / src/agent_runtime.rs | implemented; stage-2a verification pending | Catalog/CLI/migration tests; full YAML, versioning and resources pending |
 | ECC | Selective install of complete upstream packs | Skills Registry | planned | P06 |
 | ECC | Rules, commands, language packs | Rules/Commands | planned | P06/P12 |
 | ECC | Hooks | Event Bus | planned | P08 |
