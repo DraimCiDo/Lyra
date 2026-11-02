@@ -175,6 +175,9 @@ impl Language {
             return ru;
         }
         match ru {
+            "Настройки и история чатов хранятся локально. Отчёты предложений и технический журнал автоматически не сохраняются." => {
+                "Settings and chat history are stored locally. Proposal reports and technical logs are not saved automatically."
+            }
             "Навыки ECC" => "ECC skills",
             "Выберите GGUF и устройство для локальной модели. Для HTTP-моделей используйте раздел провайдеров." => {
                 "Choose a GGUF and device for local inference. HTTP models are configured under providers."

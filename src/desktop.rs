@@ -961,7 +961,7 @@ impl Desktop {
                         icons::toggle(ui,&mut self.prefs.animations,l.text("Мягкие анимации"),animate,c.accent,c.on_accent);
                         ui.label(RichText::new(l.text("Короткие переходы и отклик переключателей. В покое нет постоянных анимаций.")).small().weak());
                         ui.separator();
-                        ui.label(RichText::new(l.text("Параметры и выбранные пути сохраняются локально. Задания, код и журнал не сохраняются автоматически.")).small().weak());
+                        ui.label(RichText::new(l.text("Настройки и история чатов хранятся локально. Отчёты предложений и технический журнал автоматически не сохраняются.")).small().weak());
                         if let Some(path)=&self.storage{ui.add(egui::Label::new(RichText::new(path.display().to_string()).small().weak()).truncate()).on_hover_text(path.display().to_string());}
                     }).response,
                     SettingsPage::Hardware=>ui.vertical(|ui|{
@@ -978,8 +978,9 @@ impl Desktop {
         let c = self.prefs.palette.colors();
         let l = self.prefs.language;
         ui.label(format!(
-            "Lyra {} · Windows x64 {}",
+            "Lyra {} · {} · {}",
             env!("CARGO_PKG_VERSION"),
+            std::env::consts::OS,
             if cfg!(feature = "cuda") {
                 "CUDA"
             } else {
