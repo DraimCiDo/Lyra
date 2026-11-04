@@ -229,6 +229,7 @@ fn cloud_task_timeout_covers_multiple_calls_and_response_body() {
     );
     let report: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
     assert_eq!(report["status"], "timeout");
+    assert_eq!(output.status.code(), Some(124));
     assert!(report["calls"].as_u64().unwrap() <= 2);
 }
 

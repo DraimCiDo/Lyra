@@ -792,3 +792,30 @@ fn search_and_list_see_the_same_pending_files_as_read_and_edit() {
     );
     assert!(!repo.0.join("src/new.rs").exists());
 }
+
+#[test]
+fn cancellation_during_a_model_call_cannot_turn_into_successful_finish() {
+    struct Cancelling(std::sync::atomic::AtomicBool);
+    impl Model for Cancelling {
+        fn cancellation(&self) -> &std::sync::atomic::AtomicBool {
+            &self.0
+        }
+        fn respond(&mut self, _: &str) -> io::Result<String> {
+            self.0.store(true, std::sync::atomic::Ordering::Relaxed);
+            Ok(done("Completed despite cancellation").to_string())
+        }
+    }
+    let repo = Repo::new();
+    let mut workspace = Workspace::open(&repo.0, &[]).unwrap();
+    let report = agent::execute(
+        &mut Cancelling(std::sync::atomic::AtomicBool::new(false)),
+        &mut workspace,
+        "Inspect",
+        false,
+        2,
+    );
+    assert_eq!(report.status, "cancelled");
+    assert_eq!(report.outcome, agent::TaskOutcome::Incomplete);
+    assert!(report.summaries.is_empty());
+    assert_eq!(report.calls, 1);
+}

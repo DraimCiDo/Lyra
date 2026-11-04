@@ -440,15 +440,8 @@ pub fn execute_workflow(
             if report.calls >= max_calls {
                 break;
             }
-            if model
-                .cancellation()
-                .load(std::sync::atomic::Ordering::Relaxed)
-            {
-                report.status = "cancelled".into();
-                return report;
-            }
-            if deadline.is_some_and(|deadline| std::time::Instant::now() >= deadline) {
-                report.status = "timeout".into();
+            if let Some(reason) = stop_reason(model, deadline) {
+                report.status = reason.into();
                 return report;
             }
             let example_path = workspace
@@ -544,6 +537,10 @@ pub fn execute_workflow(
                     return report;
                 }
             };
+            if let Some(reason) = stop_reason(model, deadline) {
+                report.status = reason.into();
+                return report;
+            }
             if response.len() > 65536 {
                 report.status = "response_limit".into();
                 return report;
@@ -796,6 +793,10 @@ pub fn execute_workflow(
                 report.status = format!("checkpoint_error: {error}");
                 return report;
             }
+            if let Some(reason) = stop_reason(model, deadline) {
+                report.status = reason.into();
+                return report;
+            }
             if executor_unavailable {
                 report.status = "executor_unavailable".into();
                 return report;
@@ -840,6 +841,19 @@ pub fn execute_workflow(
         TaskOutcome::ChangesProposed
     };
     report
+}
+
+fn stop_reason(model: &impl Model, deadline: Option<std::time::Instant>) -> Option<&'static str> {
+    if model
+        .cancellation()
+        .load(std::sync::atomic::Ordering::Relaxed)
+    {
+        Some("cancelled")
+    } else if deadline.is_some_and(|deadline| std::time::Instant::now() >= deadline) {
+        Some("timeout")
+    } else {
+        None
+    }
 }
 
 fn verification_matches(
@@ -1121,7 +1135,12 @@ pub fn task(args: TaskArgs, output: &mut impl Write) -> io::Result<()> {
         writeln!(output)?;
         output.flush()?;
         if report.status != "completed" {
-            return Err(io::Error::other(report.status));
+            let kind = match report.status.as_str() {
+                "cancelled" => io::ErrorKind::Interrupted,
+                "timeout" => io::ErrorKind::TimedOut,
+                _ => io::ErrorKind::Other,
+            };
+            return Err(io::Error::new(kind, report.status));
         }
         return Ok(());
     }

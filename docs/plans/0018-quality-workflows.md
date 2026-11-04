@@ -39,6 +39,8 @@ Java/Kotlin/Minecraft, DayZ. Проверки SDK/игры не заменяют
 
 - Mutable pending edits и единый read/search/list overlay, discard, два bounded reviewer repair
   rounds, syntax recovery, no-progress с учетом изменения содержимого.
+- Отмена/deadline повторно проверяются после model/tool вызова: поздний finish
+  не завершает отмененную задачу; HTTP CLI использует коды 130/124.
 - Отчет v4 с outcome; legacy v1–v3 apply; успешный настроенный verify связан
   SHA256 с предложениями и конфигурацией. Изменение кода/проверки инвалидирует proof.
 - Явные CLI `verify` / `task --check-config`; Docker без сети и host execution,
@@ -62,7 +64,7 @@ Rust установлен в профиль пользователя без из
 для bindgen доступны через GCC include; системные пакеты не менялись.
 
 Выполнены fmt, Clippy all-targets с desktop,gateway-http и `-D warnings`,
-полная матрица tests с этими features: 160 passed, 0 failed, 7 ignored.
+полная матрица tests с этими features: 161 passed, 0 failed, 7 ignored.
 Из ignored отдельно выполнены 2 real CPU inference tests и 1 Docker preflight
 regression; остальные не объявляются пройденными. Добавлены отдельные проверки
 CLI → loopback HTTP → checkpoint → restart/resume → export, CRLF/Unicode,
@@ -94,7 +96,7 @@ sandbox-прогон требует CI/daemon с enforced cgroups, bypass не �
 Windows default Clippy/tests прошли; HTTP Clippy обнаружил large_enum_variant
 из-за Windows layout TaskArgs (408 bytes). Task-вариант CLI перенесен в Box,
 без изменения аргументов или отключения lint. После исправления локальные
-Clippy и 160 tests снова прошли. Native CI исправленного head требуется отдельно;
+Clippy и 161 tests снова прошли. Native CI исправленного head требуется отдельно;
 предыдущая CUDA compilation не означает GPU runtime acceptance.
 
 ## Открытые шаги и передача состояния
