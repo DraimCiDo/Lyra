@@ -256,3 +256,10 @@ actual doctor hardware fingerprint, строгий resume с сохранени�
 опциональное раздельное измерение RAM/VRAM процесса, отсутствующие данные null.
 Три целевые модели на RTX 4060 еще не оценены. Проверка 36/120 доверенных вариантов
 не считается model coding success. Не запускаем model output на host.
+
+Первый corpus CI на a606eb5: Java и Web прошли; Rust выявил exec-ошибку 126.
+Диагностика доверенной копией /bin/true в Docker tmpfs подтвердила noexec.
+Указан exec только для ограниченного контейнерного /tmp, чтобы запускать
+скомпилированные native checks; host execution не добавлен. Corpus validator
+теперь сохраняет stdout/stderr failed checks вместо одной внешней ошибки CLI.
+Результат повторного CI фиксируется в PR после проверки.

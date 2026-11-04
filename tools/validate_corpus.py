@@ -78,7 +78,9 @@ def validate(case, root, binary, mode):
                 valid = (body.get("cleanup_confirmed") is True and not body.get("timed_out") and
                          not body.get("cancelled") and actual == (0 if kind == "reference" else case.get("baseline_exit_code", 1)))
             outcomes.append({"variant": kind, "reverted_file": name, "passed": valid,
-                             "observed_exit_code": actual, "diagnostic": run["diagnostic"] if not valid else ""})
+                             "observed_exit_code": actual, "diagnostic": run["diagnostic"] if not valid else "",
+                             "check_stdout": (run.get("body") or {}).get("stdout", "") if not valid else "",
+                             "check_stderr": (run.get("body") or {}).get("stderr", "") if not valid else ""})
     return {"id": case["id"], "profile": case["profile"], "acceptance_level": case.get("acceptance_level", "unit"),
             "passed": all(run["passed"] for run in outcomes), "variants": outcomes,
             "note": "Fixture validation only; no model or external SDK acceptance"}

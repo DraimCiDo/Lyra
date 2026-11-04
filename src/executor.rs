@@ -112,7 +112,9 @@ impl ExecutionRequest {
             &format!("{}m", self.memory_mib),
             "--user=1000:1000",
             "--workdir=/source",
-            "--tmpfs=/tmp:rw,nosuid,nodev,size=512m,mode=1777",
+            // Native check binaries must run inside the bounded container tmpfs.
+            // Docker otherwise defaults this mount to noexec.
+            "--tmpfs=/tmp:rw,exec,nosuid,nodev,size=512m,mode=1777",
             "--mount",
             &format!("type=bind,src={path},dst=/source,readonly"),
             "--env=HOME=/tmp",
@@ -588,6 +590,7 @@ mod tests {
             "--pull=never",
             "--log-driver=none",
             "--security-opt=no-new-privileges",
+            "--tmpfs=/tmp:rw,exec,nosuid,nodev,size=512m,mode=1777",
         ] {
             assert!(args.iter().any(|arg| arg == required));
         }
