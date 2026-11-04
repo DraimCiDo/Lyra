@@ -35,6 +35,9 @@ pub struct Preferences {
     pub cloud_provider: String,
     pub cloud_model: String,
     pub documentation: Option<PathBuf>,
+    pub check_config: Option<PathBuf>,
+    pub save_task_sessions: bool,
+    pub task_session_db: Option<PathBuf>,
     pub files: String,
     pub subagents: bool,
     pub optimization: Optimization,
@@ -67,20 +70,23 @@ impl Default for Preferences {
             cloud_provider: String::new(),
             cloud_model: String::new(),
             documentation: None,
+            check_config: None,
+            save_task_sessions: false,
+            task_session_db: None,
             files: String::new(),
             subagents: false,
             optimization: Optimization::Balanced,
             dedup_tool_context: false,
-            context: 4096,
-            tokens: 512,
-            calls: 12,
+            context: 8192,
+            tokens: 2048,
+            calls: 48,
             threads: crate::inference::default_threads(),
             gpu_layers: if cfg!(feature = "cuda") {
                 crate::resources::GPU_AUTO
             } else {
                 0
             },
-            timeout: 600,
+            timeout: 1800,
         }
     }
 }
@@ -99,7 +105,7 @@ impl Preferences {
         self.schema_version == 1
             && (128..=32768).contains(&self.context)
             && (1..=8192).contains(&self.tokens)
-            && (1..=24).contains(&self.calls)
+            && (1..=256).contains(&self.calls)
             && (!self.subagents || self.calls >= 3)
             && (1..=256).contains(&self.threads)
             && self.gpu_layers <= 1024
@@ -126,6 +132,8 @@ impl Preferences {
                 &self.documentation,
                 &self.provider_registry,
                 &self.skill_manifest,
+                &self.check_config,
+                &self.task_session_db,
             ]
             .into_iter()
             .all(|p| p.as_ref().is_none_or(|p| p.as_os_str().len() <= 4096))

@@ -396,7 +396,7 @@ fn symlinks_cannot_escape_the_workspace() {
 #[test]
 fn oversized_and_binary_files_fail_closed() {
     let repo = Repo::new();
-    repo.write("src/large.rs", &"x".repeat(65537));
+    repo.write("src/large.rs", &"x".repeat(lyra::workspace::FILE_LIMIT + 1));
     repo.write("src/binary.rs", "a\0b");
     let mut workspace = Workspace::open(&repo.0, &[]).unwrap();
     assert!(workspace.read("src/large.rs").is_err());
@@ -831,5 +831,151 @@ fn cancellation_during_a_model_call_cannot_turn_into_successful_finish() {
         assert_eq!(report.outcome, agent::TaskOutcome::Incomplete);
         assert!(report.summaries.is_empty());
         assert_eq!(report.calls, 1);
+    }
+}
+
+#[test]
+fn agent_discovers_and_edits_a_file_outside_the_initial_prompt_subset() {
+    struct Discover(usize);
+    impl Model for Discover {
+        fn respond(&mut self, prompt: &str) -> io::Result<String> {
+            let value: serde_json::Value = serde_json::from_str(prompt).unwrap();
+            let action = match self.0 {
+                0 => {
+                    assert!(
+                        !value["files"]
+                            .as_array()
+                            .unwrap()
+                            .iter()
+                            .any(|p| p == "zz_target.rs")
+                    );
+                    serde_json::json!({"tool":"list_files","prefix":"zz_","offset":0})
+                }
+                1 => {
+                    assert!(
+                        value["files"]
+                            .as_array()
+                            .unwrap()
+                            .iter()
+                            .any(|p| p == "zz_target.rs")
+                    );
+                    serde_json::json!({"tool":"read_range","path":"zz_target.rs","start_line":1,"count":10})
+                }
+                2 => {
+                    assert_eq!(
+                        value["history"][1]["result"]["data"]["content"],
+                        "fn target() { old(); }\r\n"
+                    );
+                    serde_json::json!({"tool":"propose_edit","path":"zz_target.rs","old":"old()","new":"fixed()"})
+                }
+                _ => done("prepared"),
+            };
+            self.0 += 1;
+            Ok(action.to_string())
+        }
+    }
+    let repo = Repo::new();
+    for i in 0..400 {
+        repo.write(&format!("file{i:03}.rs"), "filler\n");
+    }
+    repo.write("zz_target.rs", "fn target() { old(); }\r\n");
+    let mut workspace = Workspace::open(&repo.0, &[]).unwrap();
+    let report = agent::execute(
+        &mut Discover(0),
+        &mut workspace,
+        "Fix the discovered implementation",
+        false,
+        8,
+    );
+    assert_eq!(report.status, "completed");
+    assert_eq!(report.proposals[0].path, "zz_target.rs");
+    assert_eq!(
+        std::fs::read_to_string(repo.0.join("zz_target.rs")).unwrap(),
+        report.proposals[0].original
+    );
+}
+
+#[test]
+fn oversized_tool_observations_are_budgeted_before_the_next_model_call() {
+    struct Budgeted(usize);
+    impl Model for Budgeted {
+        fn input_limit(&self) -> usize {
+            8000
+        }
+        fn respond(&mut self, prompt: &str) -> io::Result<String> {
+            assert!(prompt.len() <= 8000);
+            let value: serde_json::Value = serde_json::from_str(prompt).unwrap();
+            assert_eq!(value["task"], "Keep this exact task\r\n");
+            let result = if self.0 == 0 {
+                serde_json::json!({"tool":"read_file","path":"source.rs"})
+            } else {
+                assert_eq!(value["context_selection"]["lossy"], true);
+                assert!(value["history"][0]["result"]["data"]["context_provenance"].is_object());
+                done("inspected partial source")
+            };
+            self.0 += 1;
+            Ok(result.to_string())
+        }
+    }
+    let repo = Repo::new();
+    repo.write("source.rs", &"source data\r\n".repeat(3000));
+    let mut workspace = Workspace::open(&repo.0, &[]).unwrap();
+    let report = agent::execute(
+        &mut Budgeted(0),
+        &mut workspace,
+        "Keep this exact task\r\n",
+        false,
+        4,
+    );
+    assert_eq!(report.status, "completed");
+    assert_eq!(report.prompt_budgets.len(), 2);
+    assert!(
+        report.prompt_budgets[1].units_before > 8000
+            && report.prompt_budgets[1].units_after <= 8000
+    );
+}
+
+#[test]
+fn large_module_is_edited_from_a_small_range_without_returning_its_full_text_to_the_model() {
+    let repo = Repo::new();
+    let original = format!("// {}\r\nfn target() {{ old(); }}\r\n", "x".repeat(100_000));
+    repo.write("src/large.rs", &original);
+    let mut model = Script::new(vec![
+        serde_json::json!({"tool":"read_range","path":"src/large.rs","start_line":2,"count":1}),
+        serde_json::json!({"tool":"propose_edit","path":"src/large.rs","old":"old()","new":"fixed()"}),
+        done("fixed pending module"),
+    ]);
+    let mut workspace = Workspace::open(&repo.0, &[]).unwrap();
+    let report = agent::execute(&mut model, &mut workspace, "Fix target()", false, 8);
+    assert_eq!(report.status, "completed");
+    assert_eq!(report.proposals[0].original, original);
+    assert!(
+        report.proposals[0]
+            .replacement
+            .ends_with("fn target() { fixed(); }\r\n")
+    );
+    lyra::publication::apply(&repo.0, &report.proposals).unwrap();
+    assert_eq!(
+        std::fs::read_to_string(repo.0.join("src/large.rs")).unwrap(),
+        report.proposals[0].replacement
+    );
+}
+
+#[test]
+fn a_task_can_prepare_and_publish_more_than_eight_modules_as_one_set() {
+    let repo = Repo::new();
+    let mut actions:Vec<_>=(0..12).map(|i|serde_json::json!({"tool":"propose_file","path":format!("src/module{i}.rs"),"content":format!("// module {i}\n")})).collect();
+    actions.push(done("prepared modules"));
+    let mut model = Script::new(actions);
+    let mut workspace = Workspace::open(&repo.0, &[]).unwrap();
+    let report = agent::execute(&mut model, &mut workspace, "Prepare modules", false, 20);
+    assert_eq!(report.status, "completed");
+    assert_eq!(report.proposals.len(), 12);
+    lyra::publication::apply(&repo.0, &report.proposals).unwrap();
+    for i in 0..12 {
+        assert_eq!(
+            std::fs::read_to_string(repo.0.join(format!("src/module{i}.rs"))).unwrap(),
+            format!("// module {i}\n")
+        );
     }
 }

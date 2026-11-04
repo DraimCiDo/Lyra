@@ -1,0 +1,10 @@
+{
+  "image": "eclipse-temurin@sha256:d378c0bb8ab3f2a09ce0a22a3876e7c64ef4fcfcefbd9b6d60638f5858ae8985",
+  "program": "sh",
+  "args": [
+    "-c",
+    "cat > /tmp/CaseTest.java <<'LYRA_TRUSTED_CHECK'\nimport java.util.*;\npublic class CaseTest { static void check(boolean value){if(!value)throw new AssertionError();} public static void main(String[] args) throws Exception {\ncheck(Policy.remaining(12,10,5)==3);check(Policy.remaining(15,10,5)==0);check(Policy.remaining(9,10,5)==5);check(Policy.remaining(Long.MAX_VALUE,Long.MAX_VALUE-2,5)==3);try{Policy.remaining(-1,0,2);throw new AssertionError();}catch(IllegalArgumentException expected){}\n}}\nLYRA_TRUSTED_CHECK\nmkdir -p /tmp/classes && { javac -encoding UTF-8 -d /tmp/classes /source/*.java /tmp/CaseTest.java || exit 86; } && java -cp /tmp/classes CaseTest"
+  ],
+  "timeout_secs": 60,
+  "memory_mib": 512
+}

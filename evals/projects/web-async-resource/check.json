@@ -1,0 +1,11 @@
+{
+  "image": "node@sha256:a43f7fc3e52e87d12a905f46eea0275def84ca8f2981a5b53fed44d7fb398ee0",
+  "program": "node",
+  "args": [
+    "--input-type=module",
+    "-e",
+    "import assert from 'node:assert/strict';\nimport * as sut from '/source/main.mjs';\nlet firstResolve,secondResolve;const r=new sut.Resource();const a=r.load(()=>new Promise(resolve=>firstResolve=resolve));const b=r.load(()=>new Promise(resolve=>secondResolve=resolve));firstResolve('old');await a;assert.equal(r.loading,true);assert.equal(r.data,null);secondResolve('new');await b;assert.equal(r.data,'new');assert.equal(r.loading,false);const err=Error('failed');await r.load(()=>Promise.reject(err));assert.equal(r.error,err);assert.equal(r.loading,false);\n"
+  ],
+  "timeout_secs": 60,
+  "memory_mib": 512
+}

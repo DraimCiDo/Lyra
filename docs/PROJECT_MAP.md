@@ -108,3 +108,11 @@ Chat reliability/activity: [план](plans/0014-chat-reliability-activity.md), 
 Проверяемые workflow: [программа](plans/0018-quality-workflows.md),
 [CLI-контракты/ограничения](WORKFLOWS.md), [публикация/recovery](../src/publication.rs), [executor](../src/executor.rs),
 [SQLite snapshots](../src/session.rs), [eval harness](../tools/evaluate.py).
+
+Большие задачи: [retrieval](../src/retrieval.rs), [token budget/provenance](../src/task_context.rs),
+[Desktop workflows](../src/desktop/workflows.rs), [корпус и метрики](EVALUATION.md),
+[validator](../tools/validate_corpus.py), [изолированный corpus CI](../.github/workflows/corpus.yml).
+
+Ограничения durable report: [task_report](../src/task_report.rs).
+Сравнение локальных моделей: [matrix runner](../tools/evaluate_models.py),
+[измерение ресурсов](../tools/eval_resources.py).

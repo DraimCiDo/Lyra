@@ -13,10 +13,13 @@ pub mod project;
 pub mod provider_http;
 pub mod publication;
 pub mod resources;
+pub mod retrieval;
 pub mod routing;
 pub mod session;
 pub mod skill_package;
 pub mod skills;
+pub mod task_context;
+pub mod task_report;
 pub mod workspace;
 
 use clap::{Parser, Subcommand};

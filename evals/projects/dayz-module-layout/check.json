@@ -1,0 +1,10 @@
+{
+  "image": "python@sha256:ae14d4ce8771606477a81446e7ef429edd6762305fc50c84507c1041fa8285d1",
+  "program": "python",
+  "args": [
+    "-c",
+    "from pathlib import Path\nimport re\nroot=Path('/source')\ntext=(root/'config.cpp').read_text()\nfor module,folder in [('gameScriptModule','3_Game'),('worldScriptModule','4_World'),('missionScriptModule','5_Mission')]:\n    assert re.search(r'class\\s+'+module+r'\\s*\\{[^}]*\"LyraFixture/scripts/'+folder+r'\"',text)\n"
+  ],
+  "timeout_secs": 60,
+  "memory_mib": 512
+}

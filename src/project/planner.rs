@@ -309,7 +309,7 @@ pub fn run(args: PlanArgs, out: &mut impl Write) -> io::Result<()> {
         raw: args.raw,
     };
     inference::with_session(&config, |session| {
-        let mut session = *session;
+        let mut session = session.clone();
         let plan = plan_with_constraints(
             &mut session,
             &PlanRequest {

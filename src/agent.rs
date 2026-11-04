@@ -10,7 +10,7 @@ use std::{
 };
 
 pub const ACTION_GRAMMAR: &str = r#"
-root ::= (list | read | search | docs | edit | create | discard | review | verify | finish) ws
+root ::= (list | page | range | scan | read | search | docs | edit | create | discard | review | verify | finish) ws
 list ::= "{" ws "\"tool\"" ws ":" ws "\"list\"" ws "}"
 read ::= "{" ws "\"tool\"" ws ":" ws "\"read_file\"" ws "," ws "\"path\"" ws ":" ws path ws "}"
 search ::= "{" ws "\"tool\"" ws ":" ws "\"search\"" ws "," ws "\"query\"" ws ":" ws string ws "}"
@@ -21,13 +21,17 @@ create ::= "{" ws "\"tool\"" ws ":" ws "\"propose_file\"" ws "," ws "\"path\"" w
 verify ::= "{" ws "\"tool\"" ws ":" ws "\"verify\"" ws "}"
 review ::= "{" ws "\"tool\"" ws ":" ws "\"request_changes\"" ws "," ws "\"summary\"" ws ":" ws string ws "}"
 discard ::= "{" ws "\"tool\"" ws ":" ws "\"discard_proposal\"" ws "," ws "\"path\"" ws ":" ws string ws "}"
+page ::= "{" ws "\"tool\"" ws ":" ws "\"list_files\"" ws "," ws "\"prefix\"" ws ":" ws string ws "," ws "\"offset\"" ws ":" ws number ws "}"
+range ::= "{" ws "\"tool\"" ws ":" ws "\"read_range\"" ws "," ws "\"path\"" ws ":" ws path ws "," ws "\"start_line\"" ws ":" ws number ws "," ws "\"count\"" ws ":" ws number ws "}"
+scan ::= "{" ws "\"tool\"" ws ":" ws "\"search_page\"" ws "," ws "\"query\"" ws ":" ws string ws "," ws "\"offset\"" ws ":" ws number ws "}"
+number ::= "0" | [1-9] [0-9]{0,6}
 string ::= "\"" ([^"\\\x00-\x1F] | "\\" (["\\/bfnrt] | "u" [0-9a-fA-F]{4}))* "\""
 ws ::= [ \t\n\r]*
 path ::= string
 "#;
 
 pub fn action_grammar(files: &[String], read_only: bool) -> io::Result<String> {
-    if files.len() > 137 || files.iter().any(|p| p.len() > 1024) {
+    if files.len() > 1024 || files.iter().any(|p| p.len() > 1024) {
         return Err(io::Error::other("Индекс превышает лимит схемы."));
     }
     let mut grammar = ACTION_GRAMMAR.to_owned();
@@ -38,7 +42,10 @@ pub fn action_grammar(files: &[String], read_only: bool) -> io::Result<String> {
             .replace(" | discard", "");
     }
     if files.is_empty() {
-        grammar = grammar.replace(" | read", "").replace(" | edit", "");
+        grammar = grammar
+            .replace(" | read", "")
+            .replace(" | range", "")
+            .replace(" | edit", "");
     } else {
         let literals = files
             .iter()
@@ -104,17 +111,17 @@ pub struct TaskArgs {
     /// Два read-only подагента: исследователь до кодера, ревьюер после
     #[arg(long)]
     pub subagents: bool,
-    #[arg(long,default_value_t=12,value_parser=clap::value_parser!(u32).range(1..=256))]
+    #[arg(long,default_value_t=48,value_parser=clap::value_parser!(u32).range(1..=256))]
     pub max_calls: u32,
-    #[arg(long,default_value_t=4096,value_parser=clap::value_parser!(u32).range(128..=32768))]
+    #[arg(long,default_value_t=8192,value_parser=clap::value_parser!(u32).range(128..=32768))]
     pub context: u32,
-    #[arg(long,default_value_t=512,value_parser=clap::value_parser!(u32).range(1..=8192))]
+    #[arg(long,default_value_t=2048,value_parser=clap::value_parser!(u32).range(1..=8192))]
     pub max_tokens: u32,
     #[arg(long,default_value_t=inference::default_threads(),value_parser=clap::value_parser!(u32).range(1..=256))]
     pub threads: u32,
     #[arg(long,default_value_t=0,value_parser=clap::value_parser!(u32).range(0..=1024))]
     pub gpu_layers: u32,
-    #[arg(long,default_value_t=300,value_parser=clap::value_parser!(u64).range(1..=4600))]
+    #[arg(long,default_value_t=1800,value_parser=clap::value_parser!(u64).range(1..=4600))]
     pub timeout_secs: u64,
     /// Только для base/test GGUF, без chat template
     #[arg(long)]
@@ -140,6 +147,19 @@ pub struct ApplyArgs {
 pub enum Action {
     Verify,
     List,
+    ListFiles {
+        prefix: String,
+        offset: usize,
+    },
+    ReadRange {
+        path: String,
+        start_line: usize,
+        count: usize,
+    },
+    SearchPage {
+        query: String,
+        offset: usize,
+    },
     ReadFile {
         path: String,
     },
@@ -196,6 +216,8 @@ pub struct VerificationEvidence {
     #[serde(default)]
     pub check_sha256: String,
     pub result: crate::executor::VerificationResult,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub captured_output_sha256: Option<String>,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -208,10 +230,16 @@ pub struct Report {
     pub outcome: TaskOutcome,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub verifications: Vec<VerificationEvidence>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub verification_scope: Vec<String>,
     pub summaries: Vec<(String, String)>,
     pub proposals: Vec<Edit>,
     pub events: Vec<Event>,
     pub calls: u32,
+    #[serde(default)]
+    pub events_omitted: u32,
+    #[serde(default)]
+    pub verifications_omitted: u32,
     pub subagents: bool,
     pub truncated_index: bool,
     pub model_review_is_verified_test: bool,
@@ -219,6 +247,8 @@ pub struct Report {
     pub documentation_sources: Vec<crate::knowledge::Source>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub context_optimization: Vec<crate::context_optimizer::ContextStats>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub prompt_budgets: Vec<crate::task_context::BudgetStats>,
 }
 
 pub trait Model {
@@ -226,9 +256,27 @@ pub trait Model {
         static NEVER: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
         &NEVER
     }
+    fn input_limit(&self) -> usize {
+        96 * 1024
+    }
+    fn count_prompt(&self, prompt: &str) -> io::Result<usize> {
+        Ok(prompt.len())
+    }
+    fn accounting(&self) -> &'static str {
+        "utf8_bytes"
+    }
     fn respond(&mut self, prompt: &str) -> io::Result<String>;
 }
 impl Model for Session<'_> {
+    fn input_limit(&self) -> usize {
+        self.input_token_limit()
+    }
+    fn count_prompt(&self, prompt: &str) -> io::Result<usize> {
+        self.task_prompt_tokens(prompt)
+    }
+    fn accounting(&self) -> &'static str {
+        "model_tokenizer_with_chat_template"
+    }
     fn cancellation(&self) -> &std::sync::atomic::AtomicBool {
         Session::cancellation(self)
     }
@@ -255,6 +303,40 @@ impl Model for Session<'_> {
                 if let Some(path) = proposal["path"].as_str()
                     && !files.iter().any(|file| file == path)
                 {
+                    files.push(path.to_owned());
+                }
+            }
+        }
+        // Paths visible in observations remain addressable even if the ranked list
+        // was shortened by the token budget. Runtime Workspace checks remain authoritative.
+        let visible = crate::context_optimizer::restore(&envelope)?;
+        for item in visible["history"].as_array().into_iter().flatten() {
+            if item["result"]["status"] != "success" {
+                continue;
+            }
+            let data = &item["result"]["data"];
+            for path in data["files"]
+                .as_array()
+                .into_iter()
+                .flatten()
+                .filter_map(|v| v.as_str())
+                .chain(
+                    data["matches"]
+                        .as_array()
+                        .into_iter()
+                        .flatten()
+                        .filter_map(|v| v["path"].as_str()),
+                )
+                .chain(
+                    data["scoped_instructions"]
+                        .as_array()
+                        .into_iter()
+                        .flatten()
+                        .filter_map(|v| v["path"].as_str()),
+                )
+                .chain(data["path"].as_str())
+            {
+                if !files.iter().any(|p| p == path) {
                     files.push(path.to_owned());
                 }
             }
@@ -369,18 +451,24 @@ pub fn execute_workflow(
         status: "incomplete".into(),
         outcome: TaskOutcome::Incomplete,
         verifications: Vec::new(),
+        verification_scope: Vec::new(),
         summaries: Vec::new(),
         proposals: Vec::new(),
         events: Vec::new(),
         calls: 0,
+        events_omitted: 0,
+        verifications_omitted: 0,
         subagents,
         truncated_index: workspace.truncated,
         model_review_is_verified_test: false,
         documentation_sources: Vec::new(),
         context_optimization: Vec::new(),
+        prompt_budgets: Vec::new(),
     });
     report.status = "incomplete".into();
     report.outcome = TaskOutcome::Incomplete;
+    report.subagents = subagents;
+    report.truncated_index = workspace.truncated;
     if report.workspace != workspace.root || report.schema_version != 4 || report.calls >= max_calls
     {
         report.status = "invalid_resume_or_budget".into();
@@ -399,6 +487,8 @@ pub fn execute_workflow(
         report.status = "invalid_documentation".into();
         return report;
     }
+    let ranked_files = crate::retrieval::ranked(workspace, task);
+    let mut focus_paths = Vec::<String>::new();
     let initial_docs = docs.context(task);
     for snippet in &initial_docs {
         if !report
@@ -413,9 +503,13 @@ pub fn execute_workflow(
         report.schema_version = report.schema_version.max(2);
     }
     let instructions = if workspace.files.contains("AGENTS.md") {
-        workspace
-            .read("AGENTS.md")
-            .unwrap_or_else(|e| format!("Инструкции недоступны: {e}"))
+        match workspace.read_tool("AGENTS.md") {
+            Ok(text) => text,
+            Err(error) => {
+                report.status = format!("project_instructions_error: {error}");
+                return report;
+            }
+        }
     } else {
         String::new()
     };
@@ -447,14 +541,50 @@ pub fn execute_workflow(
                 report.status = reason.into();
                 return report;
             }
-            let example_path = workspace
-                .files
-                .iter()
-                .find(|p| p.as_str() != "AGENTS.md")
-                .cloned()
-                .unwrap_or_default();
+            focus_paths.retain(|p| {
+                workspace.files.contains(p) || report.proposals.iter().any(|e| &e.path == p)
+            });
+            let mut active_instructions = Vec::new();
+            let mut instruction_paths = std::collections::BTreeSet::new();
+            for path in focus_paths
+                .last()
+                .into_iter()
+                .chain(report.proposals.iter().map(|p| &p.path))
+            {
+                let scopes = match workspace.scoped_instructions(path) {
+                    Ok(scopes) => scopes,
+                    Err(error) => {
+                        report.status = format!("project_instructions_error: {error}");
+                        return report;
+                    }
+                };
+                for scope in scopes {
+                    let scope_path = scope["path"].as_str().unwrap_or("").to_owned();
+                    if scope_path != "AGENTS.md" && instruction_paths.insert(scope_path) {
+                        active_instructions.push(scope);
+                    }
+                }
+            }
+            let context_files: Vec<String> = if workspace.files.len() <= 128 {
+                workspace.files.iter().cloned().collect()
+            } else {
+                let mut paths = Vec::new();
+                for path in focus_paths.iter().rev().chain(ranked_files.iter()) {
+                    if !paths.contains(path) {
+                        paths.push(path.clone());
+                    }
+                    if paths.len() == 128 {
+                        break;
+                    }
+                }
+                paths
+            };
+            let example_path = context_files.first().cloned().unwrap_or_default();
             let mut tools = vec![
                 serde_json::json!({"tool":"list"}),
+                serde_json::json!({"tool":"list_files","prefix":"","offset":0}),
+                serde_json::json!({"tool":"read_range","path":example_path,"start_line":1,"count":80}),
+                serde_json::json!({"tool":"search_page","query":"symbol","offset":0}),
                 serde_json::json!({"tool":"read_file","path":example_path}),
                 serde_json::json!({"tool":"search","query":"symbol"}),
                 serde_json::json!({"tool":"propose_edit","path":example_path,"old":"exact existing text","new":"replacement"}),
@@ -476,7 +606,7 @@ pub fn execute_workflow(
                         Some("propose_edit" | "propose_file" | "discard_proposal")
                     )
             });
-            let verification_current = verification_matches(&report, check);
+            let verification_current = verification_matches(&report, check, workspace);
             let mut role_contract = role_spec.contract();
             role_contract["allowed_tools"] =
                 serde_json::json!(tools.iter().map(|tool| &tool["tool"]).collect::<Vec<_>>());
@@ -486,24 +616,43 @@ pub fn execute_workflow(
                     "remaining_calls":(budget-step).min(max_calls-report.calls),
                     "pending_paths":report.proposals.iter().map(|p| &p.path).collect::<Vec<_>>(),"writes_applied":false,
                     "completion_rule":"If pending proposals cover the task and any required verification is current and passed, finish. Otherwise inspect remaining files. Read pending content before revising it; old must match the current pending text. Discard a proposal to undo it."},
-                "task":task,"project_instructions":instructions,"verification_required":check.is_some(),"verification_current":verification_current,
+                "task":task,"project_instructions":instructions,"active_project_instructions":active_instructions,"verification_required":check.is_some(),"verification_current":verification_current,
                 "verification_evidence":report.verifications.last(),
                 "project_context":context,"platform_guidance":context.profile.guidance(),
                 "documentation_catalog":docs.catalog(),"documentation_context_untrusted":initial_docs,
-                "files":workspace.files,"index_incomplete":workspace.truncated,
+                "files":context_files,"file_count":workspace.files.len(),"file_list_partial":workspace.files.len()>128,"index_incomplete":workspace.truncated,
                 "prior_role_summaries":report.summaries,
                 "proposals":report.proposals.iter().enumerate().map(|(i,p)|serde_json::json!({"index":i,"path":p.path,"create":p.create,"replacement":p.replacement})).collect::<Vec<_>>(),
                 "tools":tools,
                 "history":history
             });
-            let prompt = if dedup_tool_context {
-                let (prompt, stats) =
-                    crate::context_optimizer::optimize(&envelope, report.calls + 1, role);
-                report.context_optimization.push(stats);
-                prompt
-            } else {
-                envelope.to_string()
+            let (envelope, mut budget_stats) = match crate::task_context::fit(
+                envelope,
+                model.input_limit(),
+                report.calls + 1,
+                model.accounting(),
+                |text| model.count_prompt(text),
+            ) {
+                Ok(result) => result,
+                Err(error) => {
+                    report.status = format!("context_budget_error: {error}");
+                    return report;
+                }
             };
+            let mut prompt = envelope.to_string();
+            if dedup_tool_context {
+                let (optimized, stats) =
+                    crate::context_optimizer::optimize(&envelope, report.calls + 1, role);
+                if model
+                    .count_prompt(&optimized)
+                    .is_ok_and(|tokens| tokens <= model.input_limit())
+                {
+                    prompt = optimized;
+                    report.context_optimization.push(stats);
+                }
+            }
+            budget_stats.units_after = model.count_prompt(&prompt).unwrap_or(usize::MAX);
+            report.prompt_budgets.push(budget_stats);
             report.calls += 1;
             if let Some(save) = checkpoint
                 && let Err(error) = save(&report)
@@ -531,10 +680,13 @@ pub fn execute_workflow(
                         match e.kind() {
                             io::ErrorKind::Interrupted => "cancelled".into(),
                             io::ErrorKind::TimedOut => "timeout".into(),
-                            _ => format!("model_error: {e}"),
+                            _ => format!(
+                                "model_error: {}",
+                                crate::task_report::diagnostic(&e.to_string())
+                            ),
                         }
                     };
-                    report.events.push(Event {
+                    report.record_event(Event {
                         call: report.calls,
                         role: role.into(),
                         tool: "model".into(),
@@ -555,8 +707,11 @@ pub fn execute_workflow(
             let action: Action = match serde_json::from_str(response.trim()) {
                 Ok(a) => a,
                 Err(e) => {
-                    report.status = format!("invalid_response: {e}");
-                    report.events.push(Event {
+                    report.status = format!(
+                        "invalid_response: {}",
+                        crate::task_report::diagnostic(&e.to_string())
+                    );
+                    report.record_event(Event {
                         call: report.calls,
                         role: role.into(),
                         tool: "invalid_response".into(),
@@ -579,6 +734,9 @@ pub fn execute_workflow(
             let tool = match &action {
                 Action::Verify => "verify",
                 Action::List => "list",
+                Action::ListFiles { .. } => "list_files",
+                Action::ReadRange { .. } => "read_range",
+                Action::SearchPage { .. } => "search_page",
                 Action::ReadFile { .. } => "read_file",
                 Action::Search { .. } => "search",
                 Action::ProposeEdit { .. } => "propose_edit",
@@ -599,23 +757,21 @@ pub fn execute_workflow(
                         }
                         crate::executor::verify_changes(&workspace.root, &workspace.files.iter().cloned().collect::<Vec<_>>(), &report.proposals,
                             &request, model.cancellation()).and_then(|result| {
-                            let data = serde_json::to_value(&result).map_err(io::Error::other)?;
-                            report.verifications.push(VerificationEvidence { proposal_sha256: proposal_digest(&report.proposals)?, check_sha256: value_digest(check)?, result });
-                            Ok(data)
+                            let proposal_sha256=proposal_digest(&report.proposals)?;
+                            crate::task_report::evidence(&mut report,proposal_sha256,value_digest(check)?,result)
                         })
                     } else {
                         Err(io::Error::new(io::ErrorKind::PermissionDenied, "No check was authorized"))
                     }
                 }
-                Action::List => Ok(
-                    serde_json::json!({"files":visible_paths(workspace, &report.proposals),"incomplete":workspace.truncated}),
-                ),
-                Action::ReadFile { path } => match report.proposals.iter().find(|p| p.path == *path) {
-                    Some(pending) => workspace.read_pending(pending),
-                    None => workspace.read(path),
-                }
-                    .map(|content| serde_json::json!({"path":path,"line_endings":if content.contains("\r\n") { if content.replace("\r\n", "").contains('\n') { "mixed" } else { "crlf" } } else { "lf" },"content":content})),
-                Action::Search { query } => search(workspace, query, &report.proposals),
+                Action::List => crate::retrieval::list(workspace, &report.proposals, "", 0),
+                Action::ListFiles { prefix, offset } => crate::retrieval::list(workspace, &report.proposals, prefix, *offset),
+                Action::ReadRange { path, start_line, count } => crate::retrieval::range(workspace, &report.proposals, path, *start_line, *count),
+                Action::ReadFile { path } => crate::retrieval::read(workspace, &report.proposals, path)
+                    .and_then(|content| Ok(serde_json::json!({"path":path,"line_endings":if content.contains("\r\n") { if content.replace("\r\n", "").contains('\n') { "mixed" } else { "crlf" } } else { "lf" },
+                        "source_sha256":crate::retrieval::sha256(content.as_bytes()),"content":content,"scoped_instructions":workspace.scoped_instructions(path)?}))),
+                Action::Search { query } => crate::retrieval::search(workspace, &report.proposals, query, 0),
+                Action::SearchPage { query, offset } => crate::retrieval::search(workspace, &report.proposals, query, *offset),
                 Action::SearchDocs { query } => docs.search(query, 2, 2048).and_then(|snippets| {
                     for snippet in &snippets {
                         if !report
@@ -634,7 +790,7 @@ pub fn execute_workflow(
                 Action::ProposeFile { path, content } => {
                     if role != "coder" {
                         Err(io::Error::other("Подагенту запрещено создавать файлы."))
-                    } else if report.proposals.len() >= 8
+                    } else if report.proposals.len() >= crate::workspace::MAX_PROPOSALS
                         || report
                             .proposals
                             .iter()
@@ -643,8 +799,7 @@ pub fn execute_workflow(
                         Err(io::Error::other("Лимит предложений или повтор пути."))
                     } else {
                         workspace.propose_new(path,content).and_then(|edit|{
-                        let total:usize=report.proposals.iter().map(|e|e.original.len()+e.replacement.len()).sum();
-                        if total+edit.replacement.len()>256*1024{return Err(io::Error::other("Исчерпан бюджет предложений."));}
+                        if !crate::task_report::proposal_fits(&report,&edit,None)? {return Err(io::Error::other("Исчерпан сериализованный бюджет предложений (1 MiB)."));}
                         report.schema_version=report.schema_version.max(2);report.proposals.push(edit);Ok(serde_json::json!({"proposal_index":report.proposals.len()-1,"created":false}))
                     })
                     }
@@ -659,12 +814,8 @@ pub fn execute_workflow(
                             None => workspace.propose(path, old, new),
                         };
                         edit.and_then(|edit| {
-                            let total: usize = report.proposals.iter().enumerate()
-                                .filter(|(i, _)| Some(*i) != index)
-                                .map(|(_, e)| e.original.len() + e.replacement.len()).sum();
-                            if index.is_none() && report.proposals.len() >= 8
-                                || total + edit.original.len() + edit.replacement.len() > 256 * 1024 {
-                                return Err(io::Error::other("Исчерпан бюджет предложений."));
+                            if index.is_none() && report.proposals.len() >= crate::workspace::MAX_PROPOSALS || !crate::task_report::proposal_fits(&report,&edit,index)? {
+                                return Err(io::Error::other("Исчерпан сериализованный бюджет предложений (1 MiB)."));
                             }
                             let index = if let Some(index) = index {
                                 report.proposals[index] = edit;
@@ -691,16 +842,16 @@ pub fn execute_workflow(
                     if !matches!(role_spec, AgentRole::Reviewer) || summary.trim().is_empty() {
                         Err(io::Error::other("Только reviewer может запросить исправления с описанием."))
                     } else {
-                        report.summaries.push((role.into(), summary.clone()));
-                        changes_requested = true;
-                        finished = true;
-                        Ok(serde_json::json!({"changes_requested": true, "tests_verified": false}))
+                        crate::task_report::summarize(&mut report,role,summary).map(|()| {
+                            changes_requested=true;finished=true;
+                            serde_json::json!({"changes_requested":true,"tests_verified":false})
+                        })
                     }
                 }
                 Action::Finish { summary } => {
-                    report.summaries.push((role.into(), summary.clone()));
-                    finished = true;
-                    Ok(serde_json::json!({"finished":true}))
+                    crate::task_report::summarize(&mut report,role,summary).map(|()| {
+                        finished=true;serde_json::json!({"finished":true})
+                    })
                 }
             };
             let executor_unavailable = matches!(action, Action::Verify)
@@ -734,6 +885,7 @@ pub fn execute_workflow(
             let success = label == "ok";
             let path = match &action {
                 Action::ReadFile { path }
+                | Action::ReadRange { path, .. }
                 | Action::ProposeEdit { path, .. }
                 | Action::ProposeFile { path, .. }
                 | Action::DiscardProposal { path } => {
@@ -746,29 +898,57 @@ pub fn execute_workflow(
                 "LYRA_PROGRESS:activity={}",
                 serde_json::json!({"label":format!("{role} · {tool} · {}{path}",if success {"ok"} else {"error"})})
             );
-            report.events.push(Event {
+            report.record_event(Event {
                 call: report.calls,
                 role: role.into(),
                 tool: tool.into(),
                 outcome: label,
                 argument: match &action {
                     Action::ReadFile { path }
+                    | Action::ReadRange { path, .. }
                     | Action::ProposeEdit { path, .. }
                     | Action::ProposeFile { path, .. }
                     | Action::DiscardProposal { path } => Some(path.chars().take(256).collect()),
-                    Action::Search { query } | Action::SearchDocs { query } => {
-                        Some(query.chars().take(256).collect())
-                    }
+                    Action::Search { query }
+                    | Action::SearchPage { query, .. }
+                    | Action::SearchDocs { query } => Some(query.chars().take(256).collect()),
                     _ => None,
                 },
             });
             let artifact = match &action {
                 Action::ReadFile { path }
+                | Action::ReadRange { path, .. }
                 | Action::ProposeEdit { path, .. }
                 | Action::ProposeFile { path, .. }
                 | Action::DiscardProposal { path } => Some(path.as_str()),
                 _ => None,
             };
+            if let Some(path) = artifact
+                && (workspace.files.contains(path)
+                    || report.proposals.iter().any(|p| p.path == path))
+            {
+                focus_paths.retain(|p| p != path);
+                focus_paths.push(path.to_owned());
+            }
+            for path in result["files"]
+                .as_array()
+                .into_iter()
+                .flatten()
+                .filter_map(|v| v.as_str())
+                .chain(
+                    result["matches"]
+                        .as_array()
+                        .into_iter()
+                        .flatten()
+                        .filter_map(|v| v["path"].as_str()),
+                )
+            {
+                focus_paths.retain(|p| p != path);
+                focus_paths.push(path.to_owned());
+            }
+            if focus_paths.len() > 64 {
+                focus_paths.drain(..focus_paths.len() - 64);
+            }
             let proposal_exists =
                 artifact.is_some_and(|path| report.proposals.iter().any(|p| p.path == path));
             let observation = crate::agent_runtime::tool_observation(
@@ -834,7 +1014,11 @@ pub fn execute_workflow(
             roles.push_back((AgentRole::Reviewer, 1));
         }
     }
-    let verified = verification_matches(&report, check);
+    let verified = verification_matches(&report, check, workspace);
+    if let Some(reason) = stop_reason(model, deadline) {
+        report.status = reason.into();
+        return report;
+    }
     if check.is_some() && !verified {
         report.status = "verification_required".into();
         return report;
@@ -866,6 +1050,7 @@ fn stop_reason(model: &impl Model, deadline: Option<std::time::Instant>) -> Opti
 fn verification_matches(
     report: &Report,
     check: Option<&crate::executor::ExecutionRequest>,
+    workspace: &Workspace,
 ) -> bool {
     report.verifications.last().is_some_and(|evidence| {
         evidence.result.passed()
@@ -874,6 +1059,19 @@ fn verification_matches(
             && check.is_none_or(|check| {
                 value_digest(check).is_ok_and(|digest| digest == evidence.check_sha256)
             })
+            && evidence
+                .result
+                .source_sha256
+                .as_ref()
+                .is_some_and(|expected| {
+                    crate::executor::checked_source_hash(
+                        &workspace.root,
+                        &report.verification_scope,
+                        &report.proposals,
+                        false,
+                    )
+                    .is_ok_and(|current| &current == expected)
+                })
     })
 }
 
@@ -888,51 +1086,6 @@ fn value_digest(value: &impl Serialize) -> io::Result<String> {
         .iter()
         .map(|byte| format!("{byte:02x}"))
         .collect())
-}
-
-fn visible_paths(workspace: &Workspace, proposals: &[Edit]) -> std::collections::BTreeSet<String> {
-    workspace
-        .files
-        .iter()
-        .cloned()
-        .chain(proposals.iter().map(|edit| edit.path.clone()))
-        .collect()
-}
-
-fn search(
-    workspace: &mut Workspace,
-    query: &str,
-    proposals: &[Edit],
-) -> io::Result<serde_json::Value> {
-    if query.is_empty() || query.len() > 256 {
-        return Err(io::Error::other("Запрос поиска: 1–256 байт."));
-    }
-    let mut matches = Vec::new();
-    let mut skipped = 0;
-    for path in visible_paths(workspace, proposals) {
-        let content = match proposals.iter().find(|edit| edit.path == path) {
-            Some(edit) => workspace.read_pending(edit),
-            None => workspace.read(&path),
-        };
-        match content {
-            Ok(text) => {
-                for (index, line) in text.lines().enumerate() {
-                    if line.contains(query) {
-                        matches.push(serde_json::json!({"path":path,"line":index+1,"text":line.chars().take(200).collect::<String>()}));
-                    }
-                    if matches.len() >= 16 {
-                        return Ok(
-                            serde_json::json!({"matches":matches,"incomplete":true,"skipped":skipped}),
-                        );
-                    }
-                }
-            }
-            Err(_) => skipped += 1,
-        }
-    }
-    Ok(
-        serde_json::json!({"matches":matches,"incomplete":workspace.truncated||skipped>0,"skipped":skipped}),
-    )
 }
 
 fn limited_file(path: &std::path::Path, limit: usize) -> io::Result<String> {
@@ -951,23 +1104,38 @@ struct SkilledModel<'a, M: Model> {
     guidance: &'a str,
 }
 
+impl<M: Model> SkilledModel<'_, M> {
+    fn augmented(&self, prompt: &str) -> io::Result<String> {
+        if self.guidance.is_empty() {
+            return Ok(prompt.to_owned());
+        }
+        let mut envelope: serde_json::Value =
+            serde_json::from_str(prompt).map_err(io::Error::other)?;
+        envelope["ecc_skill_guidance"] = serde_json::Value::String(self.guidance.into());
+        Ok(envelope.to_string())
+    }
+}
 impl<M: Model> Model for SkilledModel<'_, M> {
     fn cancellation(&self) -> &std::sync::atomic::AtomicBool {
         self.inner.cancellation()
     }
+    fn input_limit(&self) -> usize {
+        self.inner.input_limit()
+    }
+    fn accounting(&self) -> &'static str {
+        self.inner.accounting()
+    }
+    fn count_prompt(&self, prompt: &str) -> io::Result<usize> {
+        self.inner.count_prompt(&self.augmented(prompt)?)
+    }
     fn respond(&mut self, prompt: &str) -> io::Result<String> {
-        if self.guidance.is_empty() {
-            return self.inner.respond(prompt);
-        }
-        let mut envelope: serde_json::Value =
-            serde_json::from_str(prompt).map_err(io::Error::other)?;
-        envelope["ecc_skill_guidance"] = serde_json::Value::String(self.guidance.to_owned());
-        self.inner.respond(&envelope.to_string())
+        self.inner.respond(&self.augmented(prompt)?)
     }
 }
 
 #[cfg(feature = "gateway-http")]
 struct CloudTaskModel {
+    input_limit: usize,
     backend: crate::provider_http::OpenAiCompatibleBackend,
     max_tokens: u32,
     cancelled: std::sync::Arc<std::sync::atomic::AtomicBool>,
@@ -975,6 +1143,15 @@ struct CloudTaskModel {
 
 #[cfg(feature = "gateway-http")]
 impl Model for CloudTaskModel {
+    fn input_limit(&self) -> usize {
+        self.input_limit
+    }
+    fn accounting(&self) -> &'static str {
+        "utf8_bytes_div3_estimate"
+    }
+    fn count_prompt(&self, prompt: &str) -> io::Result<usize> {
+        Ok((prompt.len() + crate::agent_runtime::TASK_SYSTEM_PROMPT.len()).div_ceil(3) + 16)
+    }
     fn cancellation(&self) -> &std::sync::atomic::AtomicBool {
         &self.cancelled
     }
@@ -1039,7 +1216,14 @@ fn cloud_task_model(
     let signal = cancelled.clone();
     ctrlc::set_handler(move || signal.store(true, std::sync::atomic::Ordering::Relaxed))
         .map_err(io::Error::other)?;
+    let input_limit = config
+        .descriptor
+        .capabilities
+        .max_context_tokens
+        .min(args.context)
+        .saturating_sub(args.max_tokens) as usize;
     Ok(Some(CloudTaskModel {
+        input_limit,
         cancelled,
         backend: crate::provider_http::OpenAiCompatibleBackend::new(config)?
             .with_deadline(started + std::time::Duration::from_secs(args.timeout_secs)),
@@ -1055,7 +1239,7 @@ pub fn task(args: TaskArgs, output: &mut impl Write) -> io::Result<()> {
             "Пустое задание или недостаточный бюджет для подагентов.",
         ));
     }
-    let mut workspace = Workspace::open(&args.repo, &args.files)?;
+    let original_root = args.repo.canonicalize()?;
     let check = args
         .check_config
         .as_ref()
@@ -1085,14 +1269,18 @@ pub fn task(args: TaskArgs, output: &mut impl Write) -> io::Result<()> {
     } else {
         None
     };
-    if let Some(snapshot) = &snapshot {
-        if snapshot.task != task || snapshot.original_root != args.repo.canonicalize()? {
-            return Err(io::Error::other(
-                "Resume requires the original project and unchanged task file",
-            ));
-        }
-        workspace = Workspace::open(snapshot.directory.path(), &[])?;
+    if let Some(snapshot) = &snapshot
+        && (snapshot.task != task || snapshot.original_root != original_root)
+    {
+        return Err(io::Error::other(
+            "Resume requires the original project and unchanged task file",
+        ));
     }
+    let mut workspace = if let Some(snapshot) = &snapshot {
+        Workspace::open(snapshot.directory.path(), &[])?
+    } else {
+        Workspace::open(&args.repo, &args.files)?
+    };
     let mut previous = snapshot
         .as_mut()
         .and_then(|snapshot| snapshot.report.take());
@@ -1170,7 +1358,7 @@ pub fn task(args: TaskArgs, output: &mut impl Write) -> io::Result<()> {
         raw: args.raw,
     };
     inference::with_session(&config, |session| {
-        let mut session = *session;
+        let mut session = session.clone();
         let mut model = SkilledModel {
             inner: &mut session,
             guidance: &skill_guidance,
@@ -1237,7 +1425,27 @@ pub fn apply(args: ApplyArgs, output: &mut impl Write) -> io::Result<()> {
     {
         return Err(io::Error::other("Неполный отчёт или другой проект."));
     }
-    crate::publication::apply(&args.repo, edits)?;
+    crate::publication::apply_checked(&args.repo, edits, || {
+        if report.outcome == TaskOutcome::ChangesVerified
+            && let Some(expected) = report
+                .verifications
+                .last()
+                .and_then(|v| v.result.source_sha256.as_ref())
+            && !crate::executor::checked_source_hash(
+                &args.repo,
+                &report.verification_scope,
+                &report.proposals,
+                true,
+            )
+            .is_ok_and(|actual| &actual == expected)
+        {
+            return Err(io::Error::other(
+                "Исходники изменились после проверки. Повторите задачу/проверку; публикация остановлена.",
+            ));
+        }
+
+        Ok(())
+    })?;
     writeln!(output, "Применено предложений: {}", edits.len())
 }
 
@@ -1354,6 +1562,7 @@ mod skill_adapter_tests {
                 api_key_env: None,
             };
             let mut model = CloudTaskModel {
+                input_limit: 4096,
                 cancelled: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
                 backend: OpenAiCompatibleBackend::new(config).unwrap(),
                 max_tokens: 128,

@@ -145,7 +145,7 @@ jobs:
           "`nSource commit: https://github.com/DraimCiDo/Lyra/tree/$env:GITHUB_SHA" | Add-Content -Encoding utf8NoBOM -LiteralPath dist/README.md
           Copy-Item -LiteralPath Cargo.lock -Destination dist
           New-Item -ItemType Directory -Force -Path dist/docs, dist/examples | Out-Null
-          Copy-Item -LiteralPath docs/ACCEPTANCE.md, docs/LOCAL_MODELS.md, docs/DESKTOP.md, docs/UPDATES.md, docs/PROJECTS.md, docs/KNOWLEDGE.md, docs/WEB_PROJECTS.md, docs/WORKFLOWS.md -Destination dist/docs
+          Copy-Item -LiteralPath docs/ACCEPTANCE.md, docs/LOCAL_MODELS.md, docs/DESKTOP.md, docs/UPDATES.md, docs/PROJECTS.md, docs/KNOWLEDGE.md, docs/WEB_PROJECTS.md, docs/WORKFLOWS.md, docs/EVALUATION.md -Destination dist/docs
           Copy-Item -LiteralPath examples/buggy-add -Destination dist/examples -Recurse
           Copy-Item -LiteralPath examples/qwen3-coder-openrouter.json -Destination dist/examples/qwen3-coder-openrouter.json
           python tools/collect_licenses.py --features desktop,gateway-http --target ${{ matrix.target }} --output dist/THIRD_PARTY_NOTICES.txt

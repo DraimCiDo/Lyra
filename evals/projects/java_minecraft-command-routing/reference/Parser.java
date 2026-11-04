@@ -1,0 +1,1 @@
+import java.util.*;public class Parser {public static List<String> parse(String text){if(text==null||!text.trim().startsWith("/"))return List.of();String value=text.trim().substring(1);if(value.isBlank())return List.of();var parts=new ArrayList<>(Arrays.asList(value.split("\\s+")));parts.set(0,parts.get(0).toLowerCase(Locale.ROOT));return parts;}}

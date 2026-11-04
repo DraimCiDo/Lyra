@@ -161,3 +161,126 @@ fn concurrent_checkpoint_cannot_overwrite_a_newer_session() {
     assert!(second.checkpoint(&id, &report).is_err());
     assert_eq!(first.report(&id).unwrap().unwrap().status, "completed");
 }
+
+#[test]
+fn large_text_project_snapshot_survives_resume_beyond_the_old_index_and_read_budget() {
+    let repo = tempfile::tempdir().unwrap();
+    for i in 0..200 {
+        std::fs::write(
+            repo.path().join(format!("source{i:03}.py")),
+            "# line\n".repeat(700),
+        )
+        .unwrap();
+    }
+    std::fs::write(
+        repo.path().join("lock.json"),
+        format!("\"{}\"", "x".repeat(100_000)),
+    )
+    .unwrap();
+    let store_dir = tempfile::tempdir().unwrap();
+    let mut store =
+        lyra::session::SessionStore::open(&store_dir.path().join("sessions.db")).unwrap();
+    let id = store.create(repo.path(), &[], "Large snapshot").unwrap();
+    let snapshot = store.materialize(&id).unwrap();
+    assert_eq!(
+        std::fs::read_dir(snapshot.directory.path())
+            .unwrap()
+            .count(),
+        201
+    );
+    assert_eq!(
+        std::fs::read(snapshot.directory.path().join("lock.json")).unwrap(),
+        std::fs::read(repo.path().join("lock.json")).unwrap()
+    );
+    std::fs::write(snapshot.directory.path().join("source199.py"), "changed").unwrap();
+    assert!(
+        std::fs::read_to_string(repo.path().join("source199.py"))
+            .unwrap()
+            .starts_with("# line")
+    );
+}
+
+#[test]
+fn full_database_rejects_new_snapshot_without_losing_the_previous_one() {
+    let repo = tempfile::tempdir().unwrap();
+    let content = "a".repeat(2 * 1024 * 1024);
+    for index in 0..8 {
+        std::fs::write(repo.path().join(format!("source{index}.txt")), &content).unwrap();
+    }
+    let folder = tempfile::tempdir().unwrap();
+    let path = folder.path().join("sessions.db");
+    let mut store = lyra::session::SessionStore::open(&path).unwrap();
+    let first = store.create(repo.path(), &[], "first").unwrap();
+    assert!(store.create(repo.path(), &[], "second").is_err());
+    assert!(std::fs::metadata(&path).unwrap().len() <= 32 * 1024 * 1024);
+    let recovered = store.materialize(&first).unwrap();
+    assert_eq!(
+        std::fs::read_to_string(recovered.directory.path().join("source7.txt")).unwrap(),
+        content
+    );
+}
+
+#[test]
+fn session_listing_is_paginated_and_contains_tasks_but_not_source_snapshots() {
+    let repo = tempfile::tempdir().unwrap();
+    std::fs::write(repo.path().join("main.py"), "PRIVATE_SOURCE_SENTINEL").unwrap();
+    let folder = tempfile::tempdir().unwrap();
+    let db = folder.path().join("sessions.db");
+    let mut store = lyra::session::SessionStore::open(&db).unwrap();
+    let first = store.create(repo.path(), &[], "task one").unwrap();
+    let second = store.create(repo.path(), &[], "task two").unwrap();
+    let third = store.create(repo.path(), &[], "task three").unwrap();
+    let page = store.list(0, 2).unwrap();
+    assert!(page.has_more);
+    assert_eq!(page.sessions[0].session_id, third);
+    assert_eq!(page.sessions[1].session_id, second);
+    assert_eq!(store.list(2, 2).unwrap().sessions[0].session_id, first);
+    assert!(store.list(0, 0).is_err());
+    assert!(store.list(0, 41).is_err());
+    let result = std::process::Command::new(env!("CARGO_BIN_EXE_lyra"))
+        .args(["session", "list", "--db"])
+        .arg(&db)
+        .args(["--limit", "2"])
+        .output()
+        .unwrap();
+    assert!(
+        result.status.success(),
+        "{}",
+        String::from_utf8_lossy(&result.stderr)
+    );
+    let text = String::from_utf8(result.stdout).unwrap();
+    assert!(!text.contains("PRIVATE_SOURCE_SENTINEL"));
+    assert!(text.contains("task three"));
+}
+
+#[test]
+fn unrelated_sqlite_database_is_never_initialized_or_changed() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("business.db");
+    let connection = rusqlite::Connection::open(&path).unwrap();
+    connection.execute_batch("CREATE TABLE customers(id INTEGER PRIMARY KEY,name TEXT); INSERT INTO customers VALUES(1,'preserve');").unwrap();
+    drop(connection);
+    let before = std::fs::read(&path).unwrap();
+    assert!(lyra::session::SessionStore::open(&path).is_err());
+    assert_eq!(std::fs::read(&path).unwrap(), before);
+}
+#[test]
+fn legacy_v1_database_is_adopted_but_unexpected_schema_objects_are_rejected() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("sessions.db");
+    drop(lyra::session::SessionStore::open(&path).unwrap());
+    let connection = rusqlite::Connection::open(&path).unwrap();
+    connection
+        .pragma_update(None, "application_id", 0_u32)
+        .unwrap();
+    drop(connection);
+    drop(lyra::session::SessionStore::open(&path).unwrap());
+    let connection = rusqlite::Connection::open(&path).unwrap();
+    let id: u32 = connection
+        .query_row("PRAGMA application_id", [], |row| row.get(0))
+        .unwrap();
+    assert_eq!(id, 0x4c595241);
+    connection.execute_batch("CREATE TRIGGER unexpected AFTER DELETE ON sessions BEGIN DELETE FROM source_files; END;").unwrap();
+    drop(connection);
+    assert!(lyra::session::SessionStore::open(&path).is_err());
+}

@@ -15,6 +15,7 @@ import signal
 import subprocess
 import tempfile
 import time
+from eval_resources import Monitor
 
 
 def file_sha256(path):
@@ -61,26 +62,55 @@ def load_suite(path):
         checker = inside(root, case["check_config"])
         if hashlib.sha256(checker.read_bytes()).hexdigest() != case["check_sha256"]:
             raise ValueError(f"Hidden checker changed: {case['id']}")
+        if case.get("acceptance_level", "unit") not in ("unit", "structural"):
+            raise ValueError("Unsupported acceptance level")
+        if case.get("acceptance_level") == "structural" and not case.get("required_gates"):
+            raise ValueError("Structural checks require explicit external gates")
+        if "reference" in case:
+            reference = inside(root, case["reference"])
+            actual_reference = {p.relative_to(reference).as_posix(): file_sha256(p)
+                                for p in reference.rglob("*") if p.is_file()}
+            if any(p.is_symlink() for p in reference.rglob("*")) or actual_reference != case["reference_sha256"]:
+                raise ValueError(f"Reference changed or contains links: {case['id']}")
     return suite
 
 
-def invoke(argv, timeout):
+def stop_process(process):
+    if os.name == "nt":
+        try:
+            stopped = subprocess.run(["taskkill", "/PID", str(process.pid), "/T", "/F"],
+                                     stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=10, check=False)
+            if stopped.returncode and process.poll() is None:
+                process.kill()
+        except (OSError, subprocess.TimeoutExpired):
+            if process.poll() is None:
+                process.kill()
+    else:
+        try:
+            os.killpg(process.pid, signal.SIGKILL)
+        except ProcessLookupError:
+            pass
+    process.wait(timeout=10)
+
+
+def invoke(argv, timeout, measure_resources=False):
     started = time.monotonic()
     with tempfile.TemporaryFile() as out, tempfile.TemporaryFile() as err:
         kwargs = {"start_new_session": True} if os.name != "nt" else {
             "creationflags": subprocess.CREATE_NEW_PROCESS_GROUP}
         process = subprocess.Popen(argv, stdin=subprocess.DEVNULL, stdout=out, stderr=err, **kwargs)
+        monitor = Monitor(process, measure_resources)
         timed_out = False
         try:
             process.wait(timeout=timeout)
         except subprocess.TimeoutExpired:
             timed_out = True
-            if os.name == "nt":
-                subprocess.run(["taskkill", "/PID", str(process.pid), "/T", "/F"],
-                               stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=10, check=False)
-            else:
-                os.killpg(process.pid, signal.SIGKILL)
-            process.wait(timeout=10)
+            stop_process(process)
+        except BaseException:
+            stop_process(process)
+            raise
+        finally:
+            metrics = monitor.finish()
         out.seek(0); err.seek(0)
         raw = out.read(2 * 1024 * 1024 + 1)
         stderr = err.read(65536).decode("utf-8", errors="replace")
@@ -90,21 +120,32 @@ def invoke(argv, timeout):
         body = None
     return {"exit_code": process.returncode, "timed_out": timed_out,
             "elapsed_ms": round((time.monotonic() - started) * 1000), "body": body,
-            "diagnostic": stderr, "oversized_stdout": len(raw) > 2 * 1024 * 1024}
+            "diagnostic": stderr, "oversized_stdout": len(raw) > 2 * 1024 * 1024, **metrics}
 
 
-def run_case(args, root, case, iteration):
+def _run_case(args, root, case, iteration):
     started = time.monotonic()
     result = {"case": case["id"], "profile": case["profile"], "iteration": iteration,
-              "passed": False, "status": "blocked", "peak_ram_bytes": None, "peak_vram_bytes": None}
+              "kind": case.get("kind", "multifile"), "passed": False, "check_passed": False, "model_run_attempted": False, "acceptance_level": case.get("acceptance_level", "unit"),
+              "required_gates_pending": case.get("required_gates", []), "status": "blocked", "peak_ram_bytes": None, "peak_vram_bytes": None}
     with tempfile.TemporaryDirectory(prefix="lyra-eval-") as folder:
         work = Path(folder)
         repo = work / "project"
         shutil.copytree(inside(root, case["source"]), repo)
-        checker = str(inside(root, case["check_config"]))
+        copied = {p.relative_to(repo).as_posix(): file_sha256(p) for p in repo.rglob("*") if p.is_file()}
+        if copied != case["sha256"]:
+            result["status"] = "fixture_changed"
+            return result
+        checker_path = work / "trusted-check.json"
+        shutil.copyfile(inside(root, case["check_config"]), checker_path)
+        if file_sha256(checker_path) != case["check_sha256"]:
+            result["status"] = "checker_changed"
+            return result
+        checker = str(checker_path)
         selected = [arg for name in case["files"] for arg in ("--file", name)]
+        check_timeout = min(3600, max(1, int(json.loads(Path(checker).read_text(encoding="utf-8"))["timeout_secs"]))) + 20
         verify = [str(args.binary), "verify", "--repo", str(repo), "--config", checker, *selected]
-        baseline = invoke(verify, 120)
+        baseline = invoke(verify, check_timeout)
         result["baseline"] = baseline
         body = baseline["body"] or {}
         if baseline["timed_out"] or not body.get("cleanup_confirmed") or body.get("exit_code") is None:
@@ -120,8 +161,12 @@ def run_case(args, root, case, iteration):
         command = [str(args.binary), "task", "--model", str(args.model), "--repo", str(repo),
                    "--task-file", str(task_file), "--check-config", checker, "--context", str(args.context),
                    "--max-tokens", str(args.tokens), "--max-calls", str(args.calls),
-                   "--timeout-secs", str(args.timeout), "--gpu-layers", str(args.gpu_layers), *selected]
-        task = invoke(command, args.timeout + 15)
+                   "--timeout-secs", str(args.timeout), "--gpu-layers", str(args.gpu_layers), "--threads", str(args.threads), *selected]
+        result["model_run_attempted"] = True
+        task = invoke(command, args.timeout + 15, args.measure_resources)
+        result["peak_ram_bytes"] = task["peak_ram_bytes"]
+        result["peak_vram_bytes"] = task["peak_vram_bytes"]
+        result["resource_measurement"] = task["resource_measurement"]
         result["task"] = task
         report = task["body"] or {}
         if task["exit_code"] != 0 or report.get("outcome") != "changes_verified":
@@ -144,12 +189,45 @@ def run_case(args, root, case, iteration):
                 return result
         final_files = [arg for name in sorted(set(case["files"]) | {p["path"] for p in report.get("proposals", [])})
                        for arg in ("--file", name)]
-        final = invoke([str(args.binary), "verify", "--repo", str(repo), "--config", checker, *final_files], 120)
+        final = invoke([str(args.binary), "verify", "--repo", str(repo), "--config", checker, *final_files], check_timeout)
         result["verification"] = final
-        result["passed"] = final["exit_code"] == 0 and (final["body"] or {}).get("cleanup_confirmed", False)
-        result["status"] = "passed" if result["passed"] else "verification_failed"
+        result["check_passed"] = final["exit_code"] == 0 and (final["body"] or {}).get("cleanup_confirmed", False)
+        result["passed"] = result["check_passed"] and not result["required_gates_pending"]
+        result["status"] = "passed" if result["passed"] else "external_gates_pending" if result["check_passed"] else "verification_failed"
         result["elapsed_ms"] = round((time.monotonic() - started) * 1000)
     return result
+
+
+def run_case(args, root, case, iteration):
+    started = time.monotonic()
+    result = _run_case(args, root, case, iteration)
+    result["elapsed_ms"] = round((time.monotonic() - started) * 1000)
+    return result
+
+
+def summarize(results):
+    groups = {}
+    for result in results:
+        key = result["profile"] + "/" + result.get("acceptance_level", "unit")
+        group = groups.setdefault(key, {"runs": 0, "passed": 0, "checks_passed": 0, "external_gates_pending": 0, "blocked_before_model": 0, "by_kind": {}})
+        group["runs"] += 1
+        if not result.get("model_run_attempted", True):
+            group["blocked_before_model"] += 1
+            continue
+        kind = result.get("kind", "multifile")
+        detail = group["by_kind"].setdefault(kind, {"runs": 0, "passed": 0})
+        detail["runs"] += 1
+        detail["passed"] += int(result["passed"])
+        group["passed"] += int(result["passed"])
+        group["checks_passed"] += int(result.get("check_passed", False))
+        group["external_gates_pending"] += int(result["status"] == "external_gates_pending")
+    thresholds = {"small_fix": .9, "multifile": .8, "new_feature": .7}
+    for group in groups.values():
+        for kind, detail in group["by_kind"].items():
+            detail["pass_rate"] = detail["passed"] / detail["runs"]
+            detail["threshold"] = thresholds.get(kind)
+            detail["threshold_met"] = detail["pass_rate"] >= thresholds[kind] if kind in thresholds else None
+    return groups
 
 
 def main():
@@ -164,11 +242,15 @@ def main():
     parser.add_argument("--calls", type=int, default=48)
     parser.add_argument("--timeout", type=int, default=1800)
     parser.add_argument("--gpu-layers", type=int, default=0)
+    parser.add_argument("--threads", type=int, default=min(os.cpu_count() or 2, 8))
+    parser.add_argument("--measure-resources", action="store_true")
+    parser.add_argument("--profile", action="append", default=[])
+    parser.add_argument("--resume", action="store_true")
     args = parser.parse_args()
     args.binary = args.binary.resolve(); args.model = args.model.resolve(); args.suite = args.suite.resolve()
-    if args.output.exists():
-        parser.error("Output already exists; choose a new run file")
-    if not (128 <= args.context <= 32768 and 1 <= args.tokens <= 8192 and 1 <= args.calls <= 256 and 1 <= args.timeout <= 3600):
+    if args.output.exists() and not args.resume:
+        parser.error("Output already exists; choose a new run file or use --resume")
+    if not (128 <= args.context <= 32768 and 1 <= args.tokens < args.context and args.tokens <= 8192 and 1 <= args.calls <= 256 and 1 <= args.timeout <= 3600 and 1 <= args.threads <= 256 and 0 <= args.gpu_layers <= 1024):
         parser.error("Resource settings exceed CLI bounds")
     suite = load_suite(args.suite)
     if not args.binary.is_file() or not args.model.is_file():
@@ -176,13 +258,32 @@ def main():
     report = {"schema_version": 1, "suite_sha256": hashlib.sha256(args.suite.read_bytes()).hexdigest(),
               "binary_sha256": file_sha256(args.binary),
               "model_sha256": file_sha256(args.model),
-              "model": str(args.model), "configuration": {k: v for k, v in vars(args).items() if k not in ("binary", "suite", "model", "output")},
+              "model": str(args.model), "configuration": {k: v for k, v in vars(args).items() if k not in ("binary", "suite", "model", "output", "resume")},
               "results": []}
+    if args.resume and args.output.exists():
+        if args.output.stat().st_size > 256 * 1024 * 1024:
+            parser.error("Resume report exceeds 256 MiB")
+        existing = json.loads(args.output.read_text(encoding="utf-8"))
+        if any(existing.get(key) != report[key] for key in ["schema_version", "suite_sha256", "binary_sha256", "model_sha256", "configuration"]):
+            parser.error("Resume requires the same binary, model, suite and configuration")
+        report = existing
+    done = {(r["case"], r["iteration"]) for r in report["results"]}
+    if len(done) != len(report["results"]):
+        parser.error("Duplicate runs in resume report")
     args.output.parent.mkdir(parents=True, exist_ok=True)
-    for case in suite["cases"]:
+    selected = [case for case in suite["cases"] if not args.profile or case["profile"] in args.profile]
+    if not selected:
+        parser.error("No cases selected")
+    allowed = {(case["id"], iteration) for case in selected for iteration in range(1, args.repeats + 1)}
+    if not done <= allowed:
+        parser.error("Resume report contains runs outside this experiment")
+    for case in selected:
         for iteration in range(1, args.repeats + 1):
+            if (case["id"], iteration) in done:
+                continue
             result = run_case(args, args.suite.parent, case, iteration)
             report["results"].append(result)
+            report["summary"] = summarize(report["results"])
             # An interruption preserves previous runs. Never overwrite a reviewed baseline.
             staging = args.output.with_name(args.output.name + ".tmp")
             staging.write_text(json.dumps(report, ensure_ascii=False, indent=2), encoding="utf-8")

@@ -286,8 +286,8 @@ impl Language {
             "Дедупликация результатов инструментов (задачи)" => {
                 "Deduplicate tool results (tasks)"
             }
-            "Повторные старые результаты передаются один раз со ссылками. Последний результат, ошибки и патчи сохраняются дословно. Экономия показывается в байтах; токены не оцениваются." => {
-                "Repeated older results are sent once with references. The latest result, errors and patches stay verbatim. Savings are shown in bytes; tokens are not estimated."
+            "Дедупликация сохраняет выбранные наблюдения дословно. При нехватке окна контекст отдельно сокращается с хешами. Локальные задачи считают токены выбранной моделью." => {
+                "Deduplication preserves selected observations verbatim. Context selection separately marks omissions with hashes. Local tasks count tokens using the selected model."
             }
             "Выбрать проект" => "Choose project",
             "Проект · необязательно" => "Project · optional",
@@ -584,6 +584,89 @@ impl Language {
             "Применимых предложений нет. Завершение протокола не доказывает решения задачи." => {
                 "No applicable proposals. Finishing the protocol does not prove the task was solved."
             }
+            "Проверка проекта в Docker" => "Project checks in Docker",
+            "Выбрать проверку JSON…" => "Choose JSON check…",
+            "Отключить проверку" => "Disable check",
+            "Модель сможет запускать только выбранную проверку в изолированной копии без сети." => {
+                "The model may run only the selected check in an isolated offline copy."
+            }
+            "Сохранять задачи для продолжения" => {
+                "Save tasks for resuming"
+            }
+            "База содержит выбранные исходники и предложения. Хранится локально, отдельно от истории чата." => {
+                "The database contains selected sources and proposals. It stays local, separate from chat history."
+            }
+            "Выбрать базу задач…" => "Choose task database…",
+            "Сохраненные задачи…" => "Saved tasks…",
+            "Сохраненные задачи" => "Saved tasks",
+            "В базе пока нет сохраненных задач." => {
+                "No saved tasks in this database yet."
+            }
+            "Чтение сохраненных задач…" => "Reading saved tasks…",
+            "Не удалось прочитать базу задач. Проверьте путь и журнал событий." => {
+                "Could not read task database. Check its path and Activity."
+            }
+            "Сохраненные задачи прочитаны." => "Saved tasks read.",
+            "Продолжение использует текущую модель и выбранную проверку. Исходный проект меняется только через применение предложений." => {
+                "Resume uses the current model and selected check. The original project changes only when proposals are applied."
+            }
+            "Продолжить задачу" => "Resume task",
+            "Для продолжения увеличьте общий лимит выше числа сохраненных вызовов." => {
+                "To resume, set the total budget above the number of saved calls."
+            }
+            "Предыдущая страница" => "Previous page",
+            "Следующая страница" => "Next page",
+            "Применить весь набор…" => "Apply all changes…",
+            "Применить весь набор?" => "Apply all changes?",
+            "Восстановление проекта" => "Project recovery",
+            "Применение набора правок…" => "Applying all changes…",
+            "Чтение состояния восстановления…" => {
+                "Reading recovery state…"
+            }
+            "Восстановление файлов…" => "Recovering files…",
+            "Откатить публикацию…" => "Roll back publication…",
+            "Завершить публикацию…" => "Complete publication…",
+            "Откатить публикацию?" => "Roll back publication?",
+            "Завершить публикацию?" => "Complete publication?",
+            "Обновить состояние" => "Refresh state",
+            "Применено" => "Applied",
+            "Исходное состояние" => "Original state",
+            "Есть незавершенная публикация." => {
+                "There is an unfinished publication."
+            }
+            "Незавершенных публикаций нет." => {
+                "No unfinished publications."
+            }
+            "Изменения из журнала отменены." => {
+                "Journaled changes were rolled back."
+            }
+            "Публикация из журнала завершена." => {
+                "Journaled publication was completed."
+            }
+            "Запись исходников не началась; можно очистить подготовку." => {
+                "Source writes did not start; preparation can be cleared."
+            }
+            "Подготовка очищена; исходники не менялись." => {
+                "Preparation cleared; source files were unchanged."
+            }
+            "Исходники в окне не показываются. Внешние изменения блокируют восстановление." => {
+                "Source code is not shown here. External changes block recovery."
+            }
+            "Состояние не прочитано. Подробности — в журнале событий." => {
+                "State was not read. See Activity for details."
+            }
+            "Набор правок применен. Запустите тесты проекта отдельно." => {
+                "Changes applied. Run project tests separately."
+            }
+            "Состояние восстановления прочитано." => {
+                "Recovery state read."
+            }
+            "Восстановление завершено. Проверьте файлы проекта." => {
+                "Recovery completed. Review the project files."
+            }
+            "Операция не завершена. Проверьте восстановление и журнал событий." => {
+                "Operation did not complete. Inspect recovery and Activity for details."
+            }
             "Применить…" => "Apply…",
             "Сохранить JSON-отчёт" => "Save JSON report",
             "Применено. Запусти тесты проекта отдельно." => {
@@ -607,8 +690,8 @@ impl Language {
             "3. Просмотри предложение, подтверди применение и запусти тесты проекта." => {
                 "3. Review the proposal, confirm application and run the project tests."
             }
-            "Модель не запускает shell и тесты. Ревью AI не заменяет проверку кода." => {
-                "The model cannot run a shell or tests. AI review does not replace testing."
+            "Модель выполняет только явно выбранную Docker-проверку. Ревью AI не заменяет тестирование." => {
+                "The model runs only an explicitly selected Docker check. AI review does not replace testing."
             }
             "Понятно" => "Got it",
             "Готова к локальной работе" => "Ready for local work",

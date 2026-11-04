@@ -11,6 +11,7 @@ mod settings;
 mod skills;
 mod theme;
 pub mod updater;
+mod workflows;
 use crate::agent::Report;
 use eframe::egui::{self, Color32, RichText};
 use icons::Icon;
@@ -203,6 +204,11 @@ enum Operation {
     #[cfg(feature = "gateway-http")]
     CloudChat,
     Apply(usize),
+    ApplyAll,
+    RecoveryStatus,
+    RecoveryRollback,
+    RecoveryComplete,
+    SessionList,
     Doctor,
     ProjectPlan,
     ProjectCreate,
@@ -247,7 +253,15 @@ struct Desktop {
     message: String,
     log: String,
     hardware: Option<serde_json::Value>,
-    confirm: Option<usize>,
+    confirm: Option<Operation>,
+    recovery_open: bool,
+    recovery_root: Option<PathBuf>,
+    recovery_view: Option<workflows::RecoveryView>,
+    saved_tasks_open: bool,
+    saved_tasks: Option<crate::session::SessionPage>,
+    saved_tasks_offset: usize,
+    saved_tasks_db: Option<PathBuf>,
+    resume_task: Option<String>,
     error: bool,
 }
 
@@ -291,6 +305,14 @@ impl Default for Desktop {
             log: String::new(),
             hardware: None,
             confirm: None,
+            recovery_open: false,
+            recovery_root: None,
+            recovery_view: None,
+            saved_tasks_open: false,
+            saved_tasks: None,
+            saved_tasks_offset: 0,
+            saved_tasks_db: None,
+            resume_task: None,
             error: false,
         }
     }
@@ -487,33 +509,21 @@ impl Desktop {
                 if self.prefs.dedup_tool_context {
                     args.push("--dedup-tool-context".into());
                 }
+                self.append_task_workflow_args(&mut args)?;
                 self.report = None;
                 self.report_json.clear();
                 self.applied.clear();
                 self.selected = 0;
                 Some(Duration::from_secs(self.prefs.timeout + 5))
             }
-            Operation::Apply(index) => {
-                let report = self
-                    .report
-                    .as_ref()
-                    .ok_or_else(|| io::Error::other("Нет отчёта."))?;
-                if !can_apply(report, index, &self.applied) {
-                    return Err(io::Error::other("Предложение нельзя применить."));
-                }
-                let path = temp.path().join("report.json");
-                std::fs::write(&path, &self.report_json)?;
-                args.extend([
-                    "apply".into(),
-                    "--repo".into(),
-                    report.workspace.as_os_str().into(),
-                    "--report".into(),
-                    path.into_os_string(),
-                    "--index".into(),
-                    index.to_string().into(),
-                ]);
-                None // Do not kill a worker while it commits a file replacement.
+            Operation::Apply(_)
+            | Operation::ApplyAll
+            | Operation::RecoveryStatus
+            | Operation::RecoveryRollback
+            | Operation::RecoveryComplete => {
+                self.prepare_publication_job(operation, &temp, &mut args)?
             }
+            Operation::SessionList => self.prepare_saved_tasks_job(&mut args)?,
             Operation::ProjectPlan
             | Operation::ProjectCreate
             | Operation::DocsFetch
@@ -527,11 +537,21 @@ impl Desktop {
         self.job = Some(Job::start(
             args,
             temp,
-            !matches!(operation, Operation::Apply(_) | Operation::ProjectCreate),
+            !matches!(
+                operation,
+                Operation::Apply(_)
+                    | Operation::ApplyAll
+                    | Operation::RecoveryRollback
+                    | Operation::RecoveryComplete
+                    | Operation::ProjectCreate
+            ),
             deadline,
             move || ctx.request_repaint(),
         )?);
         self.operation = operation;
+        if operation == Operation::Task {
+            self.resume_task = None;
+        }
         self.error = false;
         self.message = match operation {
             Operation::Task => "Модель работает…",
@@ -539,6 +559,10 @@ impl Desktop {
             #[cfg(feature = "gateway-http")]
             Operation::CloudChat => "HTTP-провайдер отвечает…",
             Operation::Apply(_) => "Применение выбранной правки…",
+            Operation::ApplyAll => "Применение набора правок…",
+            Operation::RecoveryStatus => "Чтение состояния восстановления…",
+            Operation::SessionList => "Чтение сохраненных задач…",
+            Operation::RecoveryRollback | Operation::RecoveryComplete => "Восстановление файлов…",
             Operation::Doctor => "Сбор сведений о ПК…",
             Operation::ProjectPlan => "Готовлю план проекта…",
             Operation::ProjectCreate => "Создаю новый проект…",
@@ -568,7 +592,7 @@ impl Desktop {
     }
 
     fn complete(&mut self, result: ResultData) {
-        self.log = result.stderr;
+        self.log = result.stderr.clone();
         let structured_task_timeout = self.operation == Operation::Task
             && serde_json::from_slice::<Report>(&result.stdout)
                 .is_ok_and(|r| matches!(r.schema_version, 1..=4) && r.status == "timeout");
@@ -676,15 +700,12 @@ impl Desktop {
                     result.code
                 )),
             },
-            Operation::Apply(index) => {
-                if result.code == Some(0) {
-                    self.applied.push(index);
-                    self.message = "Правка применена. Запустите тесты проекта отдельно.".into();
-                    self.error = false;
-                } else {
-                    self.fail("Правка не применена: конфликт или ошибка доступа. Откройте журнал.");
-                }
-            }
+            Operation::Apply(_)
+            | Operation::ApplyAll
+            | Operation::RecoveryStatus
+            | Operation::RecoveryRollback
+            | Operation::RecoveryComplete => self.complete_publication_job(&result),
+            Operation::SessionList => self.complete_saved_tasks_job(&result),
             Operation::Doctor => {
                 if result.code == Some(0) {
                     self.hardware = serde_json::from_slice(&result.stdout).ok();
@@ -697,7 +718,11 @@ impl Desktop {
         if !self.error
             && matches!(
                 self.operation,
-                Operation::Apply(_) | Operation::ProjectCreate
+                Operation::Apply(_)
+                    | Operation::ApplyAll
+                    | Operation::RecoveryRollback
+                    | Operation::RecoveryComplete
+                    | Operation::ProjectCreate
             )
         {
             self.chat.notice(self.message.clone());
@@ -733,6 +758,20 @@ impl Desktop {
                 {
                     self.settings_open = true;
                     self.transition = Some(Instant::now());
+                }
+                if self.job.is_none()
+                    && (self.prefs.repo.is_some() || self.report.is_some())
+                    && icons::button(
+                        ui,
+                        Icon::Folder,
+                        l.text("Восстановление проекта"),
+                        false,
+                        c.muted,
+                    )
+                    .clicked()
+                    && let Err(e) = self.start(Operation::RecoveryStatus, ui.ctx())
+                {
+                    self.fail(e);
                 }
                 let response = icons::button(
                     ui,
@@ -939,14 +978,15 @@ impl Desktop {
                         ui.label(RichText::new(l.text("Сокращается только история чата; исходники и ошибки не переписываются.")).small().weak());
                         ui.separator();
                         ui.checkbox(&mut self.prefs.dedup_tool_context, l.text("Дедупликация результатов инструментов (задачи)"));
-                        ui.label(RichText::new(l.text("Повторные старые результаты передаются один раз со ссылками. Последний результат, ошибки и патчи сохраняются дословно. Экономия показывается в байтах; токены не оцениваются.")).small().weak());
+                        ui.label(RichText::new(l.text("Дедупликация сохраняет выбранные наблюдения дословно. При нехватке окна контекст отдельно сокращается с хешами. Локальные задачи считают токены выбранной моделью.")).small().weak());
                     }).response,
                     SettingsPage::Workers=>ui.add_enabled_ui(self.job.is_none(),|ui|{
                         icons::toggle(ui,&mut self.prefs.subagents,l.text("Исследователь и ревьюер"),self.prefs.animations,c.accent,c.on_accent);
                         if self.prefs.subagents{self.prefs.calls=self.prefs.calls.max(3);}
                         ui.label(RichText::new(l.text("Роли работают последовательно с одной моделью. Дополнительные проверки требуют времени.")).small().weak());
                         let min=if self.prefs.subagents{3}else{1};
-                        setting_slider(ui,l.text("Общий лимит вызовов"),&mut self.prefs.calls,min..=24,false,l.text("Бюджет общий для всех ролей. Исследователь и ревьюер не изменяют файлы."),c.muted);
+                        setting_slider(ui,l.text("Общий лимит вызовов"),&mut self.prefs.calls,min..=256,false,l.text("Бюджет общий для всех ролей. Исследователь и ревьюер не изменяют файлы."),c.muted);
+                        self.workflow_settings(ui);
                     }).response,
                     SettingsPage::Appearance=>ui.vertical(|ui|{
                         ui.label(l.text("Тема"));
@@ -1208,7 +1248,16 @@ impl Desktop {
                     )
                     .clicked()
                 {
-                    self.confirm = Some(self.selected);
+                    self.confirm = Some(Operation::Apply(self.selected));
+                }
+                if ui
+                    .add_enabled(
+                        self.job.is_none() && workflows::can_apply_all(report, &self.applied),
+                        egui::Button::new(l.text("Применить весь набор…")),
+                    )
+                    .clicked()
+                {
+                    self.confirm = Some(Operation::ApplyAll);
                 }
                 if icons::button(
                     ui,
@@ -1316,16 +1365,43 @@ impl Desktop {
                     self.chat_home(ui);
                 }
             });
-        if let Some(index) = self.confirm {
-            let path = self
-                .report
-                .as_ref()
-                .and_then(|r| r.proposals.get(index))
-                .map(|e| e.path.clone())
-                .unwrap_or_default();
+        if let Some(operation) = self.confirm {
+            let path = match operation {
+                Operation::Apply(index) => self
+                    .report
+                    .as_ref()
+                    .and_then(|r| r.proposals.get(index))
+                    .map(|e| e.path.clone())
+                    .unwrap_or_default(),
+                Operation::ApplyAll => self
+                    .report
+                    .as_ref()
+                    .map(|r| {
+                        r.proposals
+                            .iter()
+                            .map(|e| e.path.as_str())
+                            .collect::<Vec<_>>()
+                            .join("\n")
+                    })
+                    .unwrap_or_default(),
+                _ => self
+                    .recovery_root
+                    .as_ref()
+                    .map(|p| p.display().to_string())
+                    .unwrap_or_default(),
+            };
             egui::Modal::new(egui::Id::unique("confirm-apply")).show(ui.ctx(), |ui| {
-                ui.heading(l.text("Применить изменение?"));
-                ui.label(path);
+                ui.heading(l.text(match operation {
+                    Operation::ApplyAll => "Применить весь набор?",
+                    Operation::RecoveryRollback => "Откатить публикацию?",
+                    Operation::RecoveryComplete => "Завершить публикацию?",
+                    _ => "Применить изменение?",
+                }));
+                egui::ScrollArea::vertical()
+                    .max_height(220.0)
+                    .show(ui, |ui| {
+                        ui.label(path);
+                    });
                 ui.label(l.text(
                     "Исходное содержимое будет проверено ещё раз. При конфликте запись отменится.",
                 ));
@@ -1333,7 +1409,7 @@ impl Desktop {
                     if icons::action(ui, Icon::Check, l.text("Применить"), c.accent).clicked()
                     {
                         self.confirm = None;
-                        if let Err(e) = self.start(Operation::Apply(index), ui.ctx()) {
+                        if let Err(e) = self.start(operation, ui.ctx()) {
                             self.fail(e);
                         }
                     }
@@ -1343,6 +1419,8 @@ impl Desktop {
                 });
             });
         }
+        self.recovery_window(ui.ctx());
+        self.saved_tasks_window(ui.ctx());
         if self.update_confirm {
             egui::Modal::new(egui::Id::unique("confirm-update")).show(ui.ctx(), |ui| {
                 ui.set_max_width(430.0);
@@ -1372,7 +1450,7 @@ impl Desktop {
                 ));
                 ui.label(
                     RichText::new(l.text(
-                        "Модель не запускает shell и тесты. Ревью AI не заменяет проверку кода.",
+                        "Модель выполняет только явно выбранную Docker-проверку. Ревью AI не заменяет тестирование.",
                     ))
                     .small()
                     .weak(),
@@ -1650,7 +1728,7 @@ mod tests {
         configure(&ctx);
         let mut app = Desktop::default();
         app.report = Some(report);
-        app.confirm = Some(0);
+        app.confirm = Some(Operation::Apply(0));
         let mut output = ctx.run_ui(
             egui::RawInput {
                 screen_rect: Some(egui::Rect::from_min_size(

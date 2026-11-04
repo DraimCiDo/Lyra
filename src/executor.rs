@@ -33,6 +33,10 @@ pub struct VerificationResult {
     pub output_truncated: bool,
     pub elapsed_ms: u64,
     pub cleanup_confirmed: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source_sha256: Option<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub source_scope: Vec<String>,
 }
 impl VerificationResult {
     pub fn passed(&self) -> bool {
@@ -231,6 +235,8 @@ fn capture(
         output_truncated: out_cut || err_cut,
         elapsed_ms: started.elapsed().as_millis() as u64,
         cleanup_confirmed: false,
+        source_sha256: None,
+        source_scope: Vec::new(),
     })
 }
 
@@ -337,6 +343,90 @@ fn preflight_image(image: &str, cancel: &AtomicBool) -> io::Result<()> {
     Ok(())
 }
 
+fn snapshot_sources(
+    mut workspace: crate::workspace::Workspace,
+    proposals: &[crate::workspace::Edit],
+    allow_applied: bool,
+) -> io::Result<std::collections::BTreeMap<String, String>> {
+    if proposals.len() > crate::workspace::MAX_PROPOSALS {
+        return Err(io::Error::other("Too many proposals for check"));
+    }
+    let mut sources = std::collections::BTreeMap::new();
+    let mut total = 0usize;
+    for file in workspace.files.clone() {
+        let content = workspace.read_snapshot(&file)?;
+        total += content.len();
+        if total > crate::workspace::SNAPSHOT_BUDGET {
+            return Err(io::Error::other("Check snapshot exceeds 16 MiB"));
+        }
+        sources.insert(file, content);
+    }
+    for edit in proposals {
+        if edit.original.contains('\0')
+            || edit.replacement.contains('\0')
+            || edit.replacement.len() > crate::workspace::FILE_LIMIT
+            || edit.create && !edit.original.is_empty()
+        {
+            return Err(io::Error::other("Invalid check proposal content"));
+        }
+        if edit.create {
+            if allow_applied && workspace.dir.symlink_metadata(&edit.path).is_ok() {
+                workspace.safe_path(&edit.path)?;
+                workspace.files.insert(edit.path.clone());
+                if workspace.read_tool(&edit.path)? != edit.replacement {
+                    return Err(io::Error::other(
+                        "Created file conflicts with checked snapshot",
+                    ));
+                }
+            } else {
+                workspace.propose_new(&edit.path, &edit.replacement)?;
+            }
+        } else if !sources.get(&edit.path).is_some_and(|current| {
+            current == &edit.original || allow_applied && current == &edit.replacement
+        }) {
+            return Err(io::Error::other("Check proposal conflicts with original"));
+        }
+        sources.insert(edit.path.clone(), edit.replacement.clone());
+    }
+    if sources.len() > crate::workspace::SNAPSHOT_FILES
+        || sources.values().map(String::len).sum::<usize>() > crate::workspace::SNAPSHOT_BUDGET
+    {
+        return Err(io::Error::other("Final checked snapshot exceeds limits"));
+    }
+    let portable: std::collections::BTreeSet<_> =
+        sources.keys().map(|p| p.to_lowercase()).collect();
+    if portable.len() != sources.len() {
+        return Err(io::Error::other(
+            "Case-colliding snapshot paths are not portable",
+        ));
+    }
+    Ok(sources)
+}
+fn source_hash(sources: &std::collections::BTreeMap<String, String>) -> String {
+    use sha2::{Digest, Sha256};
+    let mut hash = Sha256::new();
+    for (path, content) in sources {
+        hash.update((path.len() as u64).to_le_bytes());
+        hash.update(path.as_bytes());
+        hash.update((content.len() as u64).to_le_bytes());
+        hash.update(content.as_bytes());
+    }
+    hash.finalize().iter().map(|b| format!("{b:02x}")).collect()
+}
+pub(crate) fn checked_source_hash(
+    repo: &Path,
+    scope: &[String],
+    proposals: &[crate::workspace::Edit],
+    allow_applied: bool,
+) -> io::Result<String> {
+    let workspace = crate::workspace::Workspace::exact_snapshot_scope(repo, scope)?;
+    Ok(source_hash(&snapshot_sources(
+        workspace,
+        proposals,
+        allow_applied,
+    )?))
+}
+
 /// Copies only permitted regular UTF-8 files; no host sockets, links or credentials
 /// are mounted. Source is read-only; all check output must go to container /tmp.
 /// The caller grants this check explicitly; models cannot select an image or argv.
@@ -365,39 +455,22 @@ pub fn verify_changes(
     }
     preflight(cancel)?;
     preflight_image(&request.image, cancel)?;
-    let mut workspace = crate::workspace::Workspace::open(repo, files)?;
-    if workspace.truncated {
-        return Err(io::Error::other(
-            "Check snapshot is incomplete; select files explicitly",
-        ));
+    let workspace = crate::workspace::Workspace::for_snapshot(repo, files)?;
+    let scope: Vec<_> = workspace.files.iter().cloned().collect();
+    if serde_json::to_vec(&scope).map_err(io::Error::other)?.len() > 256 * 1024 {
+        return Err(io::Error::other("Snapshot path metadata exceeds 256 KiB"));
     }
+    let sources = snapshot_sources(workspace, proposals, false)?;
+    let source_sha256 = source_hash(&sources);
     let snapshot = crate::workspace::private_tempdir("lyra-check-")?;
     let source_root = snapshot.path().join("source");
     std::fs::create_dir(&source_root)?;
-    for file in workspace.files.clone() {
-        let content = workspace.read(&file)?;
+    for (file, content) in sources {
         let path = source_root.join(file);
         if let Some(parent) = path.parent() {
             std::fs::create_dir_all(parent)?;
         }
         std::fs::write(path, content)?;
-    }
-    if proposals.len() > 8 {
-        return Err(io::Error::other("Too many proposals for check"));
-    }
-    for edit in proposals {
-        if edit.create {
-            workspace.propose_new(&edit.path, &edit.replacement)?;
-        } else if workspace.read(&edit.path)? != edit.original
-            || edit.replacement.len() > crate::workspace::FILE_LIMIT
-        {
-            return Err(io::Error::other("Check proposal conflicts with original"));
-        }
-        let path = source_root.join(&edit.path);
-        if let Some(parent) = path.parent() {
-            std::fs::create_dir_all(parent)?;
-        }
-        std::fs::write(path, &edit.replacement)?;
     }
     #[cfg(unix)]
     {
@@ -426,6 +499,8 @@ pub fn verify_changes(
     cleanup.args(["rm", "--force", "--volumes", &name]);
     let cleaned = capture(cleanup, Duration::from_secs(5), &AtomicBool::new(false));
     let mut result = result?;
+    result.source_sha256 = Some(source_sha256);
+    result.source_scope = scope;
     if !result.cancelled
         && result.exit_code == Some(137)
         && result.elapsed_ms >= request.timeout_secs * 1000
@@ -570,6 +645,81 @@ mod tests {
     }
 
     #[test]
+    fn source_proof_blocks_dependency_drift_and_allows_partial_publication_of_the_same_set() {
+        use crate::workspace::Edit;
+        let repo = tempfile::tempdir().unwrap();
+        for (name, text) in [("a.rs", "a"), ("b.rs", "b"), ("dep.rs", "dependency")] {
+            std::fs::write(repo.path().join(name), text).unwrap();
+        }
+        let edits = vec![
+            Edit {
+                path: "new.rs".into(),
+                original: String::new(),
+                replacement: "new".into(),
+                create: true,
+            },
+            Edit {
+                path: "a.rs".into(),
+                original: "a".into(),
+                replacement: "A".into(),
+                create: false,
+            },
+            Edit {
+                path: "b.rs".into(),
+                original: "b".into(),
+                replacement: "B".into(),
+                create: false,
+            },
+        ];
+        let scope = vec!["a.rs".into(), "b.rs".into(), "dep.rs".into()];
+        let source_sha = checked_source_hash(repo.path(), &scope, &edits, false).unwrap();
+        let metadata = tempfile::tempdir().unwrap();
+        let report = metadata.path().join("report.json");
+        let value = serde_json::json!({"schema_version":4,"workspace":repo.path().canonicalize().unwrap(),"status":"completed","outcome":"changes_verified",
+            "proposals":edits,"summaries":[],"events":[],"calls":1,"subagents":false,"truncated_index":false,"model_review_is_verified_test":false,
+            "verification_scope":scope,"verifications":[{"proposal_sha256":"proof","check_sha256":"check","result":{"exit_code":0,"timed_out":false,"cancelled":false,"stdout":"ok","stderr":"","output_truncated":false,"elapsed_ms":1,"cleanup_confirmed":true,"source_sha256":source_sha}}]});
+        std::fs::write(&report, value.to_string()).unwrap();
+        std::fs::write(repo.path().join("dep.rs"), "external dependency change").unwrap();
+        assert!(
+            crate::agent::apply(
+                crate::agent::ApplyArgs {
+                    repo: repo.path().into(),
+                    report: report.clone(),
+                    index: None,
+                    all: true
+                },
+                &mut Vec::new()
+            )
+            .is_err()
+        );
+        assert_eq!(
+            std::fs::read_to_string(repo.path().join("a.rs")).unwrap(),
+            "a"
+        );
+        assert!(!repo.path().join("new.rs").exists());
+        std::fs::write(repo.path().join("dep.rs"), "dependency").unwrap();
+        for index in 0..3 {
+            crate::agent::apply(
+                crate::agent::ApplyArgs {
+                    repo: repo.path().into(),
+                    report: report.clone(),
+                    index: Some(index),
+                    all: false,
+                },
+                &mut Vec::new(),
+            )
+            .unwrap();
+        }
+        assert_eq!(
+            std::fs::read_to_string(repo.path().join("a.rs")).unwrap(),
+            "A"
+        );
+        assert_eq!(
+            std::fs::read_to_string(repo.path().join("b.rs")).unwrap(),
+            "B"
+        );
+    }
+    #[test]
     fn bounded_logs_and_verified_evidence() {
         let (out, truncated) = bounded_read(&b"abcdef"[..], 3).unwrap();
         assert_eq!(out, "abc");
@@ -583,6 +733,8 @@ mod tests {
             output_truncated: false,
             elapsed_ms: 0,
             cleanup_confirmed: false,
+            source_sha256: None,
+            source_scope: Vec::new(),
         };
         assert!(!result.passed());
         result.cleanup_confirmed = true;

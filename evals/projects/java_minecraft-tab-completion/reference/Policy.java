@@ -1,0 +1,1 @@
+import java.util.*;public class Policy {public static List<String> complete(List<String> names,String prefix){var result=new TreeSet<String>();String p=prefix.toLowerCase(Locale.ROOT);for(String name:names)if(name.toLowerCase(Locale.ROOT).startsWith(p))result.add(name);return List.copyOf(result);}}

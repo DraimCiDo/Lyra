@@ -1,0 +1,11 @@
+{
+  "image": "node@sha256:a43f7fc3e52e87d12a905f46eea0275def84ca8f2981a5b53fed44d7fb398ee0",
+  "program": "node",
+  "args": [
+    "--input-type=module",
+    "-e",
+    "import assert from 'node:assert/strict';\nimport * as sut from '/source/main.mjs';\nconst lines=[{cents:125,qty:2},{cents:99,qty:3}];const old=JSON.stringify(lines);assert.equal(sut.checkout(lines,10),492);assert.equal(sut.checkout([],20),0);assert.equal(JSON.stringify(lines),old);assert.equal(sut.checkout([{cents:101,qty:1}],50),51);assert.throws(()=>sut.checkout(lines,101));assert.throws(()=>sut.checkout([{cents:1,qty:-1}],0));\n"
+  ],
+  "timeout_secs": 60,
+  "memory_mib": 512
+}

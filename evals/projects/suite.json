@@ -1,0 +1,977 @@
+{
+  "schema_version": 1,
+  "cases": [
+    {
+      "id": "python-ttl-cache",
+      "profile": "python",
+      "kind": "small_fix",
+      "acceptance_level": "unit",
+      "source": "python-ttl-cache/source",
+      "reference": "python-ttl-cache/reference",
+      "sha256": {
+        "main.py": "cd3e4002a84896e4f82fa7e1286948612b43a94a40039da1facd3db0c30221f4"
+      },
+      "reference_sha256": {
+        "main.py": "f176d023f6a2d7f58021ffb2ba5ab8a163f5fe7b062fec954e36d8d02067592d"
+      },
+      "baseline": "fail",
+      "baseline_exit_code": 1,
+      "files": [
+        "main.py"
+      ],
+      "allowed_changes": [
+        "main.py"
+      ],
+      "task": "Fix expiration at the exact deadline, distinguish cached None from a miss, and keep the cache clock injectable. Preserve public APIs and verify the result with the configured check.",
+      "check_config": "python-ttl-cache/check.json",
+      "check_sha256": "d6f294bcd0e18370a1fbeff17c4aaecda94ed94244bfb062c4d2776d66523b92"
+    },
+    {
+      "id": "python-retry-policy",
+      "profile": "python",
+      "kind": "small_fix",
+      "acceptance_level": "unit",
+      "source": "python-retry-policy/source",
+      "reference": "python-retry-policy/reference",
+      "sha256": {
+        "main.py": "d0478007705eb17e319c714696927a8099c935849bf6f7a619bcf5e826e3b9ac"
+      },
+      "reference_sha256": {
+        "main.py": "b19219aa8e942cfafdffdd256c8a9a2ae0ea1448da6ae207aea8aca002e8fa76"
+      },
+      "baseline": "fail",
+      "baseline_exit_code": 1,
+      "files": [
+        "main.py"
+      ],
+      "allowed_changes": [
+        "main.py"
+      ],
+      "task": "Fix retry accounting: attempts includes the first call; retry only Retryable, return successful values unchanged, and never swallow other exceptions. Preserve public APIs and verify the result with the configured check.",
+      "check_config": "python-retry-policy/check.json",
+      "check_sha256": "e42af4429dadec18437e0641a4c4be0da35bf64eeaf57b866465e0cee7e64156"
+    },
+    {
+      "id": "python-batch-import",
+      "profile": "python",
+      "kind": "multifile",
+      "acceptance_level": "unit",
+      "source": "python-batch-import/source",
+      "reference": "python-batch-import/reference",
+      "sha256": {
+        "main.py": "23fc02841758235d659eb9a111e58c8df3ecfba080c7d7c1ffac6dd885657c03",
+        "rows.py": "bfedb478449cea1ab8431c852c7400aacc9370eb87b553a76bf4a5b1b0ff388e"
+      },
+      "reference_sha256": {
+        "main.py": "aa560b2971bdf980301138edfc5f4d07845a1a4338fd5b92af6df4ff488d419f",
+        "rows.py": "f2ca39a1a2b776125fd29038086b2e7f3a7aa84a3c711f318cc45a03ca315a70"
+      },
+      "baseline": "fail",
+      "baseline_exit_code": 1,
+      "files": [
+        "main.py",
+        "rows.py"
+      ],
+      "allowed_changes": [
+        "main.py",
+        "rows.py"
+      ],
+      "task": "Fix CSV import across both files: preserve quoted commas, trim header names, reject missing/duplicate IDs and make duplicate detection work across the full batch. Preserve public APIs and verify the result with the configured check.",
+      "check_config": "python-batch-import/check.json",
+      "check_sha256": "a4d6d199c071cfee1e6680226417ec744c9e1ec45aeb7f758f300930b33237e1"
+    },
+    {
+      "id": "python-bot-router",
+      "profile": "python",
+      "kind": "multifile",
+      "acceptance_level": "unit",
+      "source": "python-bot-router/source",
+      "reference": "python-bot-router/reference",
+      "sha256": {
+        "main.py": "cd20dfd5bac1d2cd26cf91fc6f02cb07e8571a1e7e8166f3b6e18ebbf6f40a4f",
+        "commands.py": "d7534eef7821d33943d9dfd9b30eb2fcf263040b7880ae8997a5e4c191a5c23c"
+      },
+      "reference_sha256": {
+        "main.py": "f38b761cf7ba924f5362c9cdb96a85d49bbb1eb600781ab4f36ccd83196c9fb4",
+        "commands.py": "aab7c34b58645cc24deeffb41694eca0f2ec3cf6b99fbb20e78b5e12a3fbc5ee"
+      },
+      "baseline": "fail",
+      "baseline_exit_code": 1,
+      "files": [
+        "main.py",
+        "commands.py"
+      ],
+      "allowed_changes": [
+        "main.py",
+        "commands.py"
+      ],
+      "task": "Fix bot command parsing and routing: strip an optional @Bot suffix, preserve arguments, dispatch only registered commands and return None for ordinary messages. Preserve public APIs and verify the result with the configured check.",
+      "check_config": "python-bot-router/check.json",
+      "check_sha256": "ce442a95072f07f3bd5fe9caafe1b0988720d9983a04d929cbf1ffb8dba2d359"
+    },
+    {
+      "id": "python-dependency-order",
+      "profile": "python",
+      "kind": "new_feature",
+      "acceptance_level": "unit",
+      "source": "python-dependency-order/source",
+      "reference": "python-dependency-order/reference",
+      "sha256": {
+        "main.py": "33f5e4cb0dcb69b99f312a0d4725c5a262ddb2f0a534ca829341c335af21d9d4"
+      },
+      "reference_sha256": {
+        "main.py": "947e7b07062758dd2b114f327903d2563e44f144fbd9f09e900b942a326bd9a1"
+      },
+      "baseline": "fail",
+      "baseline_exit_code": 1,
+      "files": [
+        "main.py"
+      ],
+      "allowed_changes": [
+        "main.py"
+      ],
+      "task": "Implement deterministic topological ordering of a dependency map. Include dependency-only nodes, sort available nodes lexically, reject cycles, and do not mutate the input. Preserve public APIs and verify the result with the configured check.",
+      "check_config": "python-dependency-order/check.json",
+      "check_sha256": "9e770a1585598628829591cb09b001f5bb9b9e4b863842f6637a433319056896"
+    },
+    {
+      "id": "python-job-deduplication",
+      "profile": "python",
+      "kind": "new_feature",
+      "acceptance_level": "unit",
+      "source": "python-job-deduplication/source",
+      "reference": "python-job-deduplication/reference",
+      "sha256": {
+        "main.py": "63f75785238b12b74879458a4eb1e847104590b5735ea1d29d56fc30050d28b0"
+      },
+      "reference_sha256": {
+        "main.py": "8a8420a9657c87be8c106c7c5e0bed602e26c91badcbb07d7a92b712b9ea09c9"
+      },
+      "baseline": "fail",
+      "baseline_exit_code": 1,
+      "files": [
+        "main.py"
+      ],
+      "allowed_changes": [
+        "main.py"
+      ],
+      "task": "Implement a FIFO job queue with deduplication while pending. pop removes the ID so it can be enqueued again; falsey payloads are valid; empty pop returns None. Preserve public APIs and verify the result with the configured check.",
+      "check_config": "python-job-deduplication/check.json",
+      "check_sha256": "92ea95d0c437d70ddd3cf0f03ff5c773a9b159548bfb5e4ab9797ed9579c3edf"
+    },
+    {
+      "id": "backend-pagination",
+      "profile": "backend",
+      "kind": "small_fix",
+      "acceptance_level": "unit",
+      "source": "backend-pagination/source",
+      "reference": "backend-pagination/reference",
+      "sha256": {
+        "main.py": "53552b4ec661444bc37eb783b50b0e29b69ae7f4cd83b34494fbbab035f8711b"
+      },
+      "reference_sha256": {
+        "main.py": "25d180efaa345b4aa1844342168859ab4f761c0d0651c1ef64445b863f46d752"
+      },
+      "baseline": "fail",
+      "baseline_exit_code": 1,
+      "files": [
+        "main.py"
+      ],
+      "allowed_changes": [
+        "main.py"
+      ],
+      "task": "Fix the pagination contract: page and size are positive, size is capped at 100, out-of-range pages return an empty list, and total is measured before slicing. Preserve public APIs and verify the result with the configured check.",
+      "check_config": "backend-pagination/check.json",
+      "check_sha256": "cb738cf7227dddba78e407d72cafa8b89e56a2db65833b4febad16922de38364"
+    },
+    {
+      "id": "backend-tenant-authorization",
+      "profile": "backend",
+      "kind": "small_fix",
+      "acceptance_level": "unit",
+      "source": "backend-tenant-authorization/source",
+      "reference": "backend-tenant-authorization/reference",
+      "sha256": {
+        "main.py": "e8cceb1b32216d57ed5f3cd94ab9ce055fde97354d03322362af13c461d32aa4"
+      },
+      "reference_sha256": {
+        "main.py": "da77c3e2d4fcf8cec8b9f3bb5140d6b1fb5dd856a3868966e18c91d2dc422bfc"
+      },
+      "baseline": "fail",
+      "baseline_exit_code": 1,
+      "files": [
+        "main.py"
+      ],
+      "allowed_changes": [
+        "main.py"
+      ],
+      "task": "Fix tenant authorization: resource tenant must match, owner may access, admins are scoped to their tenant, and anonymous/malformed identities are denied. Preserve public APIs and verify the result with the configured check.",
+      "check_config": "backend-tenant-authorization/check.json",
+      "check_sha256": "a5145a11d81f21ec27b68333bf79ff223b9001af84549ea10b5a1b0deec8c82b"
+    },
+    {
+      "id": "backend-optimistic-update",
+      "profile": "backend",
+      "kind": "multifile",
+      "acceptance_level": "unit",
+      "source": "backend-optimistic-update/source",
+      "reference": "backend-optimistic-update/reference",
+      "sha256": {
+        "main.py": "e6cf0d7f74c80f73de1827f29348cbef6ca44ddf50ae28873a82b70d64913c2f",
+        "store.py": "ef8a5eca6fe00ef5935a7d904d73bdd73157d0b3f32bac6a2cbc86aa46a7c6cb"
+      },
+      "reference_sha256": {
+        "main.py": "9c6306d1be26ebbac7872b70f2422dd86d30ce07b359096f832debd97897f4a2",
+        "store.py": "34e80cd88afcd348080176dbfc91373037ab3485b317ead9fdf0d445b46eaed9"
+      },
+      "baseline": "fail",
+      "baseline_exit_code": 1,
+      "files": [
+        "main.py",
+        "store.py"
+      ],
+      "allowed_changes": [
+        "main.py",
+        "store.py"
+      ],
+      "task": "Fix revisioned updates across repository and service: reject stale revisions, preserve old fields, increment revision once, and return 404 for an unknown ID or 409 for stale writes. Preserve public APIs and verify the result with the configured check.",
+      "check_config": "backend-optimistic-update/check.json",
+      "check_sha256": "733ab834f6736f9957d11cec1740b1154d02d45e39eb9d0a5aaa03031e7f25c6"
+    },
+    {
+      "id": "backend-order-transaction",
+      "profile": "backend",
+      "kind": "multifile",
+      "acceptance_level": "unit",
+      "source": "backend-order-transaction/source",
+      "reference": "backend-order-transaction/reference",
+      "sha256": {
+        "main.py": "90ffae3531db396dd94e422bb4fee3dc2c7b42c69e01ccd80def024c5b01588c",
+        "validation.py": "b7e3da1a05ddfdc04acd61dd664bd6f6b71d571ef4a0daa021adc71767b77cbb"
+      },
+      "reference_sha256": {
+        "main.py": "a55e79b8b42b093495c5b20a31b638716fee8176fb3a8b4d3d8e7f2dc2e57cf9",
+        "validation.py": "94a035fea9d98533e10d5a56fd5e68cd94838ba04b8ce9673f7d03d71a58494e"
+      },
+      "baseline": "fail",
+      "baseline_exit_code": 1,
+      "files": [
+        "main.py",
+        "validation.py"
+      ],
+      "allowed_changes": [
+        "main.py",
+        "validation.py"
+      ],
+      "task": "Fix checkout across validation and inventory. Validate all quantities/availability before decrementing anything, merge duplicate SKUs, and reject zero/negative quantities without partial stock changes. Preserve public APIs and verify the result with the configured check.",
+      "check_config": "backend-order-transaction/check.json",
+      "check_sha256": "1dec83576873b159fb6b92ff00d16a2ed41f6c3f25f38ea3648829fc2d21a2de"
+    },
+    {
+      "id": "backend-idempotency-store",
+      "profile": "backend",
+      "kind": "new_feature",
+      "acceptance_level": "unit",
+      "source": "backend-idempotency-store/source",
+      "reference": "backend-idempotency-store/reference",
+      "sha256": {
+        "main.py": "df7a43cd0b8f33f213b415bc232a40c47759e06c83bdd07225017e386621a7ce"
+      },
+      "reference_sha256": {
+        "main.py": "59341af0bc16afd71cc2214bf65733722a75cee1d9b1bdc840eecdc4c468fabb"
+      },
+      "baseline": "fail",
+      "baseline_exit_code": 1,
+      "files": [
+        "main.py"
+      ],
+      "allowed_changes": [
+        "main.py"
+      ],
+      "task": "Implement per-tenant idempotent execution. Cache successful results including None, reject key reuse with another request fingerprint, and allow retry after a failed operation. Preserve public APIs and verify the result with the configured check.",
+      "check_config": "backend-idempotency-store/check.json",
+      "check_sha256": "54b8473471b6325bdb9e4979c4ecd0676b3b9dc81a474a9535f1bd4041e40bc6"
+    },
+    {
+      "id": "backend-token-bucket",
+      "profile": "backend",
+      "kind": "new_feature",
+      "acceptance_level": "unit",
+      "source": "backend-token-bucket/source",
+      "reference": "backend-token-bucket/reference",
+      "sha256": {
+        "main.py": "a8dab888fe2e1a0a193cb7663c73703105097c23e56d0a0f0ae2a57d505d45c1"
+      },
+      "reference_sha256": {
+        "main.py": "042c333b05739eb8050999ff2837f2a5901d7e7eb012ea4658bc8bf83bfb52ec"
+      },
+      "baseline": "fail",
+      "baseline_exit_code": 1,
+      "files": [
+        "main.py"
+      ],
+      "allowed_changes": [
+        "main.py"
+      ],
+      "task": "Implement an injectable-clock token bucket: refill by elapsed time up to capacity, reject overdraw without consuming tokens, and do not refill when the clock moves backwards. Preserve public APIs and verify the result with the configured check.",
+      "check_config": "backend-token-bucket/check.json",
+      "check_sha256": "ca55ef63e62bb06482c0a2d846254706a971c07be063d0b1ff84dd5162ce26a3"
+    },
+    {
+      "id": "rust-deadline",
+      "profile": "rust",
+      "kind": "small_fix",
+      "acceptance_level": "unit",
+      "source": "rust-deadline/source",
+      "reference": "rust-deadline/reference",
+      "sha256": {
+        "lib.rs": "97b31f2b2f26c57043e0c27c242449f705f44d91dccba4894271c3dd04d739d4"
+      },
+      "reference_sha256": {
+        "lib.rs": "2f95ff91c00d7b5653dafae6d5b2d78bc81f2040cfcf173cba454c53282458cd"
+      },
+      "baseline": "fail",
+      "baseline_exit_code": 101,
+      "files": [
+        "lib.rs"
+      ],
+      "allowed_changes": [
+        "lib.rs"
+      ],
+      "task": "Fix deadline checks: an entry is alive strictly before expiration, including boundary and u64 extremes. Preserve public APIs and verify the result with the configured check.",
+      "check_config": "rust-deadline/check.json",
+      "check_sha256": "17a9e26bacd6f4872f4bd7ffd83195ec6074a4df372c4feffebc3615ab350558"
+    },
+    {
+      "id": "rust-portable-path",
+      "profile": "rust",
+      "kind": "small_fix",
+      "acceptance_level": "unit",
+      "source": "rust-portable-path/source",
+      "reference": "rust-portable-path/reference",
+      "sha256": {
+        "lib.rs": "3ff93baec6552cc69a677e36eb5d6037748cea426637ecebf4434144eaa6a8ce"
+      },
+      "reference_sha256": {
+        "lib.rs": "bc1dbbec780c40dbe5b545518e8a8d6dd5e442bc4f5fba80e6bcef82e6635d54"
+      },
+      "baseline": "fail",
+      "baseline_exit_code": 101,
+      "files": [
+        "lib.rs"
+      ],
+      "allowed_changes": [
+        "lib.rs"
+      ],
+      "task": "Fix portable relative path validation: reject absolute paths, empty segments, traversal, drive prefixes, backslashes and dot-prefixed segments; retain Unicode file names. Preserve public APIs and verify the result with the configured check.",
+      "check_config": "rust-portable-path/check.json",
+      "check_sha256": "d84944674d6cdacb64aa8ceaac63c401befb663c2c2de526b3e5cddb706ef959"
+    },
+    {
+      "id": "rust-frame-decoder",
+      "profile": "rust",
+      "kind": "multifile",
+      "acceptance_level": "unit",
+      "source": "rust-frame-decoder/source",
+      "reference": "rust-frame-decoder/reference",
+      "sha256": {
+        "lib.rs": "68640a719d4203b923dcce037b356dab1fcaeda095cc60de06b183562b1ca5b6",
+        "length.rs": "2614496b122d1c58ba60583473b53ba21aff236dacaeb34d0896cd257ae7ac11"
+      },
+      "reference_sha256": {
+        "lib.rs": "5c9cf77672c89ba11ff74e776d864a04c500e4730f301471d055924b5da639e2",
+        "length.rs": "d6df7626ba3af15878e2776e21719fc486de53f3344dcd769a693254a0859a40"
+      },
+      "baseline": "fail",
+      "baseline_exit_code": 101,
+      "files": [
+        "lib.rs",
+        "length.rs"
+      ],
+      "allowed_changes": [
+        "lib.rs",
+        "length.rs"
+      ],
+      "task": "Fix incremental u16 big-endian frame decoding across both modules. Preserve incomplete bytes for the next call, accept empty frames, and reject declared frame sizes above 32. Preserve public APIs and verify the result with the configured check.",
+      "check_config": "rust-frame-decoder/check.json",
+      "check_sha256": "8fb32b3e591212a5ad9976ed0b5cbd555fa5b1afedc4200e2ec1c1cf7f0986e3"
+    },
+    {
+      "id": "rust-balance-transfer",
+      "profile": "rust",
+      "kind": "multifile",
+      "acceptance_level": "unit",
+      "source": "rust-balance-transfer/source",
+      "reference": "rust-balance-transfer/reference",
+      "sha256": {
+        "lib.rs": "15a32b16067b25458d056d77e9e836686b1899e803aabdacf7d6382128023135",
+        "policy.rs": "06d0e10d97616639543d076b29624a3481526092ff2915740985a46eef1f0c15"
+      },
+      "reference_sha256": {
+        "lib.rs": "0513b422b753c0a7cebe850707bb3e7241518eab575ebdc83d49b2edabead64a",
+        "policy.rs": "20a54c721c8ca753c990a4ab5b0263f77c1290416a03ca7ee466243f0faf498b"
+      },
+      "baseline": "fail",
+      "baseline_exit_code": 101,
+      "files": [
+        "lib.rs",
+        "policy.rs"
+      ],
+      "allowed_changes": [
+        "lib.rs",
+        "policy.rs"
+      ],
+      "task": "Fix transactional balance transfer and amount validation. Reject missing accounts, nonpositive amounts, insufficient funds and overflow without mutation. Self-transfer leaves balances unchanged. Preserve public APIs and verify the result with the configured check.",
+      "check_config": "rust-balance-transfer/check.json",
+      "check_sha256": "5174dc079677d5af17c81228dc7afc4f20d6a4a6c651b2dbe29dd67671225cd5"
+    },
+    {
+      "id": "rust-interval-merge",
+      "profile": "rust",
+      "kind": "new_feature",
+      "acceptance_level": "unit",
+      "source": "rust-interval-merge/source",
+      "reference": "rust-interval-merge/reference",
+      "sha256": {
+        "lib.rs": "62af02471382412b4524b838623865918642e0f3b71797054d4967b5781a6f0c"
+      },
+      "reference_sha256": {
+        "lib.rs": "77b1a4c7c86e5ee0cd8746187e5abb160df1a757da7846ec22e545e15eb291ba"
+      },
+      "baseline": "fail",
+      "baseline_exit_code": 101,
+      "files": [
+        "lib.rs"
+      ],
+      "allowed_changes": [
+        "lib.rs"
+      ],
+      "task": "Implement canonical merging of half-open intervals: sort by start, merge overlaps and touching intervals, ignore empty intervals, and reject reversed bounds. Preserve public APIs and verify the result with the configured check.",
+      "check_config": "rust-interval-merge/check.json",
+      "check_sha256": "8ab1f56cf2156581abd3b8cf6e396026c873d95e1fde8bd9033d60e90f56588a"
+    },
+    {
+      "id": "rust-config-parser",
+      "profile": "rust",
+      "kind": "new_feature",
+      "acceptance_level": "unit",
+      "source": "rust-config-parser/source",
+      "reference": "rust-config-parser/reference",
+      "sha256": {
+        "lib.rs": "46d24dd3562898bcc38470d69831076fd3a034dd08a16692d2644d4575189d02"
+      },
+      "reference_sha256": {
+        "lib.rs": "6322f5c4ccb8baf7d436bba329b40876ceb3d609018260945b77aa960313a400"
+      },
+      "baseline": "fail",
+      "baseline_exit_code": 101,
+      "files": [
+        "lib.rs"
+      ],
+      "allowed_changes": [
+        "lib.rs"
+      ],
+      "task": "Implement key=value configuration parsing with blank lines and # comments. Trim keys/values, split only at the first equals, reject empty keys and duplicates, and preserve Unicode and CRLF. Preserve public APIs and verify the result with the configured check.",
+      "check_config": "rust-config-parser/check.json",
+      "check_sha256": "310d7243daa87ddc0c2311fc22c224333730df16b94aefa03ce24f53d9784a20"
+    },
+    {
+      "id": "web-query-codec",
+      "profile": "web",
+      "kind": "small_fix",
+      "acceptance_level": "unit",
+      "source": "web-query-codec/source",
+      "reference": "web-query-codec/reference",
+      "sha256": {
+        "main.mjs": "8e2c487123094d67cf9538f04aacf0edfacfb527190db55a1ecd771e8fd76e49"
+      },
+      "reference_sha256": {
+        "main.mjs": "afb3b9b91d6366886d3b2db621496ecf0a36d51c0494043872c1f1e5c68655e1"
+      },
+      "baseline": "fail",
+      "baseline_exit_code": 1,
+      "files": [
+        "main.mjs"
+      ],
+      "allowed_changes": [
+        "main.mjs"
+      ],
+      "task": "Fix query decoding: preserve repeated keys as arrays, percent decoding and plus-as-space, and return an empty object for empty input. Preserve public APIs and verify the result with the configured check.",
+      "check_config": "web-query-codec/check.json",
+      "check_sha256": "b684f1994e2cd7cbca2b732602db4ed0dd8cdf28f5b48d0e047f3a6617842aa0"
+    },
+    {
+      "id": "web-form-validation",
+      "profile": "web",
+      "kind": "small_fix",
+      "acceptance_level": "unit",
+      "source": "web-form-validation/source",
+      "reference": "web-form-validation/reference",
+      "sha256": {
+        "main.mjs": "08a47fdff53519ceb59d1e85c64e068597e45726415d19beff349da61937dc0f"
+      },
+      "reference_sha256": {
+        "main.mjs": "03c174236fc316a5b25baf76fc058ce6dfba08dc6777acd255e6f1eab77151a2"
+      },
+      "baseline": "fail",
+      "baseline_exit_code": 1,
+      "files": [
+        "main.mjs"
+      ],
+      "allowed_changes": [
+        "main.mjs"
+      ],
+      "task": "Fix quantity validation for a form: trimmed decimal integer text from 1 through 999 is valid, empty strings, booleans, fractional/exponential syntax and malformed values are invalid. Preserve public APIs and verify the result with the configured check.",
+      "check_config": "web-form-validation/check.json",
+      "check_sha256": "421f7096ab43db778e0cd13ac8b60a377af9ef9eceef62e0aab01f7187a562e6"
+    },
+    {
+      "id": "web-cart-summary",
+      "profile": "web",
+      "kind": "multifile",
+      "acceptance_level": "unit",
+      "source": "web-cart-summary/source",
+      "reference": "web-cart-summary/reference",
+      "sha256": {
+        "main.mjs": "46515681abfa11a827f1b19aa7d4214bf84a06755460570fc6c92b91187d4329",
+        "money.mjs": "6b8b5d685290190a8ed1d62711dbabd49f144237e0422572432b48bd9eb45321"
+      },
+      "reference_sha256": {
+        "main.mjs": "685a8e86558111c00a6f91f6ee58f0b47cfb7aac058c088ee8f4c486afcec524",
+        "money.mjs": "4147612d6c155cb1b09bd70a7da636d7f5ee2936e97905a926d86b1d0a5b60c9"
+      },
+      "baseline": "fail",
+      "baseline_exit_code": 1,
+      "files": [
+        "main.mjs",
+        "money.mjs"
+      ],
+      "allowed_changes": [
+        "main.mjs",
+        "money.mjs"
+      ],
+      "task": "Fix cart totals and discounts across both modules. Multiply integer cent prices by quantities, apply percent discount once to the total, round cents, and preserve the input. Preserve public APIs and verify the result with the configured check.",
+      "check_config": "web-cart-summary/check.json",
+      "check_sha256": "30481b095e9b274380f1051c46181b2da52aab6130ce0269e943ede2459407fa"
+    },
+    {
+      "id": "web-state-selection",
+      "profile": "web",
+      "kind": "multifile",
+      "acceptance_level": "unit",
+      "source": "web-state-selection/source",
+      "reference": "web-state-selection/reference",
+      "sha256": {
+        "main.mjs": "bf09086046f09fa6e9b21073447119c259fa85d74a71d2318954c7e0927cd236",
+        "filter.mjs": "e26e19ec0af45cc6770b1377292c6fa4b39e408a67b3ebbc9c937b7e5ccbb00d"
+      },
+      "reference_sha256": {
+        "main.mjs": "4ea7c632f9462ba752015d1ff0cce85bf7b3b216f9fd8d88055e3dbb5705ce9b",
+        "filter.mjs": "c8ce2841adb8732385c16bdc54b5ded23a63446f3d1675ecb25be347858cc4fd"
+      },
+      "baseline": "fail",
+      "baseline_exit_code": 1,
+      "files": [
+        "main.mjs",
+        "filter.mjs"
+      ],
+      "allowed_changes": [
+        "main.mjs",
+        "filter.mjs"
+      ],
+      "task": "Fix filtering and stable sorting across both modules: case-insensitive search, optional active-only filtering, ascending score, preserve original order for ties and never mutate state. Preserve public APIs and verify the result with the configured check.",
+      "check_config": "web-state-selection/check.json",
+      "check_sha256": "14a799d1db866fc4c47235a9e32495d2cd519f8b5dc4ac683a9f86ace6b12f0d"
+    },
+    {
+      "id": "web-undo-history",
+      "profile": "web",
+      "kind": "new_feature",
+      "acceptance_level": "unit",
+      "source": "web-undo-history/source",
+      "reference": "web-undo-history/reference",
+      "sha256": {
+        "main.mjs": "f4735739643b0a7ead9012f540f972c5b9151b5a66faf06766ad347f833b254d"
+      },
+      "reference_sha256": {
+        "main.mjs": "55757f7a3bc33d9796d4dad2d482a10a597a039af1f1c75f87ba592b29fdf008"
+      },
+      "baseline": "fail",
+      "baseline_exit_code": 1,
+      "files": [
+        "main.mjs"
+      ],
+      "allowed_changes": [
+        "main.mjs"
+      ],
+      "task": "Implement immutable undo/redo history: commit clears redo, undo/redo at the boundary return current state, and each instance owns its own history. Preserve public APIs and verify the result with the configured check.",
+      "check_config": "web-undo-history/check.json",
+      "check_sha256": "668187a3be40b3c0b9c7d791e2386cd3d1fb3a563436f2e6d7bdb6a6c3f1b3de"
+    },
+    {
+      "id": "web-async-resource",
+      "profile": "web",
+      "kind": "new_feature",
+      "acceptance_level": "unit",
+      "source": "web-async-resource/source",
+      "reference": "web-async-resource/reference",
+      "sha256": {
+        "main.mjs": "4f0ef02fe870f23199f29b730a22fa667e78f750eff0cda3d2b35559911d1419"
+      },
+      "reference_sha256": {
+        "main.mjs": "38b1b5fd83d4c83229eeff58658fccd162fc257b6138fc52fdf4101b4257aa8b"
+      },
+      "baseline": "fail",
+      "baseline_exit_code": 1,
+      "files": [
+        "main.mjs"
+      ],
+      "allowed_changes": [
+        "main.mjs"
+      ],
+      "task": "Implement an async resource controller. A late older request must not replace newer data or error; loading ends only for the newest request; rejected latest requests expose their error. Preserve public APIs and verify the result with the configured check.",
+      "check_config": "web-async-resource/check.json",
+      "check_sha256": "2b78fc878d594bec3b0e51d26b98cdf9de8da63cc8e5cdf9b5feb2331bcb564e"
+    },
+    {
+      "id": "java_minecraft-permission-scope",
+      "profile": "java_minecraft",
+      "kind": "small_fix",
+      "acceptance_level": "unit",
+      "source": "java_minecraft-permission-scope/source",
+      "reference": "java_minecraft-permission-scope/reference",
+      "sha256": {
+        "Policy.java": "438b6160ebf48998b64aa107814031f405a0fb895d673b50c327b5700b470ccd"
+      },
+      "reference_sha256": {
+        "Policy.java": "acccb44b3758d1388c6cfa04755a0ac737eb17e1d6e863f7ab7413cdfc15295a"
+      },
+      "baseline": "fail",
+      "baseline_exit_code": 1,
+      "files": [
+        "Policy.java"
+      ],
+      "allowed_changes": [
+        "Policy.java"
+      ],
+      "task": "Fix permission-node grants: exact matches, hierarchical parent wildcards and global * grant access. Sibling prefixes must not grant unrelated nodes. Treat null grants as no permissions. Preserve public APIs and verify the result with the configured check.",
+      "check_config": "java_minecraft-permission-scope/check.json",
+      "check_sha256": "1fbde07d3fc233d01441d14b5d96f600d4ace0e304717e8fd96ba9586be16b6d"
+    },
+    {
+      "id": "java_minecraft-cooldown",
+      "profile": "java_minecraft",
+      "kind": "small_fix",
+      "acceptance_level": "unit",
+      "source": "java_minecraft-cooldown/source",
+      "reference": "java_minecraft-cooldown/reference",
+      "sha256": {
+        "Policy.java": "09235a6388975b8feafeaf392a0f0ed99b91f0d05b86c47c5ff3eea37fdf712e"
+      },
+      "reference_sha256": {
+        "Policy.java": "80352b670a223237515d12d7d444d21d5cf88458e09bdf39c6b3e5012ff029d9"
+      },
+      "baseline": "fail",
+      "baseline_exit_code": 1,
+      "files": [
+        "Policy.java"
+      ],
+      "allowed_changes": [
+        "Policy.java"
+      ],
+      "task": "Fix cooldown remaining milliseconds. Clamp at zero, handle backwards clocks without granting time, reject negative inputs, and avoid overflow at Long.MAX_VALUE. Preserve public APIs and verify the result with the configured check.",
+      "check_config": "java_minecraft-cooldown/check.json",
+      "check_sha256": "af0f6ce48f2c3b7022330ef3ff4de5019e32a36f87b3c637b88dd9fd4c127e08"
+    },
+    {
+      "id": "java_minecraft-command-routing",
+      "profile": "java_minecraft",
+      "kind": "multifile",
+      "acceptance_level": "unit",
+      "source": "java_minecraft-command-routing/source",
+      "reference": "java_minecraft-command-routing/reference",
+      "sha256": {
+        "Policy.java": "d11ffe9ce9a892d3a26e52183f8d015782aa4168fe9b99d8001f4f6a9bdf9556",
+        "Parser.java": "75ac7532ceb1196ee00ee644d09769e4bb6dbfafbb55042a07322ea36f914025"
+      },
+      "reference_sha256": {
+        "Policy.java": "581e155c57db0c4cf52e0af3639eeb33543652e8fa69a25f13ea6c6bc65208fc",
+        "Parser.java": "0a7625b0f8c8758dee9fc71633e9f38bafdde0015221a62e0d4867df27d3ab0b"
+      },
+      "baseline": "fail",
+      "baseline_exit_code": 1,
+      "files": [
+        "Policy.java",
+        "Parser.java"
+      ],
+      "allowed_changes": [
+        "Policy.java",
+        "Parser.java"
+      ],
+      "task": "Fix command parsing and dispatch across both modules. Require a slash, normalize the command with Locale.ROOT, preserve argument case/order and ignore unknown or ordinary chat messages. Preserve public APIs and verify the result with the configured check.",
+      "check_config": "java_minecraft-command-routing/check.json",
+      "check_sha256": "2f23ed3cdcd80edfb47786df7d570eae0cca93b6dfa4cec99a68bc3eb43e68d8"
+    },
+    {
+      "id": "java_minecraft-plugin-config",
+      "profile": "java_minecraft",
+      "kind": "multifile",
+      "acceptance_level": "unit",
+      "source": "java_minecraft-plugin-config/source",
+      "reference": "java_minecraft-plugin-config/reference",
+      "sha256": {
+        "Policy.java": "c1d192cd82e92700093ceb8a08e6b4bb28d1e2fec86ae35ee8e9f01271eb0bb7",
+        "Parser.java": "eb03da60100c851ab24ea4d3d8439fe03d64fd95354bfc330777a6ceeac7ea5d"
+      },
+      "reference_sha256": {
+        "Policy.java": "08b34e4d6093979697010ce2d9c67bb2576192da96a554ba87114d0014005bd8",
+        "Parser.java": "e0768837c1e935c06526565ce78df4c0367a1ecb7018dba6872b541eeb2b5a60"
+      },
+      "baseline": "fail",
+      "baseline_exit_code": 1,
+      "files": [
+        "Policy.java",
+        "Parser.java"
+      ],
+      "allowed_changes": [
+        "Policy.java",
+        "Parser.java"
+      ],
+      "task": "Fix configuration parsing and validation across both modules. Ignore blank/# lines, trim keys and values, reject duplicates/unknown keys, require nonempty motd and maxPlayers in 1..200, and preserve Unicode. Preserve public APIs and verify the result with the configured check.",
+      "check_config": "java_minecraft-plugin-config/check.json",
+      "check_sha256": "dec400bf6e8365094b25bc708bee5d43f48c55e36243e38fff48d9c10529bbad"
+    },
+    {
+      "id": "java_minecraft-tab-completion",
+      "profile": "java_minecraft",
+      "kind": "new_feature",
+      "acceptance_level": "unit",
+      "source": "java_minecraft-tab-completion/source",
+      "reference": "java_minecraft-tab-completion/reference",
+      "sha256": {
+        "Policy.java": "05a2fb4ffc64b08fec9a55f0d5a8272b90902f4d5699d019e2905bd14c489f0f"
+      },
+      "reference_sha256": {
+        "Policy.java": "770af5193dd11520a2cc4aa3627f1b2fb6be7ac6c9468d76c654c806e875531c"
+      },
+      "baseline": "fail",
+      "baseline_exit_code": 1,
+      "files": [
+        "Policy.java"
+      ],
+      "allowed_changes": [
+        "Policy.java"
+      ],
+      "task": "Implement deterministic completion of command names: match prefixes case-insensitively using Locale.ROOT, remove exact duplicates, sort lexically and leave the supplied list unchanged. Preserve public APIs and verify the result with the configured check.",
+      "check_config": "java_minecraft-tab-completion/check.json",
+      "check_sha256": "2bb61947fc3c8fe5cd0fe636da88dd36a228c129f7f8ec8e94412b70f4c56eb4"
+    },
+    {
+      "id": "java_minecraft-bounded-history",
+      "profile": "java_minecraft",
+      "kind": "new_feature",
+      "acceptance_level": "unit",
+      "source": "java_minecraft-bounded-history/source",
+      "reference": "java_minecraft-bounded-history/reference",
+      "sha256": {
+        "Policy.java": "a522e4138df72a3ec8ceed8d746a6b3dc642b6ca18ec58e72211ea84e6c7b676"
+      },
+      "reference_sha256": {
+        "Policy.java": "d54bf88f18165feaa71628f8e7e561a36a52216dc9feecc0b9a360cf5181c3ab"
+      },
+      "baseline": "fail",
+      "baseline_exit_code": 1,
+      "files": [
+        "Policy.java"
+      ],
+      "allowed_changes": [
+        "Policy.java"
+      ],
+      "task": "Implement a per-player bounded chat/command history. Append preserves order, discards oldest entries beyond capacity, snapshots cannot mutate stored data, and player histories stay isolated. Preserve public APIs and verify the result with the configured check.",
+      "check_config": "java_minecraft-bounded-history/check.json",
+      "check_sha256": "ecc4ab531828c282bbbe019e9c7cdf88bb80413fad4ade8bb26795a0741ca6b0"
+    },
+    {
+      "id": "dayz-addon-dependency",
+      "profile": "dayz",
+      "kind": "small_fix",
+      "acceptance_level": "structural",
+      "source": "dayz-addon-dependency/source",
+      "reference": "dayz-addon-dependency/reference",
+      "sha256": {
+        "config.cpp": "f37ea6449a896d98101e17c54c4a4480a20b2759fcdf811b9280befbe5a4a6ff"
+      },
+      "reference_sha256": {
+        "config.cpp": "083095a5856c6cbccd97b1b5cd381c59a686b4042422847f41bacc5e4759bab3"
+      },
+      "baseline": "fail",
+      "baseline_exit_code": 1,
+      "files": [
+        "config.cpp"
+      ],
+      "allowed_changes": [
+        "config.cpp"
+      ],
+      "task": "Repair the CfgPatches addon dependency to use DZ_Data, preserving the addon class name. This structural exercise still requires the installed DayZ SDK for acceptance. Preserve public APIs and verify the result with the configured check.",
+      "check_config": "dayz-addon-dependency/check.json",
+      "check_sha256": "4940ed6b80b7fee853755f1536c00066adce32a76a0bff3d124b19e05082345a",
+      "required_gates": [
+        "dayz-script-compile",
+        "dayz-server-runtime"
+      ]
+    },
+    {
+      "id": "dayz-module-dependencies",
+      "profile": "dayz",
+      "kind": "small_fix",
+      "acceptance_level": "structural",
+      "source": "dayz-module-dependencies/source",
+      "reference": "dayz-module-dependencies/reference",
+      "sha256": {
+        "config.cpp": "5618b99777c50afb8214d0b78787717a549cd41c60a1f4ec6a7403fc26e8f852"
+      },
+      "reference_sha256": {
+        "config.cpp": "cf9acba05b462330f4421a774bba5d067986842c0f20d0f8c5a77360cffde055"
+      },
+      "baseline": "fail",
+      "baseline_exit_code": 1,
+      "files": [
+        "config.cpp"
+      ],
+      "allowed_changes": [
+        "config.cpp"
+      ],
+      "task": "Declare Game, World and Mission dependencies in the existing CfgMods entry. Preserve the mod name. Compile/load validation remains an external DayZ gate. Preserve public APIs and verify the result with the configured check.",
+      "check_config": "dayz-module-dependencies/check.json",
+      "check_sha256": "0a4c98c86621d572743a1a5663adce83835b42ce0c5a160952eb2e6cafa44db6",
+      "required_gates": [
+        "dayz-script-compile",
+        "dayz-server-runtime"
+      ]
+    },
+    {
+      "id": "dayz-world-wiring",
+      "profile": "dayz",
+      "kind": "multifile",
+      "acceptance_level": "structural",
+      "source": "dayz-world-wiring/source",
+      "reference": "dayz-world-wiring/reference",
+      "sha256": {
+        "config.cpp": "344771c962c95462334b7d03e3445f635c7cc7d8e0c72613243163e0fc36c27f",
+        "scripts/4_World/State.c": "e3e91212d04046344ef7b1a9966c68f07b084a887540da718e52c9e44f3c09e0"
+      },
+      "reference_sha256": {
+        "config.cpp": "ab6a2b13a8c52996b91bc7da263f5dd339bd2a4bed3859702de5238debfaee98",
+        "scripts/4_World/State.c": "f2cde7e95e581929962a0dbd0421f7a37e70f104673a3d770fa4f21fdeb696a5"
+      },
+      "baseline": "fail",
+      "baseline_exit_code": 1,
+      "files": [
+        "config.cpp",
+        "scripts/4_World/State.c"
+      ],
+      "allowed_changes": [
+        "config.cpp",
+        "scripts/4_World/State.c"
+      ],
+      "task": "Repair world script wiring in both configuration and source placement: use worldScriptModule, point to LyraFixture/scripts/4_World, and provide LyraWorldState in that folder. SDK compile and runtime gates remain required. Preserve public APIs and verify the result with the configured check.",
+      "check_config": "dayz-world-wiring/check.json",
+      "check_sha256": "94068196236f2879809f763d2abe9863798adbeb0cfbd8049bdc09892b090cb7",
+      "required_gates": [
+        "dayz-script-compile",
+        "dayz-server-runtime"
+      ]
+    },
+    {
+      "id": "dayz-mission-wiring",
+      "profile": "dayz",
+      "kind": "multifile",
+      "acceptance_level": "structural",
+      "source": "dayz-mission-wiring/source",
+      "reference": "dayz-mission-wiring/reference",
+      "sha256": {
+        "config.cpp": "4916dff574a44f46408d74fe65c5f199f8bc6872dc9791b951bba321970abe02",
+        "scripts/5_Mission/State.c": "619cac3406fdc60a3f012ce15bf84d7a9bf62fa8619630567a09c10fd4be463d"
+      },
+      "reference_sha256": {
+        "config.cpp": "ed64ecd8002d96a14809b4473dbce1b5867f7ba93e8e6346a858722a9434f445",
+        "scripts/5_Mission/State.c": "ccefeb17cb0390d9bfd2f366a3f13717da9c2bbe87987255995bb939863cb938"
+      },
+      "baseline": "fail",
+      "baseline_exit_code": 1,
+      "files": [
+        "config.cpp",
+        "scripts/5_Mission/State.c"
+      ],
+      "allowed_changes": [
+        "config.cpp",
+        "scripts/5_Mission/State.c"
+      ],
+      "task": "Repair mission wiring in both configuration and source: use missionScriptModule, path LyraFixture/scripts/5_Mission, and a LyraMissionState class. This does not replace DayZ loading tests. Preserve public APIs and verify the result with the configured check.",
+      "check_config": "dayz-mission-wiring/check.json",
+      "check_sha256": "5da80f18bca843cf8ff6eb9c3459df9b9528ab9ee655c46b0f608e0df1487712",
+      "required_gates": [
+        "dayz-script-compile",
+        "dayz-server-runtime"
+      ]
+    },
+    {
+      "id": "dayz-module-layout",
+      "profile": "dayz",
+      "kind": "new_feature",
+      "acceptance_level": "structural",
+      "source": "dayz-module-layout/source",
+      "reference": "dayz-module-layout/reference",
+      "sha256": {
+        "config.cpp": "d702a6b4d63b2c0b8df8a2a931f3dfdbbdca93126f143e191648d0361f10c7ef"
+      },
+      "reference_sha256": {
+        "config.cpp": "33a23b27171ee25db7ec3a2824f95a95fc648b5d39f134ebbc98980997c6dad7"
+      },
+      "baseline": "fail",
+      "baseline_exit_code": 1,
+      "files": [
+        "config.cpp"
+      ],
+      "allowed_changes": [
+        "config.cpp"
+      ],
+      "task": "Add game/world/mission script module entries with correctly matched paths under LyraFixture/scripts/{3_Game,4_World,5_Mission}. Keep the CfgMods entry and existing files. External SDK gates are mandatory. Preserve public APIs and verify the result with the configured check.",
+      "check_config": "dayz-module-layout/check.json",
+      "check_sha256": "b0342c675050edbcc469835cab6b8ecd71d1e2581c090e676df36674ce4d03fe",
+      "required_gates": [
+        "dayz-script-compile",
+        "dayz-server-runtime"
+      ]
+    },
+    {
+      "id": "dayz-patch-registration",
+      "profile": "dayz",
+      "kind": "new_feature",
+      "acceptance_level": "structural",
+      "source": "dayz-patch-registration/source",
+      "reference": "dayz-patch-registration/reference",
+      "sha256": {
+        "config.cpp": "ed77a0201990949aeb3f2171e502470d32a7985ec726aa128025ce1976bc880b"
+      },
+      "reference_sha256": {
+        "config.cpp": "ee3715a790d8d82e5f06f36908400c06c4e5237dcedb9993147fc14bd6c6eb56"
+      },
+      "baseline": "fail",
+      "baseline_exit_code": 1,
+      "files": [
+        "config.cpp"
+      ],
+      "allowed_changes": [
+        "config.cpp"
+      ],
+      "task": "Add CfgPatches registration for LyraFixture, requiredAddons DZ_Data, and empty units/weapons arrays while preserving the existing CfgMods entry. Package/compile/server acceptance is still external. Preserve public APIs and verify the result with the configured check.",
+      "check_config": "dayz-patch-registration/check.json",
+      "check_sha256": "fa23b2bf20803eeff03d5768feb4a769344537e9838814fb0dbbaae7e2c0b2ff",
+      "required_gates": [
+        "dayz-script-compile",
+        "dayz-server-runtime"
+      ]
+    }
+  ]
+}

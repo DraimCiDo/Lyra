@@ -1,16 +1,18 @@
 use clap::Args;
 use llama_cpp_2::{
-    context::params::LlamaContextParams,
+    context::{LlamaContext, params::LlamaContextParams},
     llama_backend::LlamaBackend,
     llama_batch::LlamaBatch,
     model::{LlamaChatMessage, LlamaModel, params::LlamaModelParams},
     sampling::LlamaSampler,
 };
 use std::{
+    cell::RefCell,
     fs::File,
     io::{self, Read, Write},
     num::NonZeroU32,
     path::PathBuf,
+    rc::Rc,
     sync::{
         Arc,
         atomic::{AtomicBool, Ordering},
@@ -211,6 +213,7 @@ pub fn with_session<T>(
         )));
     }
     work(&Session {
+        context_cache: Rc::new(RefCell::new(None)),
         model: &model,
         backend: &backend,
         args,
@@ -220,8 +223,9 @@ pub fn with_session<T>(
     })
 }
 
-#[derive(Clone, Copy)]
+#[derive(Clone)]
 pub struct Session<'a> {
+    context_cache: Rc<RefCell<Option<LlamaContext<'a>>>>,
     model: &'a LlamaModel,
     backend: &'a LlamaBackend,
     args: &'a GenerateArgs,
@@ -259,6 +263,49 @@ fn native_chat_messages(
 impl Session<'_> {
     pub(crate) fn cancellation(&self) -> &AtomicBool {
         self.cancelled
+    }
+    pub(crate) fn input_token_limit(&self) -> usize {
+        self.args.context.saturating_sub(self.args.max_tokens) as usize
+    }
+    pub(crate) fn task_prompt_tokens(&self, prompt: &str) -> io::Result<usize> {
+        use crate::model_gateway::{Message, Role};
+        let messages = [
+            Message {
+                role: Role::System,
+                content: crate::agent_runtime::TASK_SYSTEM_PROMPT.into(),
+            },
+            Message {
+                role: Role::User,
+                content: prompt.into(),
+            },
+        ];
+        let rendered = self.rendered_prompt(&messages)?;
+        Ok(self
+            .model
+            .vocab()
+            .tokenize(rendered.as_bytes(), true, true)
+            .len())
+    }
+    fn rendered_prompt(&self, messages: &[crate::model_gateway::Message]) -> io::Result<String> {
+        let native_messages = native_chat_messages(messages)?;
+        let prompt = if self.args.raw {
+            // Explicit base-model mode has no chat template; retain the legacy raw format.
+            messages
+                .iter()
+                .map(|m| m.content.as_str())
+                .collect::<Vec<_>>()
+                .join("\n")
+        } else {
+            let template = self.model.chat_template(None).map_err(|e| {
+                fail(format!(
+                    "Шаблон чата недоступен: {e}. Для base-модели укажите --raw."
+                ))
+            })?;
+            self.model
+                .apply_chat_template(&template, &native_messages, true)
+                .map_err(|e| fail(e.to_string()))?
+        };
+        Ok(prompt)
     }
     pub fn complete(
         &self,
@@ -329,30 +376,14 @@ impl Session<'_> {
         let Self {
             model,
             backend,
+            context_cache,
             args,
             cancelled,
             started,
             timeout,
-        } = *self;
+        } = self.clone();
         check(cancelled, started, timeout)?;
-        let native_messages = native_chat_messages(messages)?;
-        let prompt = if args.raw {
-            // Explicit base-model mode has no chat template; retain the legacy raw format.
-            messages
-                .iter()
-                .map(|m| m.content.as_str())
-                .collect::<Vec<_>>()
-                .join("\n")
-        } else {
-            let template = model.chat_template(None).map_err(|e| {
-                fail(format!(
-                    "Шаблон чата недоступен: {e}. Для base-модели укажите --raw."
-                ))
-            })?;
-            model
-                .apply_chat_template(&template, &native_messages, true)
-                .map_err(|e| fail(e.to_string()))?
-        };
+        let prompt = self.rendered_prompt(messages)?;
         let vocab = model.vocab();
         let tokens = vocab.tokenize(prompt.as_bytes(), true, true);
         context_budget(tokens.len(), args.max_tokens, args.context)?;
@@ -363,9 +394,21 @@ impl Session<'_> {
             .with_n_threads(args.threads as i32)
             .with_n_threads_batch(args.threads as i32)
             .with_offload_kqv(args.gpu_layers > 0);
-        let mut context = model
-            .new_context(backend, context_params)
-            .map_err(|e| fail(e.to_string()))?;
+        let mut cached = context_cache
+            .try_borrow_mut()
+            .map_err(|_| fail("Inference session already has an active request"))?;
+        if cached.is_none() {
+            *cached = Some(
+                model
+                    .new_context(backend, context_params)
+                    .map_err(|e| fail(e.to_string()))?,
+            );
+        }
+        let context = cached
+            .as_mut()
+            .ok_or_else(|| fail("Inference context unavailable"))?;
+        // Reuse allocated buffers, but isolate every request's KV data and sampler.
+        context.clear_kv_cache();
         let mut batch = LlamaBatch::new(128, 1);
         for (chunk_index, chunk) in tokens.chunks(128).enumerate() {
             check(cancelled, started, timeout)?;
@@ -404,7 +447,7 @@ impl Session<'_> {
         let mut count = 0;
         for index in 0..args.max_tokens {
             check(cancelled, started, timeout)?;
-            let token = sampler.sample(&context, -1);
+            let token = sampler.sample(context, -1);
             if vocab.is_eog(token) {
                 break;
             }

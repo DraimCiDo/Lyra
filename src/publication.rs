@@ -168,8 +168,8 @@ impl State {
 }
 
 fn validate_set(edits: &[Edit]) -> io::Result<()> {
-    if edits.is_empty() || edits.len() > 8 {
-        return Err(error("Publication requires 1..8 proposals"));
+    if edits.is_empty() || edits.len() > crate::workspace::MAX_PROPOSALS {
+        return Err(error("Publication requires 1..32 proposals"));
     }
     let mut paths = BTreeSet::new();
     for edit in edits {
@@ -308,12 +308,28 @@ fn ensure_final(
 }
 
 pub fn apply(repo: &Path, edits: &[Edit]) -> io::Result<()> {
-    apply_with(repo, edits, |workspace, edit| workspace.apply(edit))
+    apply_checked(repo, edits, || Ok(()))
 }
+pub(crate) fn apply_checked(
+    repo: &Path,
+    edits: &[Edit],
+    guard: impl FnMut() -> io::Result<()>,
+) -> io::Result<()> {
+    apply_controlled(repo, edits, |workspace, edit| workspace.apply(edit), guard)
+}
+#[cfg(test)]
 fn apply_with(
     repo: &Path,
     edits: &[Edit],
+    publish: impl FnMut(&mut Workspace, &Edit) -> io::Result<()>,
+) -> io::Result<()> {
+    apply_controlled(repo, edits, publish, || Ok(()))
+}
+fn apply_controlled(
+    repo: &Path,
+    edits: &[Edit],
     mut publish: impl FnMut(&mut Workspace, &Edit) -> io::Result<()>,
+    mut guard: impl FnMut() -> io::Result<()>,
 ) -> io::Result<()> {
     validate_set(edits)?;
     let mut workspace = open_workspace(repo, edits)?;
@@ -326,11 +342,13 @@ fn apply_with(
     for edit in edits {
         workspace.validate_edit(edit)?;
     }
+    guard()?;
     state.begin(&workspace.root, edits)?;
     let result = edits
         .iter()
         .try_for_each(|edit| publish(&mut workspace, edit))
         .and_then(|()| sync_project(&workspace, edits))
+        .and_then(|()| guard())
         .and_then(|()| ensure_final(&mut workspace, edits, RecoveryAction::Complete));
     match result {
         Ok(()) => state.clear(),
@@ -733,6 +751,29 @@ mod tests {
         // Explicitly reviewing/removing the unexpected file allows safe recovery.
         std::fs::remove_file(repo.path().join(&edits()[2].path)).unwrap();
         recovery(repo.path(), RecoveryAction::Rollback).unwrap();
+        assert_original(repo.path());
+    }
+    #[test]
+    fn source_guard_runs_under_the_repository_lock_and_rolls_back_on_drift() {
+        let repo = fixture();
+        let mut checks = 0;
+        let result = apply_checked(repo.path(), &edits(), || {
+            checks += 1;
+            if checks == 1 {
+                let workspace = open_workspace(repo.path(), &edits()).unwrap();
+                assert!(State::open(&workspace).is_err());
+                Ok(())
+            } else {
+                Err(io::Error::other("checked dependency changed"))
+            }
+        });
+        assert!(
+            result
+                .unwrap_err()
+                .to_string()
+                .contains("changes rolled back")
+        );
+        assert_eq!(checks, 2);
         assert_original(repo.path());
     }
     #[test]

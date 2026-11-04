@@ -70,7 +70,7 @@ fn tool_pool_reduces_real_http_body_and_restores_identical_context() {
     std::fs::write(&task, "Inspect; do not change files.").unwrap();
     let config = dir.path().join("providers.json");
     std::fs::write(&config, serde_json::json!({"descriptor":{"provider":"local","model":"test",
-        "capabilities":{"tool_calls":false,"vision":false,"prompt_cache":false,"max_context_tokens":8192}},
+        "capabilities":{"tool_calls":false,"vision":false,"prompt_cache":false,"max_context_tokens":32768}},
         "endpoint":endpoint,"api_key_env":null}).to_string()).unwrap();
     let mut reports = Vec::new();
     let mut outputs = Vec::new();
@@ -84,7 +84,7 @@ fn tool_pool_reduces_real_http_body_and_restores_identical_context() {
             .arg(&task)
             .arg("--provider-config")
             .arg(&config)
-            .args(["--allow", "local", "--max-calls", "4"]);
+            .args(["--allow", "local", "--max-calls", "4", "--context", "32768"]);
         if dedup {
             command.arg("--dedup-tool-context");
         }

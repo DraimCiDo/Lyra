@@ -131,11 +131,12 @@ left + right; ответ не применялся и не исполнялся.
 
 ## Открытые шаги и передача состояния
 
-Не завершены: корпус 36 задач и реальные model evals, Git worktrees и полностью автоматическое
+Не завершены: SDK/browser/server расширения корпуса и реальные model evals, Git worktrees и полностью автоматическое
 byte-level recovery в Windows, Windows VM/SDK executor, индекс больших репозиториев,
 token-aware context/summaries, постоянный inference-worker и сравнение трех GGUF,
 профильные adapters/browser/game acceptance, Desktop resume/permissions/rules/MCP.
-Текущие 128 файлов / 512 KiB чтения явно остаются ограничением alpha.
+Текущие лимиты большого блока: index 8192 paths, text snapshots 2048 files /
+16 MiB; interactive full read/edit 256 KiB. Binary assets требуют отдельного этапа.
 
 Следующие действия: Windows/Linux CI текущего commit с реальными Docker tests,
 затем расширить независимый корпус и снять local-model baseline на целевом ПК.
@@ -174,11 +175,84 @@ Windows CREATE_NEW при прерывании внутри записи нов�
 - [x] Каждый разрыв 0..N публикаций восстанавливается в обе стороны; настоящий
   process exit освобождает lock и оставляет пригодный журнал.
 - [x] Внешние правки и symlink не перезаписываются/не удаляются при recovery.
-- [ ] CLI, harness, fmt/Clippy/tests и нативный Windows CI проверены.
+- [x] CLI, harness, fmt/Clippy/tests и нативный Windows CI fb00e11 проверены.
 
 Локально: 180 Rust tests passed / 7 ignored с desktop,gateway-http, включая
 14 targeted publication regressions и 3 CLI integration tests. Clippy all-targets
 с `-D warnings`, fmt и 4 Python harness tests прошли. Исходный тест
 fsync выявил O_PATH descriptor cap-std. Для sync directory открывается через
-`Dir::open(".")`, а не копируется O_PATH handle. Нативный Windows CI нового head требуется отдельно; предыдущий успешный CI
-6918265 не считается проверкой второго инкремента.
+`Dir::open(".")`, а не копируется O_PATH handle. Windows/Linux и CUDA CI fb00e11 завершились success; evidence получено в начале
+большого блока. Для новых изменений нужен отдельный CI.
+
+## Большой блок продолжения (поручение 2026-11-04)
+
+Пользователь просит продолжать несколько связанных направлений за одну сессию,
+без остановки после каждого небольшого инкремента. Исходный head fb00e11.
+
+- [x] Индекс тысяч путей с сохранением ignore/security; ограниченный ранжированный
+  контекст, пагинация списка/поиска, чтение диапазонов и scoped instructions.
+- [x] Бюджет входа по tokenizer/chat template локальной модели, provenance при
+  сокращении наблюдений, защита task/permissions, явный отказ при нехватке окна.
+- [x] Расширенный независимый corpus с baseline/reference/mutation validation;
+  недоступный SDK gate не обозначать behavioral acceptance.
+- [x] Desktop apply-all/recovery и история возобновляемых задач: сначала готовый
+  CLI механизм, затем UI с теми же границами и проверками.
+- [ ] Общие проверки, исправление CI, документация и commit/push готовых блоков.
+
+Счетчик пятичасовой квоты API не предоставляет; не утверждать, что он измерен.
+Технические лимиты окружения проверять по факту: сейчас свободно менее 1 GiB,
+без GPU/нативной Windows и без cgroups для положительных local Docker checks.
+
+### Реализовано в большом блоке, локальная проверка
+
+- Индекс до 8192 разрешенных путей / 100000 entries, ранжированный bounded prompt,
+  list_files/search_page pagination, read_range с CRLF/SHA256, scoped AGENTS.md.
+  Поиск не отравляет lifetime read budget повторными вызовами. Исправление файла
+  вне первых 128 путей проверяется через полный agent tool loop.
+- Token budget local task считает реальный vocab/chat template/system/skills.
+  Lossy selection оставляет provenance; task/authority/активные project instructions
+  сохраняются либо возникает явный отказ. Для HTTP счетчик честно помечен estimate.
+- Корпус: 36 pinned source/reference/checker cases, 120 baseline/reference/per-file
+  reversion variants. На host проверяются только доверенные fixture variants,
+  не model output. Итоговый локальный прогон: 36/36 fixtures, 120/120 variants.
+  30 cases — unit, 6 DayZ — structural с незакрытыми SDK/server gates. Web — core
+  JS logic, не Vue/browser; Java — core, не Kotlin/Paper runtime. Отдельный Docker
+  CI проверяет весь корпус. Новые показатели не выдаются за оценку качества GGUF.
+- Native Session повторно использует context allocation; KV/sampler изолированы
+  между запросами. Tiny CPU GGUF: тот же тест с 8 независимыми completion/grammar
+  requests проходит, constructors 8 → 1 в трех запусках. Измеренные wall times
+  64/64/64 ms до и после (грубый subprocess timing), ускорение не заявляется.
+  Это не persistent worker между Desktop сообщениями и не 9B/GPU benchmark.
+- Snapshot: 2048 UTF-8 files / 2 MiB per file / 16 MiB total, прежние original/apply
+  preconditions сохранены. SQLite cap 32 MiB учитывает реальный page_size;
+  переполнение нового snapshot не теряет предыдущий. Resume не перечитывает
+  измененный original tree как контекст.
+- Desktop: apply-all/recovery, JSON check config, opt-in source checkpoints,
+  paginated saved-task list/resume с текущей моделью/проверкой. Общий бюджет calls
+  увеличивается только явным выбором пользователя; GUI cap 256. CLI session list.
+  Сохраненные настройки не перезаписываются новыми defaults 8192/2048/48/1800.
+
+Локальная полная матрица desktop,gateway-http после этих изменений: 204 passed,
+7 ignored; Python harness tests 12 passed. fmt/Clippy с -D warnings прошли.
+Дополнительно 2 ignored inference tests с локальным tiny GGUF прошли.
+Windows/Linux/corpus CI проверяются после push большого блока. На fb00e11 обе CPU jobs
+и CUDA build завершились success; это подтверждает предыдущий инкремент.
+
+Один полный прогон поймал недоэкранированный CSV checker; reference gate его
+отверг, checker исправлен и все 120 вариантов перепроверены. Недостаток диска
+(168 MiB free) остановил существующий GGUF installer regression по его reserve
+проверке. Удален только созданный в этой задаче target/debug/incremental; guard
+не ослаблялся. Дальнейшие local cargo runs используют CARGO_INCREMENTAL=0.
+
+Дополнительно в этом блоке: до 32 предложений / 1 MiB serialized proposal set,
+full read/edit 256 KiB, bounded durable diagnostics/proof history. SHA256 точного
+выбранного source snapshot связывает verify, finish и apply; проверка под lock
+до/после публикации откатывает набор при изменении выбранной зависимости.
+Повторное применение отдельных частей сохраняет корректность. Это не hash всего
+worktree и не контроль внешнего состояния SDK.
+
+Eval tooling: явно выбранная матрица 1..8 локальных GGUF, одинаковые настройки,
+actual doctor hardware fingerprint, строгий resume с сохранением failed runs;
+опциональное раздельное измерение RAM/VRAM процесса, отсутствующие данные null.
+Три целевые модели на RTX 4060 еще не оценены. Проверка 36/120 доверенных вариантов
+не считается model coding success. Не запускаем model output на host.
