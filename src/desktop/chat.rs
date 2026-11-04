@@ -26,7 +26,7 @@ impl Chat {
             && self.messages.iter().all(|m| m.text.len() <= MESSAGE_BYTES)
             && self.messages.iter().map(|m| m.text.len()).sum::<usize>() <= HISTORY_BYTES
     }
-    fn selected_history(&self, optimization: preferences::Optimization) -> &[Message] {
+    pub(super) fn selected_history(&self, optimization: preferences::Optimization) -> &[Message] {
         let keep = match optimization {
             preferences::Optimization::Safe => self.messages.len(),
             preferences::Optimization::Balanced => 12,

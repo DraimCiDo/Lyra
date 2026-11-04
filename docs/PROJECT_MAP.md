@@ -104,3 +104,7 @@ Gateway: [контракты](../src/model_gateway.rs), [HTTP](../src/provider_h
 Desktop conversations: [план](plans/0013-desktop-conversations-models.md), [history](../src/desktop/history.rs), [GGUF catalog/installer](../src/desktop/models.rs).
 
 Chat reliability/activity: [план](plans/0014-chat-reliability-activity.md), [capability contract](../src/desktop/chat_policy.rs), [worker/progress](../src/desktop/job.rs).
+
+Проверяемые workflow: [программа](plans/0018-quality-workflows.md),
+[CLI-контракты/ограничения](WORKFLOWS.md), [executor](../src/executor.rs),
+[SQLite snapshots](../src/session.rs), [eval harness](../tools/evaluate.py).

@@ -257,6 +257,9 @@ fn native_chat_messages(
 }
 
 impl Session<'_> {
+    pub(crate) fn cancellation(&self) -> &AtomicBool {
+        self.cancelled
+    }
     pub fn complete(
         &self,
         prompt: &str,

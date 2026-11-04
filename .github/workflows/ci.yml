@@ -80,6 +80,17 @@ jobs:
         run: cargo clippy --workspace --all-targets --features desktop,gateway-http --locked -- -D warnings
       - name: Gateway tests (HTTP + Desktop)
         run: cargo test --workspace --features desktop,gateway-http --locked
+      - name: Developer evaluation harness tests
+        run: python -m unittest discover -s tools -p test_evaluate.py
+      - name: Isolated Docker checks (Linux)
+        if: runner.os == 'Linux'
+        timeout-minutes: 5
+        env:
+          LYRA_TEST_IMAGE: python@sha256:ae14d4ce8771606477a81446e7ef429edd6762305fc50c84507c1041fa8285d1
+        run: |
+          docker pull $env:LYRA_TEST_IMAGE
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          cargo test --locked --features desktop,gateway-http --test executor -- --ignored --test-threads=1
       - name: Explicit real CPU inference smoke (tiny GGUF)
         run: |
           $model = Join-Path $env:RUNNER_TEMP 'lyra-stories260K.gguf'
@@ -134,7 +145,7 @@ jobs:
           "`nSource commit: https://github.com/DraimCiDo/Lyra/tree/$env:GITHUB_SHA" | Add-Content -Encoding utf8NoBOM -LiteralPath dist/README.md
           Copy-Item -LiteralPath Cargo.lock -Destination dist
           New-Item -ItemType Directory -Force -Path dist/docs, dist/examples | Out-Null
-          Copy-Item -LiteralPath docs/ACCEPTANCE.md, docs/LOCAL_MODELS.md, docs/DESKTOP.md, docs/UPDATES.md, docs/PROJECTS.md, docs/KNOWLEDGE.md, docs/WEB_PROJECTS.md -Destination dist/docs
+          Copy-Item -LiteralPath docs/ACCEPTANCE.md, docs/LOCAL_MODELS.md, docs/DESKTOP.md, docs/UPDATES.md, docs/PROJECTS.md, docs/KNOWLEDGE.md, docs/WEB_PROJECTS.md, docs/WORKFLOWS.md -Destination dist/docs
           Copy-Item -LiteralPath examples/buggy-add -Destination dist/examples -Recurse
           Copy-Item -LiteralPath examples/qwen3-coder-openrouter.json -Destination dist/examples/qwen3-coder-openrouter.json
           python tools/collect_licenses.py --features desktop,gateway-http --target ${{ matrix.target }} --output dist/THIRD_PARTY_NOTICES.txt

@@ -28,3 +28,6 @@
 .DS_Store
 Thumbs.db
 Desktop.ini
+
+# Developer harness bytecode.
+__pycache__/

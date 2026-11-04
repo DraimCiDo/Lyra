@@ -4,6 +4,7 @@ pub mod context_optimizer;
 #[cfg(feature = "desktop")]
 pub mod desktop;
 pub mod doctor;
+pub mod executor;
 pub mod inference;
 pub mod knowledge;
 pub mod model_gateway;
@@ -12,6 +13,7 @@ pub mod project;
 pub mod provider_http;
 pub mod resources;
 pub mod routing;
+pub mod session;
 pub mod skill_package;
 pub mod skills;
 pub mod workspace;
@@ -99,6 +101,17 @@ pub enum Command {
     },
     /// Установить, проверить или откатить локальный снимок навыков
     SkillPackage(skill_package::PackageArgs),
+    /// Inspect, export or delete explicitly saved task checkpoints
+    Session(session::SessionArgs),
+    /// Run an explicitly configured offline check in a Docker snapshot
+    Verify {
+        #[arg(long)]
+        repo: std::path::PathBuf,
+        #[arg(long)]
+        config: std::path::PathBuf,
+        #[arg(long = "file")]
+        files: Vec<String>,
+    },
     /// Показать характеристики компьютера, на котором запущена Lyra
     Doctor {
         /// Вывести JSON (схема v1), пригодный для подбора локальной модели
@@ -271,6 +284,12 @@ pub fn run(cli: Cli, output: &mut impl Write) -> io::Result<()> {
                 model_gateway::select_priority(&descriptors, &allowed_providers, &request)?;
             writeln!(output, "{}/{}", selected.provider, selected.model)
         }
+        Command::Verify {
+            repo,
+            config,
+            files,
+        } => executor::run(&repo, &config, &files, output),
+        Command::Session(args) => session::run(args, output),
         Command::SkillPackage(args) => skill_package::run(args, output),
         Command::Skills { manifest, id } => {
             let pack = skills::SkillPack::load_source(&manifest)?;

@@ -114,7 +114,7 @@ fn rejected_edit_keeps_recovery_evidence_and_pending_proposal_is_explicit() {
         std::fs::read_to_string(repo.0.join("src/lib.rs")).unwrap(),
         original
     );
-    assert_eq!(report.schema_version, 3);
+    assert_eq!(report.schema_version, 4);
     let report_path = repo.0.join("report.json");
     std::fs::write(&report_path, serde_json::to_vec(&report).unwrap()).unwrap();
     let output = std::process::Command::new(env!("CARGO_BIN_EXE_lyra"))
@@ -177,7 +177,7 @@ fn request_local_tool_pool_is_reversible_and_readonly_roles_get_no_edit_tools() 
     };
     let (plain, _) = run(false);
     let (packed, report) = run(true);
-    assert_eq!(report.schema_version, 3);
+    assert_eq!(report.schema_version, 4);
     assert_eq!(
         lyra::context_optimizer::restore(&packed.prompts[3]).unwrap(),
         plain.prompts[3]
@@ -471,7 +471,7 @@ fn new_files_remain_proposals_until_explicit_apply_and_never_clobber() {
     ]);
     let report = agent::execute(&mut model, &mut workspace, "Add a module", false, 3);
     assert_eq!(report.status, "completed");
-    assert_eq!(report.schema_version, 2);
+    assert_eq!(report.schema_version, 4);
     assert!(report.proposals[0].create);
     assert!(!repo.0.join("src/new/module.rs").exists());
     workspace.apply(&report.proposals[0]).unwrap();
@@ -570,4 +570,171 @@ fn an_empty_package_marker_can_be_proposed_and_created_without_overwriting() {
         0
     );
     assert!(workspace.apply(&edit).is_err());
+}
+
+#[test]
+fn sequential_edits_use_pending_text_and_keep_original_apply_precondition() {
+    let repo = Repo::new();
+    let original = "fn add(a:i32,b:i32)->i32 { a-b }\r\nfn twice(x:i32)->i32 { x }\r\n";
+    repo.write("src/lib.rs", original);
+    let mut workspace = Workspace::open(&repo.0, &[]).unwrap();
+    let mut model = Script::new(vec![
+        serde_json::json!({"tool":"propose_edit","path":"src/lib.rs","old":"a-b","new":"a+b"}),
+        serde_json::json!({"tool":"read_file","path":"src/lib.rs"}),
+        serde_json::json!({"tool":"propose_edit","path":"src/lib.rs","old":"{ x }","new":"{ x * 2 }"}),
+        done("Both fixes proposed; tests not run."),
+    ]);
+    let report = agent::execute(&mut model, &mut workspace, "Fix both functions", false, 6);
+    assert_eq!(report.status, "completed");
+    assert_eq!(report.outcome, agent::TaskOutcome::ChangesProposed);
+    assert_eq!(report.proposals.len(), 1);
+    let edit = &report.proposals[0];
+    assert_eq!(edit.original, original);
+    assert!(edit.replacement.contains("a+b }\r\n"));
+    assert!(edit.replacement.contains("x * 2 }\r\n"));
+    assert_eq!(
+        std::fs::read_to_string(repo.0.join("src/lib.rs")).unwrap(),
+        original
+    );
+    workspace.apply(edit).unwrap();
+    assert_eq!(
+        std::fs::read_to_string(repo.0.join("src/lib.rs")).unwrap(),
+        edit.replacement
+    );
+}
+
+#[test]
+fn proposed_files_can_be_revised_and_discarded_without_writes() {
+    let repo = Repo::new();
+    let mut workspace = Workspace::open(&repo.0, &[]).unwrap();
+    let mut model = Script::new(vec![
+        serde_json::json!({"tool":"propose_file","path":"src/new.rs","content":"const VALUE: i32 = 1;"}),
+        serde_json::json!({"tool":"propose_edit","path":"src/new.rs","old":"= 1","new":"= 2"}),
+        serde_json::json!({"tool":"discard_proposal","path":"src/new.rs"}),
+        done("Withdrawn."),
+    ]);
+    let report = agent::execute(&mut model, &mut workspace, "Prepare new file", false, 5);
+    assert_eq!(report.status, "completed");
+    assert!(report.events.iter().all(|event| event.outcome == "ok"));
+    assert!(report.proposals.is_empty());
+    assert!(!repo.0.join("src/new.rs").exists());
+}
+
+#[test]
+fn revision_refuses_external_changes_and_ambiguous_or_stale_fragments() {
+    let repo = Repo::new();
+    repo.write("src/lib.rs", "one two");
+    let mut workspace = Workspace::open(&repo.0, &[]).unwrap();
+    let first = workspace
+        .propose("src/lib.rs", "one", "three three")
+        .unwrap();
+    assert!(workspace.revise(&first, "one", "four").is_err());
+    assert!(workspace.revise(&first, "three", "four").is_err());
+    repo.write("src/lib.rs", "user changed this");
+    assert!(workspace.revise(&first, "two", "four").is_err());
+    assert!(workspace.apply(&first).is_err());
+    assert_eq!(
+        std::fs::read_to_string(repo.0.join("src/lib.rs")).unwrap(),
+        "user changed this"
+    );
+}
+
+#[test]
+fn malformed_json_can_recover_but_repeated_no_progress_stops_early() {
+    struct Malformed {
+        calls: usize,
+    }
+    impl Model for Malformed {
+        fn respond(&mut self, prompt: &str) -> io::Result<String> {
+            self.calls += 1;
+            if self.calls == 1 {
+                return Ok("{broken".into());
+            }
+            let input: serde_json::Value = serde_json::from_str(prompt).unwrap();
+            assert_eq!(input["history"][0]["result"]["status"], "error");
+            Ok(done("Inspected; tests not run.").to_string())
+        }
+    }
+    let repo = Repo::new();
+    let mut workspace = Workspace::open(&repo.0, &[]).unwrap();
+    let report = agent::execute(
+        &mut Malformed { calls: 0 },
+        &mut workspace,
+        "Inspect",
+        false,
+        4,
+    );
+    assert_eq!(report.status, "completed");
+    assert_eq!(report.outcome, agent::TaskOutcome::AnalysisComplete);
+    let mut model = Script::new(vec![serde_json::json!({"tool":"list"}); 8]);
+    let report = agent::execute(&mut model, &mut workspace, "Inspect", false, 8);
+    assert_eq!(report.status, "no_progress: coder");
+    assert_eq!(report.calls, 4);
+    assert_eq!(report.outcome, agent::TaskOutcome::Incomplete);
+}
+
+#[test]
+fn readonly_worker_cannot_discard_pending_work() {
+    let repo = Repo::new();
+    repo.write("src/lib.rs", "one");
+    let mut workspace = Workspace::open(&repo.0, &[]).unwrap();
+    let mut model = Script::new(vec![
+        done("Research complete"),
+        serde_json::json!({"tool":"propose_edit","path":"src/lib.rs","old":"one","new":"two"}),
+        done("Prepared"),
+        serde_json::json!({"tool":"discard_proposal","path":"src/lib.rs"}),
+        done("Reviewed"),
+    ]);
+    let report = agent::execute(&mut model, &mut workspace, "Fix", true, 8);
+    assert_eq!(report.status, "completed");
+    assert_eq!(report.proposals.len(), 1);
+    assert!(
+        report
+            .events
+            .iter()
+            .any(|event| event.tool == "discard_proposal" && event.outcome.starts_with("denied"))
+    );
+}
+
+#[test]
+fn reviewer_can_request_bounded_repairs_against_pending_content() {
+    let repo = Repo::new();
+    repo.write("src/lib.rs", "fn answer() -> i32 { 0 }\r\n");
+    let mut workspace = Workspace::open(&repo.0, &[]).unwrap();
+    let mut model = Script::new(vec![
+        done("Research complete"),
+        serde_json::json!({"tool":"propose_edit","path":"src/lib.rs","old":"{ 0 }","new":"{ 41 }"}),
+        done("Proposed"),
+        serde_json::json!({"tool":"request_changes","summary":"The required value is 42, not 41."}),
+        serde_json::json!({"tool":"read_file","path":"src/lib.rs"}),
+        serde_json::json!({"tool":"propose_edit","path":"src/lib.rs","old":"{ 41 }","new":"{ 42 }"}),
+        done("Repaired"),
+        done("Reviewed; tests not run"),
+    ]);
+    let report = agent::execute(&mut model, &mut workspace, "Return 42", true, 12);
+    assert_eq!(report.status, "completed");
+    assert_eq!(report.calls, 8);
+    assert_eq!(report.proposals.len(), 1);
+    assert!(report.proposals[0].replacement.contains("{ 42 }"));
+    assert!(report.proposals[0].original.contains("{ 0 }"));
+    assert!(!report.model_review_is_verified_test);
+    assert_eq!(model.roles.last().unwrap(), "reviewer");
+}
+
+#[test]
+fn successive_accepted_revisions_are_progress_even_with_the_same_tool_and_path() {
+    let repo = Repo::new();
+    repo.write("src/lib.rs", "const VALUE: i32 = 0;");
+    let mut workspace = Workspace::open(&repo.0, &[]).unwrap();
+    let mut actions: Vec<_> = (0..5).map(|index| serde_json::json!({"tool":"propose_edit","path":"src/lib.rs", "old":format!("= {index};"),"new":format!("= {};",index+1)})).collect();
+    actions.push(done("Five revisions; tests not run"));
+    let report = agent::execute(
+        &mut Script::new(actions),
+        &mut workspace,
+        "Refine value",
+        false,
+        8,
+    );
+    assert_eq!(report.status, "completed");
+    assert_eq!(report.proposals[0].replacement, "const VALUE: i32 = 5;");
 }

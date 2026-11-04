@@ -306,7 +306,7 @@ impl Desktop {
         if self.job.is_some() || self.updates.kind() == Some(updater::Kind::Prepare) {
             return Err(io::Error::other("Дождитесь текущей операции."));
         }
-        let temp = tempfile::Builder::new().prefix("lyra-desktop-").tempdir()?;
+        let temp = crate::workspace::private_tempdir("lyra-desktop-")?;
         let mut args: Vec<OsString> = Vec::new();
         let deadline = match operation {
             Operation::LocalChat => {
@@ -571,7 +571,7 @@ impl Desktop {
         self.log = result.stderr;
         let structured_task_timeout = self.operation == Operation::Task
             && serde_json::from_slice::<Report>(&result.stdout)
-                .is_ok_and(|r| matches!(r.schema_version, 1..=3) && r.status == "timeout");
+                .is_ok_and(|r| matches!(r.schema_version, 1..=4) && r.status == "timeout");
         if (result.timed_out || result.code == Some(124)) && !structured_task_timeout {
             self.fail(if self.operation == Operation::ProjectPlan {
                 "Истёк таймаут подготовки плана. Увеличь таймаут в настройках модели или сократи запрос. Файлы проекта ещё не создавались. Подробности — в журнале."
@@ -627,7 +627,7 @@ impl Desktop {
             | Operation::DocsFetch
             | Operation::DocsImport => self.complete_project_job(result.code, &result.stdout),
             Operation::Task => match serde_json::from_slice::<Report>(&result.stdout) {
-                Ok(report) if matches!(report.schema_version, 1..=3) => {
+                Ok(report) if matches!(report.schema_version, 1..=4) => {
                     self.error = result.code != Some(0) || report.status != "completed";
                     self.message = format!(
                         "{} · {} {} · {:.1} s · {} {}",
@@ -1592,12 +1592,18 @@ fn validate_task(task: &str, files: &str) -> io::Result<()> {
     Ok(())
 }
 fn can_apply(report: &Report, index: usize, applied: &[usize]) -> bool {
-    matches!(report.schema_version, 1..=3)
+    matches!(report.schema_version, 1..=4)
         && report.status == "completed"
+        && (report.schema_version < 4
+            || matches!(
+                report.outcome,
+                crate::agent::TaskOutcome::ChangesProposed
+                    | crate::agent::TaskOutcome::ChangesVerified
+            ))
         && report
             .proposals
             .get(index)
-            .is_some_and(|p| !p.create || report.schema_version == 2)
+            .is_some_and(|p| !p.create || report.schema_version >= 2)
         && !applied.contains(&index)
 }
 
@@ -1625,6 +1631,21 @@ mod tests {
         assert!(can_apply(&report, 0, &[]));
         assert!(!can_apply(&report, 1, &[]));
         assert!(!can_apply(&report, 0, &[0]));
+        report.proposals[0].create = true;
+        report.proposals[0].original.clear();
+        report.outcome = crate::agent::TaskOutcome::ChangesProposed;
+        for schema in [2, 3, 4] {
+            report.schema_version = schema;
+            assert!(can_apply(&report, 0, &[]));
+        }
+        report.schema_version = 1;
+        assert!(!can_apply(&report, 0, &[]));
+        report.schema_version = 4;
+        report.outcome = crate::agent::TaskOutcome::Incomplete;
+        assert!(!can_apply(&report, 0, &[]));
+        report.outcome = crate::agent::TaskOutcome::ChangesProposed;
+        report.proposals[0].create = false;
+        report.proposals[0].original = "left - right\r\n".into();
         let ctx = egui::Context::default();
         configure(&ctx);
         let mut app = Desktop::default();

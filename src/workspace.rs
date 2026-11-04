@@ -9,6 +9,17 @@ use std::{
     path::{Component, Path, PathBuf},
 };
 
+pub(crate) fn private_tempdir(prefix: &str) -> io::Result<tempfile::TempDir> {
+    let mut builder = tempfile::Builder::new();
+    builder.prefix(prefix);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        builder.permissions(std::fs::Permissions::from_mode(0o700));
+    }
+    builder.tempdir()
+}
+
 pub const FILE_LIMIT: usize = 64 * 1024;
 pub const READ_BUDGET: usize = 512 * 1024;
 
@@ -293,6 +304,43 @@ impl Workspace {
             original,
             replacement,
             create: false,
+        })
+    }
+
+    /// Read the overlay while retaining the on-disk original as the apply precondition.
+    pub fn read_pending(&mut self, pending: &Edit) -> io::Result<String> {
+        if pending.create {
+            self.new_path(&pending.path)?;
+        } else if self.read(&pending.path)? != pending.original {
+            return Err(error(
+                "Конфликт: исходный файл изменился после предложения.",
+            ));
+        }
+        Ok(pending.replacement.clone())
+    }
+
+    pub fn revise(&mut self, pending: &Edit, old: &str, new: &str) -> io::Result<Edit> {
+        if old.is_empty() || old == new || new.len() > FILE_LIMIT {
+            return Err(error("Некорректная точная замена."));
+        }
+        let current = self.read_pending(pending)?;
+        if current.matches(old).count() != 1 {
+            return Err(error(
+                "Фрагмент должен встречаться ровно один раз в текущем предложении.",
+            ));
+        }
+        let replacement = current.replacen(old, new, 1);
+        if replacement.len() > FILE_LIMIT || replacement.contains('\0') {
+            return Err(error("Изменённый файл превышает лимит или содержит NUL."));
+        }
+        if !pending.create && replacement == pending.original {
+            return Err(error(
+                "Правка возвращает исходный файл; используй discard_proposal.",
+            ));
+        }
+        Ok(Edit {
+            replacement,
+            ..pending.clone()
         })
     }
 
