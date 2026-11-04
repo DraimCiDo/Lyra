@@ -522,10 +522,14 @@ pub fn execute_workflow(
             let response = match model.respond(&prompt) {
                 Ok(text) => text,
                 Err(e) => {
-                    report.status = match e.kind() {
-                        io::ErrorKind::Interrupted => "cancelled".into(),
-                        io::ErrorKind::TimedOut => "timeout".into(),
-                        _ => format!("model_error: {e}"),
+                    report.status = if let Some(reason) = stop_reason(model, deadline) {
+                        reason.into()
+                    } else {
+                        match e.kind() {
+                            io::ErrorKind::Interrupted => "cancelled".into(),
+                            io::ErrorKind::TimedOut => "timeout".into(),
+                            _ => format!("model_error: {e}"),
+                        }
                     };
                     report.events.push(Event {
                         call: report.calls,

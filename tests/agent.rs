@@ -795,27 +795,41 @@ fn search_and_list_see_the_same_pending_files_as_read_and_edit() {
 
 #[test]
 fn cancellation_during_a_model_call_cannot_turn_into_successful_finish() {
-    struct Cancelling(std::sync::atomic::AtomicBool);
+    struct Cancelling {
+        flag: std::sync::atomic::AtomicBool,
+        transport_error: bool,
+    }
     impl Model for Cancelling {
         fn cancellation(&self) -> &std::sync::atomic::AtomicBool {
-            &self.0
+            &self.flag
         }
         fn respond(&mut self, _: &str) -> io::Result<String> {
-            self.0.store(true, std::sync::atomic::Ordering::Relaxed);
+            self.flag.store(true, std::sync::atomic::Ordering::Relaxed);
+            if self.transport_error {
+                return Err(io::Error::new(
+                    io::ErrorKind::TimedOut,
+                    "transport expired after cancellation",
+                ));
+            }
             Ok(done("Completed despite cancellation").to_string())
         }
     }
     let repo = Repo::new();
-    let mut workspace = Workspace::open(&repo.0, &[]).unwrap();
-    let report = agent::execute(
-        &mut Cancelling(std::sync::atomic::AtomicBool::new(false)),
-        &mut workspace,
-        "Inspect",
-        false,
-        2,
-    );
-    assert_eq!(report.status, "cancelled");
-    assert_eq!(report.outcome, agent::TaskOutcome::Incomplete);
-    assert!(report.summaries.is_empty());
-    assert_eq!(report.calls, 1);
+    for transport_error in [false, true] {
+        let mut workspace = Workspace::open(&repo.0, &[]).unwrap();
+        let report = agent::execute(
+            &mut Cancelling {
+                flag: std::sync::atomic::AtomicBool::new(false),
+                transport_error,
+            },
+            &mut workspace,
+            "Inspect",
+            false,
+            2,
+        );
+        assert_eq!(report.status, "cancelled");
+        assert_eq!(report.outcome, agent::TaskOutcome::Incomplete);
+        assert!(report.summaries.is_empty());
+        assert_eq!(report.calls, 1);
+    }
 }
