@@ -49,7 +49,7 @@ Java/Kotlin/Minecraft, DayZ. Проверки SDK/игры не заменяют
 - Опциональные `--session-db` / `--resume`, immutable selected-source snapshot,
   checkpoint до model call и после tool outcome, optimistic revision guard,
   CLI show/export/delete; конфликт original при apply сохраняет внешние правки.
-- Desktop читает v4; chat guard использует выбранное окно истории и принимает
+- Desktop читает v4 и показывает controller facts до model summary; chat guard использует выбранное окно истории и принимает
   естественное описание проекта; временный worker-каталог private на Unix.
 - Local eval harness с SHA256 EXE/GGUF/suite/source/checker, повторными прогонами,
   baseline gate и независимой проверкой после apply. Пока один Python case.
@@ -64,7 +64,7 @@ Rust установлен в профиль пользователя без из
 для bindgen доступны через GCC include; системные пакеты не менялись.
 
 Выполнены fmt, Clippy all-targets с desktop,gateway-http и `-D warnings`,
-полная матрица tests с этими features: 161 passed, 0 failed, 7 ignored.
+полная матрица tests с этими features: 162 passed, 0 failed, 7 ignored.
 Из ignored отдельно выполнены 2 real CPU inference tests и 1 Docker preflight
 regression; остальные не объявляются пройденными. Добавлены отдельные проверки
 CLI → loopback HTTP → checkpoint → restart/resume → export, CRLF/Unicode,
@@ -96,11 +96,29 @@ sandbox-прогон требует CI/daemon с enforced cgroups, bypass не �
 Windows default Clippy/tests прошли; HTTP Clippy обнаружил large_enum_variant
 из-за Windows layout TaskArgs (408 bytes). Task-вариант CLI перенесен в Box,
 без изменения аргументов или отключения lint. После исправления локальные
-Clippy и 161 tests снова прошли. Native CI исправленного head требуется отдельно;
+Clippy и 162 tests снова прошли. Native CI исправленного head требуется отдельно;
 предыдущая CUDA compilation не означает GPU runtime acceptance.
 На следующем Windows head оба Rust-набора прошли; Python harness выявил
 CRLF-преобразование Git. Для byte-pinned evals задан `/evals/** -text`,
 добавлен regression checkout-index с core.autocrlf=true без ослабления SHA256.
+
+## Реальная coding-проба малой GGUF
+
+Linux cloud CPU, 2 threads; официальный Qwen2.5-Coder-1.5B-Instruct Q4_K_M
+из каталога, SHA256 cc324af070c2ecbfd324a30884d2f951a7ff756aba85cb811a6ec436933bb046.
+Фикстура examples/buggy-add скопирована с CRLF, исходный cargo test падает.
+Task: context 8192, max-tokens 1024, max-calls 12, timeout 600, session-db.
+За 36.51 s модель выполнила search(query="symbol") и finish, без предложения.
+Протокол completed, outcome analysis_complete, файл не изменен; apply не вызывался.
+Это НЕ успешная coding-приемка. По прямому prompt с исходником (тот же GGUF,
+context 8192/max-tokens 512/2 threads) за 11.06 s возвращено правильное
+left + right; ответ не применялся и не исполнялся. Эти разные запросы не являются
+сравнительным benchmark скорости или доказательством качества целевой 9B/RTX.
+
+На основе этой находки Desktop явно показывает отсутствие предложений и
+подтвержденных проверок до комментария модели. Это исправляет представление
+результата, но не выдает неуспех модели за исправленную coding-надежность.
+Временные веса удалены после обоих процессов; приватные отчеты остались в .lyra.
 
 ## Открытые шаги и передача состояния
 

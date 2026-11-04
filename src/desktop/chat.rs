@@ -120,6 +120,41 @@ impl Chat {
     }
 }
 
+/// Controller facts stay separate from unverified model summaries.
+fn task_facts(report: &crate::agent::Report, language: Language) -> String {
+    let count = report.proposals.len();
+    let verified = report.outcome == crate::agent::TaskOutcome::ChangesVerified
+        && report
+            .verifications
+            .last()
+            .is_some_and(|evidence| evidence.result.passed());
+    let changes = if count == 0 {
+        if language == Language::Ru {
+            "Изменения не подготовлены.".into()
+        } else {
+            "No changes were prepared.".into()
+        }
+    } else if language == Language::Ru {
+        format!("Подготовлено предложений: {count}. Применение требует отдельного действия.")
+    } else {
+        format!("Prepared proposals: {count}. Applying them is a separate action.")
+    };
+    let checks = match (language, verified) {
+        (Language::Ru, true) => "Настроенная проверка текущих предложений прошла.",
+        (Language::Ru, false) => "Успешная проверка текущих предложений не подтверждена.",
+        (_, true) => "The configured check passed for the current proposals.",
+        (_, false) => "A successful check of the current proposals is not confirmed.",
+    };
+    format!(
+        "{} {changes} {checks}",
+        if language == Language::Ru {
+            "Результат приложения:"
+        } else {
+            "Application result:"
+        }
+    )
+}
+
 /// Keep conversation content readable on wide displays instead of stretching every line.
 fn conversation_width(available: f32) -> f32 {
     available.clamp(1.0, 820.0)
@@ -408,16 +443,16 @@ impl Desktop {
                 .iter()
                 .map(|(_, text)| text.as_str())
                 .collect();
-            if summaries.is_empty() {
-                self.message.clone()
-            } else {
-                let mut text = summaries.join("\n\n");
-                if !report.context_optimization.is_empty() {
-                    text.push_str("\n\n");
-                    text.push_str(&self.message);
-                }
-                text
+            let mut text = task_facts(report, self.prefs.language);
+            if !summaries.is_empty() {
+                text.push_str("\n\n");
+                text.push_str(&summaries.join("\n\n"));
             }
+            if summaries.is_empty() || !report.context_optimization.is_empty() {
+                text.push_str("\n\n");
+                text.push_str(&self.message);
+            }
+            text
         } else {
             self.message.clone()
         };
@@ -813,6 +848,34 @@ mod tests {
         assert!(!can_apply(app.report.as_ref().unwrap(), 0, &[]));
         assert!(app.chat.messages.last().unwrap().text.contains("таймаут"));
     }
+    #[test]
+    fn task_completion_shows_controller_facts_before_unverified_model_claims() {
+        for language in [Language::Ru, Language::En] {
+            let mut app = Desktop::default();
+            app.prefs.language = language;
+            app.operation = Operation::Task;
+            app.chat.sent("Fix the bug".into());
+            app.report = Some(serde_json::from_value(serde_json::json!({
+                "schema_version":4,"workspace":"project","status":"completed","outcome":"analysis_complete",
+                "summaries":[["coder","Everything fixed. Tests passed."]],"proposals":[],"events":[],
+                "calls":2,"subagents":false,"truncated_index":false,"model_review_is_verified_test":false
+            })).unwrap());
+            app.finish_chat();
+            let answer = &app.chat.messages.last().unwrap().text;
+            let facts = if language == Language::Ru {
+                "Изменения не подготовлены."
+            } else {
+                "No changes were prepared."
+            };
+            assert!(answer.find(facts).unwrap() < answer.find("Everything fixed").unwrap());
+            assert!(answer.contains(if language == Language::Ru {
+                "не подтверждена"
+            } else {
+                "not confirmed"
+            }));
+        }
+    }
+
     #[test]
     fn successful_task_keeps_controller_context_metrics_visible() {
         for enabled in [false, true] {
