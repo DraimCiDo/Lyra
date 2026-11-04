@@ -117,10 +117,12 @@ impl ExecutionRequest {
             "--env=HTTP_PROXY=",
             "--env=HTTPS_PROXY=",
             "--env=ALL_PROXY=",
+            "--env=FTP_PROXY=",
             "--env=NO_PROXY=",
             "--env=http_proxy=",
             "--env=https_proxy=",
             "--env=all_proxy=",
+            "--env=ftp_proxy=",
             "--env=no_proxy=",
             "--entrypoint",
             "/usr/bin/timeout",
@@ -289,6 +291,52 @@ pub fn preflight(cancel: &AtomicBool) -> io::Result<()> {
     Ok(())
 }
 
+fn image_mounts_bounded(volumes: &serde_json::Value) -> bool {
+    volumes.is_null()
+        || volumes.as_object().is_some_and(|volumes| {
+            volumes
+                .keys()
+                .all(|path| matches!(path.as_str(), "/tmp" | "/source"))
+        })
+}
+
+fn image_metadata_bounded(image: &serde_json::Value) -> bool {
+    image["os"] == "linux" && image.get("volumes").is_some_and(image_mounts_bounded)
+}
+
+fn preflight_image(image: &str, cancel: &AtomicBool) -> io::Result<()> {
+    let mut command = Command::new("docker");
+    command.args([
+        "image",
+        "inspect",
+        "--format",
+        "{\"os\":{{json .Os}},\"volumes\":{{json .Config.Volumes}}}",
+        image,
+    ]);
+    let result = capture(command, Duration::from_secs(5), cancel)?;
+    if result.cancelled {
+        return Err(io::Error::new(
+            io::ErrorKind::Interrupted,
+            "Check cancelled",
+        ));
+    }
+    if result.exit_code != Some(0) || result.timed_out || result.output_truncated {
+        return Err(io::Error::new(
+            io::ErrorKind::NotFound,
+            "Digest-pinned check image is missing or cannot be inspected; prepare it explicitly",
+        ));
+    }
+    if !serde_json::from_str::<serde_json::Value>(&result.stdout)
+        .is_ok_and(|image| image_metadata_bounded(&image))
+    {
+        return Err(io::Error::new(
+            io::ErrorKind::Unsupported,
+            "Image must be Linux and declare no writable volumes outside bounded /tmp or read-only /source; execution blocked",
+        ));
+    }
+    Ok(())
+}
+
 /// Copies only permitted regular UTF-8 files; no host sockets, links or credentials
 /// are mounted. Source is read-only; all check output must go to container /tmp.
 /// The caller grants this check explicitly; models cannot select an image or argv.
@@ -316,6 +364,7 @@ pub fn verify_changes(
         ));
     }
     preflight(cancel)?;
+    preflight_image(&request.image, cancel)?;
     let mut workspace = crate::workspace::Workspace::open(repo, files)?;
     if workspace.truncated {
         return Err(io::Error::other(
@@ -374,7 +423,7 @@ pub fn verify_changes(
     let command = request.command(&source_root, &name)?;
     let result = capture(command, Duration::from_secs(request.timeout_secs), cancel);
     let mut cleanup = Command::new("docker");
-    cleanup.args(["rm", "--force", &name]);
+    cleanup.args(["rm", "--force", "--volumes", &name]);
     let cleaned = capture(cleanup, Duration::from_secs(5), &AtomicBool::new(false));
     let mut result = result?;
     if !result.cancelled
@@ -499,6 +548,25 @@ mod tests {
         caps.pids_limit = true;
         caps.security_options.clear();
         assert!(!caps.supported());
+    }
+
+    #[test]
+    fn image_volumes_cannot_add_unbounded_writable_mounts() {
+        assert!(image_metadata_bounded(
+            &serde_json::json!({"os":"linux","volumes":null})
+        ));
+        assert!(!image_metadata_bounded(
+            &serde_json::json!({"os":"windows","volumes":null})
+        ));
+        assert!(!image_metadata_bounded(&serde_json::json!({"os":"linux"})));
+        assert!(image_mounts_bounded(&serde_json::Value::Null));
+        assert!(image_mounts_bounded(&serde_json::json!({})));
+        assert!(image_mounts_bounded(
+            &serde_json::json!({"/tmp":{},"/source":{}})
+        ));
+        for path in ["/cache", "/var/tmp", "/tmp/cache", "/source/cache"] {
+            assert!(!image_mounts_bounded(&serde_json::json!({path:{}})));
+        }
     }
 
     #[test]

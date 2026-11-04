@@ -34,6 +34,9 @@ Reviewer может вызвать `request_changes`; coder исправляет
 Docker нужен только для этого режима; запуск обычного CLI/GGUF остается нативным.
 Нужны Linux containers и заранее установленный образ с `/usr/bin/timeout`.
 Образ задается неизменным digest, сеть и автоматический pull запрещены.
+Образ проверяется до запуска: объявленные VOLUME допускаются только в `/tmp`
+и `/source`, где их заменяют ограниченный tmpfs и read-only bind mount. Другие
+тома, включая вложенные, блокируются. Proxy environment явно очищается.
 Пути с запятой не поддерживаются Docker bind mount и явно отклоняются.
 
 Проверенный пример `evals/python-multifile/check.json` использует pinned

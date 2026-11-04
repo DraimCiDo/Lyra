@@ -330,6 +330,7 @@ fn cli_checkpoint_resume_preserves_pending_edits_and_original_project_identity()
                     Err(error) => panic!("accept: {error}"),
                 }
             };
+            stream.set_nonblocking(false).unwrap();
             stream
                 .set_read_timeout(Some(std::time::Duration::from_secs(5)))
                 .unwrap();

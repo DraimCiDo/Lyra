@@ -64,7 +64,7 @@ Rust установлен в профиль пользователя без из
 для bindgen доступны через GCC include; системные пакеты не менялись.
 
 Выполнены fmt, Clippy all-targets с desktop,gateway-http и `-D warnings`,
-полная матрица tests с этими features: 162 passed, 0 failed, 7 ignored.
+полная матрица tests с этими features: 163 passed, 0 failed, 7 ignored.
 Из ignored отдельно выполнены 2 real CPU inference tests и 1 Docker preflight
 regression; остальные не объявляются пройденными. Добавлены отдельные проверки
 CLI → loopback HTTP → checkpoint → restart/resume → export, CRLF/Unicode,
@@ -101,6 +101,15 @@ Clippy и 162 tests снова прошли. Native CI исправленног�
 На следующем Windows head оба Rust-набора прошли; Python harness выявил
 CRLF-преобразование Git. Для byte-pinned evals задан `/evals/** -text`,
 добавлен regression checkout-index с core.autocrlf=true без ослабления SHA256.
+
+На `692daae` Windows/Linux CI полностью прошел, включая native Desktop launch,
+release/starter acceptance и Linux Docker limits. Последующие изменения UI facts
+и приоритета отмены требуют повторного CI. Windows HTTP regression на `1700ec8`
+обнаружил наследование nonblocking accepted socket (WSA10035); тест явно
+переключает принятый сокет в blocking mode. Это изменение только тестового сервера.
+Executor дополнительно проверяет Linux image metadata и блокирует VOLUME вне
+переопределенных `/tmp`/`/source`, чтобы не создавать неограниченную writable
+область. Локальные fmt, Clippy и 163 tests после обеих правок прошли.
 
 ## Реальная coding-проба малой GGUF
 
