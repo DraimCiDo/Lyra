@@ -116,7 +116,8 @@ python tools/evaluate.py --binary ./target/debug/lyra \
   --output ./.lyra/evals/run-001.json --repeats 3
 ```
 
-Suite закрепляет хешами все исходники и независимый checker. Сначала проверяется
+Suite закрепляет хешами все исходники и независимый checker.
+`evals/**` хранится без преобразования Git line endings, включая CRLF cases. Сначала проверяется
 ожидаемый исходный провал, затем реальный local task с Docker verify, разрешенные
 пути изменений, явное применение в disposable copy и повторная независимая
 проверка. Код модели никогда не исполняется harness на host. Ошибки окружения

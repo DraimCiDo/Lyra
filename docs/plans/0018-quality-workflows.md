@@ -72,7 +72,7 @@ concurrent checkpoint и private permissions.
 Реальный CPU GGUF smoke: 2 ignored inference-теста прошли с закрепленным
 stories260K (SHA256 270cba1bd5109f42d03350f60406024560464db173c0e387d91f0426d3bd256d).
 Это проверка runtime/грамматики, не coding quality.
-Python harness: 3 unit-теста; diff и новые относительные ссылки проверены.
+Python harness: 4 unit-теста; diff и новые относительные ссылки проверены.
 
 До добавления strict preflight реальный Docker прогон подтвердил read-only,
 network denial, bounded output, cancel/timeout/cleanup и test-fail → fix →
@@ -98,6 +98,9 @@ Windows default Clippy/tests прошли; HTTP Clippy обнаружил large_
 без изменения аргументов или отключения lint. После исправления локальные
 Clippy и 161 tests снова прошли. Native CI исправленного head требуется отдельно;
 предыдущая CUDA compilation не означает GPU runtime acceptance.
+На следующем Windows head оба Rust-набора прошли; Python harness выявил
+CRLF-преобразование Git. Для byte-pinned evals задан `/evals/** -text`,
+добавлен regression checkout-index с core.autocrlf=true без ослабления SHA256.
 
 ## Открытые шаги и передача состояния
 

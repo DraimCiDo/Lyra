@@ -2,6 +2,7 @@
 import json
 from pathlib import Path
 import shutil
+import subprocess
 import tempfile
 import unittest
 import evaluate
@@ -27,6 +28,15 @@ class SuiteIntegrity(unittest.TestCase):
         (self.root / "check.json").write_text("{}", encoding="utf-8")
         with self.assertRaisesRegex(ValueError, "checker changed"):
             evaluate.load_suite(self.root / "suite.json")
+
+    def test_git_windows_checkout_preserves_pinned_fixture_bytes(self):
+        repository = Path(__file__).resolve().parents[1]
+        export = Path(self.temp.name) / "windows-checkout"
+        export.mkdir()
+        paths = subprocess.check_output(["git", "-C", str(repository), "ls-files", "-z", "evals/python-multifile"], timeout=15).decode("utf-8").strip("\0").split("\0")
+        subprocess.run(["git", "-C", str(repository), "-c", "core.autocrlf=true", "checkout-index",
+                        f"--prefix={export.as_posix()}/", "--", *paths], check=True, capture_output=True, timeout=15)
+        evaluate.load_suite(export / "evals/python-multifile/suite.json")
 
     def test_empty_suite_and_escape_are_rejected(self):
         path = self.root / "suite.json"
