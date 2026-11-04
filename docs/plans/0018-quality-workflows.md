@@ -86,6 +86,17 @@ sandbox-прогон требует CI/daemon с enforced cgroups, bypass не �
 `CARGO_BUILD_JOBS=4`, `CARGO_PROFILE_DEV_DEBUG=0`, `CARGO_PROFILE_TEST_DEBUG=0`.
 Эти пути описывают данное окружение, не требования Windows-поставки.
 
+## CI первого инкремента
+
+На `b5a60cb` [CI](https://github.com/DraimCiDo/Lyra/actions/runs/41790867762)
+подтвердил Linux fmt/Clippy, default/HTTP tests, CPU GGUF smoke и полный
+положительный Docker-прогон с enforced cgroups, включая memory/PID stress.
+Windows default Clippy/tests прошли; HTTP Clippy обнаружил large_enum_variant
+из-за Windows layout TaskArgs (408 bytes). Task-вариант CLI перенесен в Box,
+без изменения аргументов или отключения lint. После исправления локальные
+Clippy и 160 tests снова прошли. Native CI исправленного head требуется отдельно;
+предыдущая CUDA compilation не означает GPU runtime acceptance.
+
 ## Открытые шаги и передача состояния
 
 Не завершены: корпус 36 задач и реальные model evals, Git worktrees/multi-file

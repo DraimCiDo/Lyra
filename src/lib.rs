@@ -41,7 +41,7 @@ pub enum Command {
     /// Локальная документация, поиск и явная загрузка официальных источников
     Docs(knowledge::DocsArgs),
     /// Выполнить задачу: чтение проекта, предложения, опциональные подагенты
-    Task(agent::TaskArgs),
+    Task(Box<agent::TaskArgs>),
     /// Применить одно выбранное предложение из завершённого JSON-отчёта
     Apply(agent::ApplyArgs),
     /// Сгенерировать ответ локальной моделью (не исполняет сгенерированный код)
@@ -124,7 +124,7 @@ pub fn run(cli: Cli, output: &mut impl Write) -> io::Result<()> {
     match cli.command {
         Command::Project(args) => project::run(args, output),
         Command::Docs(args) => knowledge::run(args, output),
-        Command::Task(args) => agent::task(args, output),
+        Command::Task(args) => agent::task(*args, output),
         Command::Apply(args) => agent::apply(args, output),
         Command::Generate(args) => {
             if args.selected_skills.is_empty() && args.skills.is_none() {
