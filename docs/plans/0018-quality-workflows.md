@@ -263,3 +263,8 @@ actual doctor hardware fingerprint, строгий resume с сохранени�
 скомпилированные native checks; host execution не добавлен. Corpus validator
 теперь сохраняет stdout/stderr failed checks вместо одной внешней ошибки CLI.
 Результат повторного CI фиксируется в PR после проверки.
+
+Финальная проверка packaged README выявила устаревшие положения в DISTRIBUTION:
+размер окна, отсутствие executor и только одиночный apply. Исправлена документация
+CPU-пакета для текущих CLI/Desktop, opt-in checkpoints и явного HTTP. Код остается
+на проверенном source head 034d618; последующий commit меняет только документацию.
