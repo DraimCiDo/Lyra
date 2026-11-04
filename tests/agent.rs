@@ -738,3 +738,57 @@ fn successive_accepted_revisions_are_progress_even_with_the_same_tool_and_path()
     assert_eq!(report.status, "completed");
     assert_eq!(report.proposals[0].replacement, "const VALUE: i32 = 5;");
 }
+
+#[test]
+fn search_and_list_see_the_same_pending_files_as_read_and_edit() {
+    struct Overlay {
+        call: usize,
+    }
+    impl Model for Overlay {
+        fn respond(&mut self, prompt: &str) -> io::Result<String> {
+            let input: serde_json::Value = serde_json::from_str(prompt).unwrap();
+            let action = match self.call {
+                0 => {
+                    serde_json::json!({"tool":"propose_edit","path":"src/lib.rs","old":"old_name","new":"new_name"})
+                }
+                1 => {
+                    serde_json::json!({"tool":"propose_file","path":"src/new.rs","content":"new_name"})
+                }
+                2 => serde_json::json!({"tool":"search","query":"new_name"}),
+                3 => {
+                    let matches = input["history"][2]["result"]["data"]["matches"]
+                        .as_array()
+                        .unwrap();
+                    assert_eq!(matches.len(), 2);
+                    assert!(matches.iter().any(|entry| entry["path"] == "src/new.rs"));
+                    serde_json::json!({"tool":"list"})
+                }
+                _ => {
+                    let files = input["history"][3]["result"]["data"]["files"]
+                        .as_array()
+                        .unwrap();
+                    assert!(files.iter().any(|path| path == "src/new.rs"));
+                    done("Pending view inspected; tests not run")
+                }
+            };
+            self.call += 1;
+            Ok(action.to_string())
+        }
+    }
+    let repo = Repo::new();
+    repo.write("src/lib.rs", "old_name\r\n");
+    let mut workspace = Workspace::open(&repo.0, &[]).unwrap();
+    let report = agent::execute(
+        &mut Overlay { call: 0 },
+        &mut workspace,
+        "Rename symbol",
+        false,
+        6,
+    );
+    assert_eq!(report.status, "completed");
+    assert_eq!(
+        std::fs::read_to_string(repo.0.join("src/lib.rs")).unwrap(),
+        "old_name\r\n"
+    );
+    assert!(!repo.0.join("src/new.rs").exists());
+}

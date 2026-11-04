@@ -604,14 +604,14 @@ pub fn execute_workflow(
                     }
                 }
                 Action::List => Ok(
-                    serde_json::json!({"files":workspace.files,"incomplete":workspace.truncated}),
+                    serde_json::json!({"files":visible_paths(workspace, &report.proposals),"incomplete":workspace.truncated}),
                 ),
                 Action::ReadFile { path } => match report.proposals.iter().find(|p| p.path == *path) {
                     Some(pending) => workspace.read_pending(pending),
                     None => workspace.read(path),
                 }
                     .map(|content| serde_json::json!({"path":path,"line_endings":if content.contains("\r\n") { if content.replace("\r\n", "").contains('\n') { "mixed" } else { "crlf" } } else { "lf" },"content":content})),
-                Action::Search { query } => search(workspace, query),
+                Action::Search { query } => search(workspace, query, &report.proposals),
                 Action::SearchDocs { query } => docs.search(query, 2, 2048).and_then(|snippets| {
                     for snippet in &snippets {
                         if !report
@@ -869,14 +869,31 @@ fn value_digest(value: &impl Serialize) -> io::Result<String> {
         .collect())
 }
 
-fn search(workspace: &mut Workspace, query: &str) -> io::Result<serde_json::Value> {
+fn visible_paths(workspace: &Workspace, proposals: &[Edit]) -> std::collections::BTreeSet<String> {
+    workspace
+        .files
+        .iter()
+        .cloned()
+        .chain(proposals.iter().map(|edit| edit.path.clone()))
+        .collect()
+}
+
+fn search(
+    workspace: &mut Workspace,
+    query: &str,
+    proposals: &[Edit],
+) -> io::Result<serde_json::Value> {
     if query.is_empty() || query.len() > 256 {
         return Err(io::Error::other("Запрос поиска: 1–256 байт."));
     }
     let mut matches = Vec::new();
     let mut skipped = 0;
-    for path in workspace.files.clone() {
-        match workspace.read(&path) {
+    for path in visible_paths(workspace, proposals) {
+        let content = match proposals.iter().find(|edit| edit.path == path) {
+            Some(edit) => workspace.read_pending(edit),
+            None => workspace.read(&path),
+        };
+        match content {
             Ok(text) => {
                 for (index, line) in text.lines().enumerate() {
                     if line.contains(query) {

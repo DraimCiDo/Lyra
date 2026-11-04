@@ -37,7 +37,7 @@ Java/Kotlin/Minecraft, DayZ. Проверки SDK/игры не заменяют
 
 ## Реализованный первый инкремент
 
-- Mutable pending edits и read overlay, discard, два bounded reviewer repair
+- Mutable pending edits и единый read/search/list overlay, discard, два bounded reviewer repair
   rounds, syntax recovery, no-progress с учетом изменения содержимого.
 - Отчет v4 с outcome; legacy v1–v3 apply; успешный настроенный verify связан
   SHA256 с предложениями и конфигурацией. Изменение кода/проверки инвалидирует proof.
@@ -62,7 +62,7 @@ Rust установлен в профиль пользователя без из
 для bindgen доступны через GCC include; системные пакеты не менялись.
 
 Выполнены fmt, Clippy all-targets с desktop,gateway-http и `-D warnings`,
-полная матрица tests с этими features: 159 passed, 0 failed, 7 ignored.
+полная матрица tests с этими features: 160 passed, 0 failed, 7 ignored.
 Из ignored отдельно выполнены 2 real CPU inference tests и 1 Docker preflight
 regression; остальные не объявляются пройденными. Добавлены отдельные проверки
 CLI → loopback HTTP → checkpoint → restart/resume → export, CRLF/Unicode,
