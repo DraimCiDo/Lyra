@@ -106,5 +106,5 @@ Desktop conversations: [план](plans/0013-desktop-conversations-models.md), [
 Chat reliability/activity: [план](plans/0014-chat-reliability-activity.md), [capability contract](../src/desktop/chat_policy.rs), [worker/progress](../src/desktop/job.rs).
 
 Проверяемые workflow: [программа](plans/0018-quality-workflows.md),
-[CLI-контракты/ограничения](WORKFLOWS.md), [executor](../src/executor.rs),
+[CLI-контракты/ограничения](WORKFLOWS.md), [публикация/recovery](../src/publication.rs), [executor](../src/executor.rs),
 [SQLite snapshots](../src/session.rs), [eval harness](../tools/evaluate.py).

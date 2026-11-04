@@ -135,9 +135,9 @@ def run_case(args, root, case, iteration):
             return result
         report_file = work / "report.json"
         report_file.write_text(json.dumps(report, ensure_ascii=False), encoding="utf-8")
-        for index, _ in enumerate(report.get("proposals", [])):
+        if report.get("proposals"):
             applied = invoke([str(args.binary), "apply", "--repo", str(repo), "--report",
-                              str(report_file), "--index", str(index)], 30)
+                              str(report_file), "--all"], 30)
             if applied["exit_code"] != 0:
                 result["status"] = "apply_failed"
                 result["apply"] = applied

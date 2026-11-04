@@ -25,7 +25,7 @@ pub const READ_BUDGET: usize = 512 * 1024;
 
 pub struct Workspace {
     pub root: PathBuf,
-    dir: Dir,
+    pub(crate) dir: Dir,
     pub files: BTreeSet<String>,
     pub truncated: bool,
     pub bytes_read: usize,
@@ -238,7 +238,7 @@ impl Workspace {
         ignored
     }
 
-    fn safe_path(&self, path: &str) -> io::Result<()> {
+    pub(crate) fn safe_path(&self, path: &str) -> io::Result<()> {
         if !permitted(path) {
             return Err(error("Путь запрещён политикой проекта."));
         }
@@ -357,7 +357,7 @@ impl Workspace {
         })
     }
 
-    fn new_path(&mut self, path: &str) -> io::Result<()> {
+    pub(crate) fn new_path(&mut self, path: &str) -> io::Result<()> {
         crate::project::validate_path(path, false)?;
         if !permitted(path) {
             return Err(error("Путь запрещён политикой проекта."));
@@ -394,6 +394,55 @@ impl Workspace {
         }
         if self.ignored(path, false) {
             return Err(error("Новый файл исключён gitignore."));
+        }
+        Ok(())
+    }
+
+    /// Validate without writing. Batch publication checks every edit first.
+    pub(crate) fn validate_edit(&mut self, edit: &Edit) -> io::Result<()> {
+        crate::project::validate_path(&edit.path, false)?;
+        if edit.original.len() > FILE_LIMIT
+            || edit.replacement.len() > FILE_LIMIT
+            || edit.original.contains('\0')
+            || edit.replacement.contains('\0')
+        {
+            return Err(error("Некорректный размер или NUL в предложении."));
+        }
+        if edit.create {
+            if !edit.original.is_empty() {
+                return Err(error("Новый файл не может иметь исходное содержимое."));
+            }
+            return self.new_path(&edit.path);
+        }
+        if !self.files.contains(&edit.path) {
+            return Err(error("Файл вне выбранного контекста."));
+        }
+        if edit.original.len() > FILE_LIMIT
+            || edit.replacement.len() > FILE_LIMIT
+            || edit.original == edit.replacement
+        {
+            return Err(error("Некорректное предложение изменения."));
+        }
+        self.safe_path(&edit.path)?;
+        if !self.dir.symlink_metadata(&edit.path)?.is_file() {
+            return Err(error("Ожидается обычный файл."));
+        }
+        let current = self.dir.open(&edit.path)?;
+        let permissions = current.metadata()?.permissions();
+        if permissions.readonly() {
+            return Err(io::Error::new(
+                io::ErrorKind::PermissionDenied,
+                "Файл помечен read-only; замена запрещена.",
+            ));
+        }
+        let mut text = String::new();
+        current
+            .take((FILE_LIMIT + 1) as u64)
+            .read_to_string(&mut text)?;
+        if text != edit.original {
+            return Err(error(
+                "Конфликт: исходный файл изменился. Применение отменено.",
+            ));
         }
         Ok(())
     }
@@ -455,33 +504,8 @@ impl Workspace {
             let _ = self.dir.remove_file(&temp);
             return result;
         }
-        if !self.files.contains(&edit.path) {
-            return Err(error("Файл вне выбранного контекста."));
-        }
-        if edit.original.len() > FILE_LIMIT
-            || edit.replacement.len() > FILE_LIMIT
-            || edit.original == edit.replacement
-        {
-            return Err(error("Некорректное предложение изменения."));
-        }
-        self.safe_path(&edit.path)?;
-        let current = self.dir.open(&edit.path)?;
-        let permissions = current.metadata()?.permissions();
-        if permissions.readonly() {
-            return Err(io::Error::new(
-                io::ErrorKind::PermissionDenied,
-                "Файл помечен read-only; замена запрещена.",
-            ));
-        }
-        let mut text = String::new();
-        current
-            .take((FILE_LIMIT + 1) as u64)
-            .read_to_string(&mut text)?;
-        if text != edit.original {
-            return Err(error(
-                "Конфликт: исходный файл изменился. Применение отменено.",
-            ));
-        }
+        self.validate_edit(edit)?;
+        let permissions = self.dir.open(&edit.path)?.metadata()?.permissions();
         let nonce = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .map_err(io::Error::other)?

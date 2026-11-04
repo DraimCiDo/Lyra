@@ -131,8 +131,8 @@ left + right; ответ не применялся и не исполнялся.
 
 ## Открытые шаги и передача состояния
 
-Не завершены: корпус 36 задач и реальные model evals, Git worktrees/multi-file
-publication/recovery journal, Windows VM/SDK executor, индекс больших репозиториев,
+Не завершены: корпус 36 задач и реальные model evals, Git worktrees и полностью автоматическое
+byte-level recovery в Windows, Windows VM/SDK executor, индекс больших репозиториев,
 token-aware context/summaries, постоянный inference-worker и сравнение трех GGUF,
 профильные adapters/browser/game acceptance, Desktop resume/permissions/rules/MCP.
 Текущие 128 файлов / 512 KiB чтения явно остаются ограничением alpha.
@@ -141,3 +141,44 @@ token-aware context/summaries, постоянный inference-worker и срав
 затем расширить независимый корпус и снять local-model baseline на целевом ПК.
 Для GPU/Windows SDK приемки это окружение не подходит: доступного native runtime
 и репрезентативных GGUF здесь нет. Не подменять эти gates tiny smoke или API.
+
+
+## Второй инкремент: публикация и восстановление набора файлов
+
+Исходная ревизия 6918265; продолжается та же рабочая ветка. На 6918265 оба
+[Windows/Linux CPU jobs](https://github.com/DraimCiDo/Lyra/actions/runs/41802367906)
+полностью прошли (release, Desktop launch, упаковка), также прошла
+[CUDA build](https://github.com/DraimCiDo/Lyra/actions/runs/41802367844).
+Это сборка CUDA без доступного NVIDIA runtime на runner, не GPU model acceptance.
+
+Результат: CLI `apply --all`, проверка всего набора до первой записи, постоянная
+OS file lock и bounded приватный undo journal `.lyra/apply-journal.json` до
+записи оригиналов. `--index` использует тот же механизм. CLI `recover` показывает
+состояние без вывода исходников; `--action rollback|complete` восстанавливает
+набор после завершения процесса. Внешнее содержимое блокирует всю операцию,
+журнал сохраняется. При обычной ошибке записи выполняется безопасная попытка
+отката. Eval harness применяет весь набор одной командой. Новых зависимостей нет.
+
+Границы: последовательные замены файлов с восстановлением, не filesystem-wide
+atomic transaction. Не блокирует сторонние редакторы/процессы. Empty directories
+после отката могут оставаться; journal не заменяет Git backup. Worktrees,
+Desktop-кнопка применения всего набора и GUI recovery остаются отдельными шагами.
+Windows CREATE_NEW при прерывании внутри записи нового файла может оставить
+неполное содержимое: recovery сохраняет его и журнал, требует ручного разбора,
+не удаляет файл только из-за совпадения префикса. Это явно не автоматическое
+восстановление всех byte-level interruption points.
+
+Критерии:
+- [x] Все конфликты/read-only/duplicate/prefix paths отклоняются до первой записи.
+- [x] Apply/recovery сохраняют CRLF, Unicode, внешние dirty edits и permissions.
+- [x] Каждый разрыв 0..N публикаций восстанавливается в обе стороны; настоящий
+  process exit освобождает lock и оставляет пригодный журнал.
+- [x] Внешние правки и symlink не перезаписываются/не удаляются при recovery.
+- [ ] CLI, harness, fmt/Clippy/tests и нативный Windows CI проверены.
+
+Локально: 180 Rust tests passed / 7 ignored с desktop,gateway-http, включая
+14 targeted publication regressions и 3 CLI integration tests. Clippy all-targets
+с `-D warnings`, fmt и 4 Python harness tests прошли. Исходный тест
+fsync выявил O_PATH descriptor cap-std. Для sync directory открывается через
+`Dir::open(".")`, а не копируется O_PATH handle. Нативный Windows CI нового head требуется отдельно; предыдущий успешный CI
+6918265 не считается проверкой второго инкремента.

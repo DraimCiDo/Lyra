@@ -128,8 +128,11 @@ pub struct ApplyArgs {
     #[arg(long)]
     pub report: PathBuf,
     /// Индекс предложения в отчёте, начиная с 0
+    #[arg(long, conflicts_with = "all", required_unless_present = "all")]
+    pub index: Option<usize>,
+    /// Применить весь набор после проверки всех конфликтов
     #[arg(long)]
-    pub index: usize,
+    pub all: bool,
 }
 
 #[derive(Debug, Deserialize, Serialize)]
@@ -1209,36 +1212,33 @@ pub fn task(args: TaskArgs, output: &mut impl Write) -> io::Result<()> {
 pub fn apply(args: ApplyArgs, output: &mut impl Write) -> io::Result<()> {
     let report: Report = serde_json::from_str(&limited_file(&args.report, 2 * 1024 * 1024)?)
         .map_err(io::Error::other)?;
-    let edit = report
-        .proposals
-        .get(args.index)
-        .ok_or_else(|| io::Error::other("Предложение не найдено."))?;
-    let mut workspace = Workspace::open(
-        &args.repo,
-        if edit.create {
-            &[]
-        } else {
-            std::slice::from_ref(&edit.path)
-        },
-    )?;
+    let edits = if args.all {
+        report.proposals.as_slice()
+    } else {
+        let index = args
+            .index
+            .ok_or_else(|| io::Error::other("Укажите --index или --all."))?;
+        std::slice::from_ref(
+            report
+                .proposals
+                .get(index)
+                .ok_or_else(|| io::Error::other("Предложение не найдено."))?,
+        )
+    };
     if !matches!(report.schema_version, 1..=4)
-        || report.schema_version == 1 && edit.create
+        || report.schema_version == 1 && edits.iter().any(|edit| edit.create)
         || report.status != "completed"
         || report.schema_version == 4
             && !matches!(
                 report.outcome,
                 TaskOutcome::ChangesProposed | TaskOutcome::ChangesVerified
             )
-        || report.workspace != workspace.root
+        || report.workspace != args.repo.canonicalize()?
     {
         return Err(io::Error::other("Неполный отчёт или другой проект."));
     }
-    workspace.apply(edit)?;
-    writeln!(
-        output,
-        "Применено предложение {}: {}",
-        args.index, edit.path
-    )
+    crate::publication::apply(&args.repo, edits)?;
+    writeln!(output, "Применено предложений: {}", edits.len())
 }
 
 #[cfg(test)]

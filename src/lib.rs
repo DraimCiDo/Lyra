@@ -11,6 +11,7 @@ pub mod model_gateway;
 pub mod project;
 #[cfg(feature = "gateway-http")]
 pub mod provider_http;
+pub mod publication;
 pub mod resources;
 pub mod routing;
 pub mod session;
@@ -42,8 +43,10 @@ pub enum Command {
     Docs(knowledge::DocsArgs),
     /// Выполнить задачу: чтение проекта, предложения, опциональные подагенты
     Task(Box<agent::TaskArgs>),
-    /// Применить одно выбранное предложение из завершённого JSON-отчёта
+    /// Применить одно предложение или весь набор из завершённого JSON-отчёта
     Apply(agent::ApplyArgs),
+    /// Inspect, complete or roll back interrupted file publication
+    Recover(publication::RecoveryArgs),
     /// Сгенерировать ответ локальной моделью (не исполняет сгенерированный код)
     Generate(inference::GenerateArgs),
     /// Локальный диалог GGUF с сохранением истории ролей, без задач и файлов проекта
@@ -126,6 +129,7 @@ pub fn run(cli: Cli, output: &mut impl Write) -> io::Result<()> {
         Command::Docs(args) => knowledge::run(args, output),
         Command::Task(args) => agent::task(*args, output),
         Command::Apply(args) => agent::apply(args, output),
+        Command::Recover(args) => publication::recover(args, output),
         Command::Generate(args) => {
             if args.selected_skills.is_empty() && args.skills.is_none() {
                 inference::generate(&args, output)
