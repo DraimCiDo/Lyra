@@ -1,0 +1,10 @@
+{
+  "image": "python@sha256:ae14d4ce8771606477a81446e7ef429edd6762305fc50c84507c1041fa8285d1",
+  "program": "python",
+  "args": [
+    "-c",
+    "import sys,copy\nsys.path.insert(0,'/source')\nfrom main import put\ndb={'a':{'title':'old','keep':7,'revision':3}}\ncode,value=put(db,'a',3,{'title':'new','revision':99})\nassert code==200 and value=={'title':'new','keep':7,'revision':4}\nbefore=copy.deepcopy(db);assert put(db,'a',3,{'title':'bad'})==(409,None) and db==before\nassert put(db,'missing',0,{})==(404,None)\n"
+  ],
+  "timeout_secs": 60,
+  "memory_mib": 512
+}

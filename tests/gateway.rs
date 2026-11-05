@@ -70,7 +70,7 @@ fn tool_pool_reduces_real_http_body_and_restores_identical_context() {
     std::fs::write(&task, "Inspect; do not change files.").unwrap();
     let config = dir.path().join("providers.json");
     std::fs::write(&config, serde_json::json!({"descriptor":{"provider":"local","model":"test",
-        "capabilities":{"tool_calls":false,"vision":false,"prompt_cache":false,"max_context_tokens":8192}},
+        "capabilities":{"tool_calls":false,"vision":false,"prompt_cache":false,"max_context_tokens":32768}},
         "endpoint":endpoint,"api_key_env":null}).to_string()).unwrap();
     let mut reports = Vec::new();
     let mut outputs = Vec::new();
@@ -84,7 +84,7 @@ fn tool_pool_reduces_real_http_body_and_restores_identical_context() {
             .arg(&task)
             .arg("--provider-config")
             .arg(&config)
-            .args(["--allow", "local", "--max-calls", "4"]);
+            .args(["--allow", "local", "--max-calls", "4", "--context", "32768"]);
         if dedup {
             command.arg("--dedup-tool-context");
         }
@@ -108,7 +108,7 @@ fn tool_pool_reduces_real_http_body_and_restores_identical_context() {
         lyra::context_optimizer::restore(&decode(&bodies[7])).unwrap(),
         decode(&bodies[3])
     );
-    assert_eq!(reports[1]["schema_version"], 3);
+    assert_eq!(reports[1]["schema_version"], 4);
     assert_eq!(reports[1]["context_optimization"][3]["references"], 2);
     assert!(
         String::from_utf8_lossy(&outputs[1].stderr)
@@ -229,6 +229,7 @@ fn cloud_task_timeout_covers_multiple_calls_and_response_body() {
     );
     let report: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
     assert_eq!(report["status"], "timeout");
+    assert_eq!(output.status.code(), Some(124));
     assert!(report["calls"].as_u64().unwrap() <= 2);
 }
 
@@ -305,4 +306,158 @@ fn cli_rejects_invalid_request_file_before_http() {
     assert!(!output.status.success());
     assert!(String::from_utf8_lossy(&output.stderr).contains("Invalid chat request"));
     assert!(output.stdout.is_empty());
+}
+
+#[test]
+fn cli_checkpoint_resume_preserves_pending_edits_and_original_project_identity() {
+    use std::io::{BufRead, Read, Write};
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    listener.set_nonblocking(true).unwrap();
+    let endpoint = format!(
+        "http://{}/v1/chat/completions",
+        listener.local_addr().unwrap()
+    );
+    let server = std::thread::spawn(move || {
+        for call in 0..3 {
+            let started = std::time::Instant::now();
+            let mut stream = loop {
+                match listener.accept() {
+                    Ok((stream, _)) => break stream,
+                    Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+                        assert!(started.elapsed().as_secs() < 20, "CLI never sent request");
+                        std::thread::sleep(std::time::Duration::from_millis(10));
+                    }
+                    Err(error) => panic!("accept: {error}"),
+                }
+            };
+            stream.set_nonblocking(false).unwrap();
+            stream
+                .set_read_timeout(Some(std::time::Duration::from_secs(5)))
+                .unwrap();
+            let bytes = {
+                let mut reader = std::io::BufReader::new(&mut stream);
+                let mut length = None;
+                loop {
+                    let mut line = String::new();
+                    assert!(reader.read_line(&mut line).unwrap() > 0);
+                    if line == "\r\n" {
+                        break;
+                    }
+                    if let Some((key, value)) = line.split_once(':')
+                        && key.eq_ignore_ascii_case("content-length")
+                    {
+                        length = Some(value.trim().parse::<usize>().unwrap());
+                    }
+                }
+                let length = length.unwrap();
+                assert!(length < 2 * 1024 * 1024);
+                let mut bytes = vec![0; length];
+                reader.read_exact(&mut bytes).unwrap();
+                bytes
+            };
+            assert!(!String::from_utf8_lossy(&bytes).contains("PRIVATE_SENTINEL"));
+            let wire: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+            let envelope: serde_json::Value =
+                serde_json::from_str(wire["messages"][1]["content"].as_str().unwrap()).unwrap();
+            let action = match call {
+                0 => {
+                    serde_json::json!({"tool":"propose_edit","path":"source.py","old":"answer = 0","new":"answer = 41"})
+                }
+                1 => {
+                    assert!(
+                        envelope["proposals"][0]["replacement"]
+                            .as_str()
+                            .unwrap()
+                            .contains("41")
+                    );
+                    serde_json::json!({"tool":"propose_edit","path":"source.py","old":"answer = 41","new":"answer = 42"})
+                }
+                _ => serde_json::json!({"tool":"finish","summary":"Prepared; tests not run"}),
+            };
+            let body = serde_json::json!({"choices":[{"message":{"content":action.to_string()}}]})
+                .to_string();
+            write!(
+                stream,
+                "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                body.len()
+            )
+            .unwrap();
+        }
+    });
+    let dir = tempfile::tempdir().unwrap();
+    let repo = dir.path().join("проект с пробелами");
+    std::fs::create_dir(&repo).unwrap();
+    std::fs::write(
+        repo.join("source.py"),
+        "answer = 0\r\n# user dirty change\r\n",
+    )
+    .unwrap();
+    std::fs::write(repo.join(".env"), "PRIVATE_SENTINEL").unwrap();
+    let task = dir.path().join("TASK.txt");
+    std::fs::write(&task, "Return 42").unwrap();
+    let db = dir.path().join("sessions.sqlite");
+    let config = dir.path().join("providers.json");
+    std::fs::write(&config,serde_json::json!({"descriptor":{"provider":"local","model":"test","capabilities":{"tool_calls":false,"vision":false,"prompt_cache":false,"max_context_tokens":4096}},"endpoint":endpoint,"api_key_env":null}).to_string()).unwrap();
+    let task_command = || {
+        let mut command = Command::new(env!("CARGO_BIN_EXE_lyra"));
+        command
+            .arg("task")
+            .arg("--repo")
+            .arg(&repo)
+            .arg("--task-file")
+            .arg(&task)
+            .arg("--provider-config")
+            .arg(&config)
+            .args(["--allow", "local"])
+            .arg("--session-db")
+            .arg(&db);
+        command
+    };
+    let first = task_command().args(["--max-calls", "1"]).output().unwrap();
+    assert!(!first.status.success());
+    let first_report: serde_json::Value = serde_json::from_slice(&first.stdout).unwrap();
+    assert_eq!(first_report["status"], "step_limit: coder");
+    let stderr = String::from_utf8_lossy(&first.stderr);
+    let id = stderr
+        .lines()
+        .find_map(|line| line.strip_prefix("Lyra session: "))
+        .unwrap()
+        .to_owned();
+    let resumed = task_command()
+        .args(["--resume", &id, "--max-calls", "4"])
+        .output()
+        .unwrap();
+    assert!(
+        resumed.status.success(),
+        "{}",
+        String::from_utf8_lossy(&resumed.stderr)
+    );
+    server.join().unwrap();
+    let report: serde_json::Value = serde_json::from_slice(&resumed.stdout).unwrap();
+    assert_eq!(
+        report["workspace"],
+        serde_json::to_value(repo.canonicalize().unwrap()).unwrap()
+    );
+    assert_eq!(report["calls"], 3);
+    assert_eq!(report["outcome"], "changes_proposed");
+    assert!(
+        report["proposals"][0]["replacement"]
+            .as_str()
+            .unwrap()
+            .contains("42\r\n# user dirty change")
+    );
+    assert!(
+        std::fs::read_to_string(repo.join("source.py"))
+            .unwrap()
+            .contains("answer = 0")
+    );
+    let saved = Command::new(env!("CARGO_BIN_EXE_lyra"))
+        .args(["session", "show", "--db"])
+        .arg(&db)
+        .args(["--id", &id, "--report"])
+        .output()
+        .unwrap();
+    assert!(saved.status.success());
+    let saved_report: serde_json::Value = serde_json::from_slice(&saved.stdout).unwrap();
+    assert_eq!(saved_report, report);
 }

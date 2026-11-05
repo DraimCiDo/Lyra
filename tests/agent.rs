@@ -114,7 +114,7 @@ fn rejected_edit_keeps_recovery_evidence_and_pending_proposal_is_explicit() {
         std::fs::read_to_string(repo.0.join("src/lib.rs")).unwrap(),
         original
     );
-    assert_eq!(report.schema_version, 3);
+    assert_eq!(report.schema_version, 4);
     let report_path = repo.0.join("report.json");
     std::fs::write(&report_path, serde_json::to_vec(&report).unwrap()).unwrap();
     let output = std::process::Command::new(env!("CARGO_BIN_EXE_lyra"))
@@ -177,7 +177,7 @@ fn request_local_tool_pool_is_reversible_and_readonly_roles_get_no_edit_tools() 
     };
     let (plain, _) = run(false);
     let (packed, report) = run(true);
-    assert_eq!(report.schema_version, 3);
+    assert_eq!(report.schema_version, 4);
     assert_eq!(
         lyra::context_optimizer::restore(&packed.prompts[3]).unwrap(),
         plain.prompts[3]
@@ -396,7 +396,7 @@ fn symlinks_cannot_escape_the_workspace() {
 #[test]
 fn oversized_and_binary_files_fail_closed() {
     let repo = Repo::new();
-    repo.write("src/large.rs", &"x".repeat(65537));
+    repo.write("src/large.rs", &"x".repeat(lyra::workspace::FILE_LIMIT + 1));
     repo.write("src/binary.rs", "a\0b");
     let mut workspace = Workspace::open(&repo.0, &[]).unwrap();
     assert!(workspace.read("src/large.rs").is_err());
@@ -471,7 +471,7 @@ fn new_files_remain_proposals_until_explicit_apply_and_never_clobber() {
     ]);
     let report = agent::execute(&mut model, &mut workspace, "Add a module", false, 3);
     assert_eq!(report.status, "completed");
-    assert_eq!(report.schema_version, 2);
+    assert_eq!(report.schema_version, 4);
     assert!(report.proposals[0].create);
     assert!(!repo.0.join("src/new/module.rs").exists());
     workspace.apply(&report.proposals[0]).unwrap();
@@ -570,4 +570,412 @@ fn an_empty_package_marker_can_be_proposed_and_created_without_overwriting() {
         0
     );
     assert!(workspace.apply(&edit).is_err());
+}
+
+#[test]
+fn sequential_edits_use_pending_text_and_keep_original_apply_precondition() {
+    let repo = Repo::new();
+    let original = "fn add(a:i32,b:i32)->i32 { a-b }\r\nfn twice(x:i32)->i32 { x }\r\n";
+    repo.write("src/lib.rs", original);
+    let mut workspace = Workspace::open(&repo.0, &[]).unwrap();
+    let mut model = Script::new(vec![
+        serde_json::json!({"tool":"propose_edit","path":"src/lib.rs","old":"a-b","new":"a+b"}),
+        serde_json::json!({"tool":"read_file","path":"src/lib.rs"}),
+        serde_json::json!({"tool":"propose_edit","path":"src/lib.rs","old":"{ x }","new":"{ x * 2 }"}),
+        done("Both fixes proposed; tests not run."),
+    ]);
+    let report = agent::execute(&mut model, &mut workspace, "Fix both functions", false, 6);
+    assert_eq!(report.status, "completed");
+    assert_eq!(report.outcome, agent::TaskOutcome::ChangesProposed);
+    assert_eq!(report.proposals.len(), 1);
+    let edit = &report.proposals[0];
+    assert_eq!(edit.original, original);
+    assert!(edit.replacement.contains("a+b }\r\n"));
+    assert!(edit.replacement.contains("x * 2 }\r\n"));
+    assert_eq!(
+        std::fs::read_to_string(repo.0.join("src/lib.rs")).unwrap(),
+        original
+    );
+    workspace.apply(edit).unwrap();
+    assert_eq!(
+        std::fs::read_to_string(repo.0.join("src/lib.rs")).unwrap(),
+        edit.replacement
+    );
+}
+
+#[test]
+fn proposed_files_can_be_revised_and_discarded_without_writes() {
+    let repo = Repo::new();
+    let mut workspace = Workspace::open(&repo.0, &[]).unwrap();
+    let mut model = Script::new(vec![
+        serde_json::json!({"tool":"propose_file","path":"src/new.rs","content":"const VALUE: i32 = 1;"}),
+        serde_json::json!({"tool":"propose_edit","path":"src/new.rs","old":"= 1","new":"= 2"}),
+        serde_json::json!({"tool":"discard_proposal","path":"src/new.rs"}),
+        done("Withdrawn."),
+    ]);
+    let report = agent::execute(&mut model, &mut workspace, "Prepare new file", false, 5);
+    assert_eq!(report.status, "completed");
+    assert!(report.events.iter().all(|event| event.outcome == "ok"));
+    assert!(report.proposals.is_empty());
+    assert!(!repo.0.join("src/new.rs").exists());
+}
+
+#[test]
+fn revision_refuses_external_changes_and_ambiguous_or_stale_fragments() {
+    let repo = Repo::new();
+    repo.write("src/lib.rs", "one two");
+    let mut workspace = Workspace::open(&repo.0, &[]).unwrap();
+    let first = workspace
+        .propose("src/lib.rs", "one", "three three")
+        .unwrap();
+    assert!(workspace.revise(&first, "one", "four").is_err());
+    assert!(workspace.revise(&first, "three", "four").is_err());
+    repo.write("src/lib.rs", "user changed this");
+    assert!(workspace.revise(&first, "two", "four").is_err());
+    assert!(workspace.apply(&first).is_err());
+    assert_eq!(
+        std::fs::read_to_string(repo.0.join("src/lib.rs")).unwrap(),
+        "user changed this"
+    );
+}
+
+#[test]
+fn malformed_json_can_recover_but_repeated_no_progress_stops_early() {
+    struct Malformed {
+        calls: usize,
+    }
+    impl Model for Malformed {
+        fn respond(&mut self, prompt: &str) -> io::Result<String> {
+            self.calls += 1;
+            if self.calls == 1 {
+                return Ok("{broken".into());
+            }
+            let input: serde_json::Value = serde_json::from_str(prompt).unwrap();
+            assert_eq!(input["history"][0]["result"]["status"], "error");
+            Ok(done("Inspected; tests not run.").to_string())
+        }
+    }
+    let repo = Repo::new();
+    let mut workspace = Workspace::open(&repo.0, &[]).unwrap();
+    let report = agent::execute(
+        &mut Malformed { calls: 0 },
+        &mut workspace,
+        "Inspect",
+        false,
+        4,
+    );
+    assert_eq!(report.status, "completed");
+    assert_eq!(report.outcome, agent::TaskOutcome::AnalysisComplete);
+    let mut model = Script::new(vec![serde_json::json!({"tool":"list"}); 8]);
+    let report = agent::execute(&mut model, &mut workspace, "Inspect", false, 8);
+    assert_eq!(report.status, "no_progress: coder");
+    assert_eq!(report.calls, 4);
+    assert_eq!(report.outcome, agent::TaskOutcome::Incomplete);
+}
+
+#[test]
+fn readonly_worker_cannot_discard_pending_work() {
+    let repo = Repo::new();
+    repo.write("src/lib.rs", "one");
+    let mut workspace = Workspace::open(&repo.0, &[]).unwrap();
+    let mut model = Script::new(vec![
+        done("Research complete"),
+        serde_json::json!({"tool":"propose_edit","path":"src/lib.rs","old":"one","new":"two"}),
+        done("Prepared"),
+        serde_json::json!({"tool":"discard_proposal","path":"src/lib.rs"}),
+        done("Reviewed"),
+    ]);
+    let report = agent::execute(&mut model, &mut workspace, "Fix", true, 8);
+    assert_eq!(report.status, "completed");
+    assert_eq!(report.proposals.len(), 1);
+    assert!(
+        report
+            .events
+            .iter()
+            .any(|event| event.tool == "discard_proposal" && event.outcome.starts_with("denied"))
+    );
+}
+
+#[test]
+fn reviewer_can_request_bounded_repairs_against_pending_content() {
+    let repo = Repo::new();
+    repo.write("src/lib.rs", "fn answer() -> i32 { 0 }\r\n");
+    let mut workspace = Workspace::open(&repo.0, &[]).unwrap();
+    let mut model = Script::new(vec![
+        done("Research complete"),
+        serde_json::json!({"tool":"propose_edit","path":"src/lib.rs","old":"{ 0 }","new":"{ 41 }"}),
+        done("Proposed"),
+        serde_json::json!({"tool":"request_changes","summary":"The required value is 42, not 41."}),
+        serde_json::json!({"tool":"read_file","path":"src/lib.rs"}),
+        serde_json::json!({"tool":"propose_edit","path":"src/lib.rs","old":"{ 41 }","new":"{ 42 }"}),
+        done("Repaired"),
+        done("Reviewed; tests not run"),
+    ]);
+    let report = agent::execute(&mut model, &mut workspace, "Return 42", true, 12);
+    assert_eq!(report.status, "completed");
+    assert_eq!(report.calls, 8);
+    assert_eq!(report.proposals.len(), 1);
+    assert!(report.proposals[0].replacement.contains("{ 42 }"));
+    assert!(report.proposals[0].original.contains("{ 0 }"));
+    assert!(!report.model_review_is_verified_test);
+    assert_eq!(model.roles.last().unwrap(), "reviewer");
+}
+
+#[test]
+fn successive_accepted_revisions_are_progress_even_with_the_same_tool_and_path() {
+    let repo = Repo::new();
+    repo.write("src/lib.rs", "const VALUE: i32 = 0;");
+    let mut workspace = Workspace::open(&repo.0, &[]).unwrap();
+    let mut actions: Vec<_> = (0..5).map(|index| serde_json::json!({"tool":"propose_edit","path":"src/lib.rs", "old":format!("= {index};"),"new":format!("= {};",index+1)})).collect();
+    actions.push(done("Five revisions; tests not run"));
+    let report = agent::execute(
+        &mut Script::new(actions),
+        &mut workspace,
+        "Refine value",
+        false,
+        8,
+    );
+    assert_eq!(report.status, "completed");
+    assert_eq!(report.proposals[0].replacement, "const VALUE: i32 = 5;");
+}
+
+#[test]
+fn search_and_list_see_the_same_pending_files_as_read_and_edit() {
+    struct Overlay {
+        call: usize,
+    }
+    impl Model for Overlay {
+        fn respond(&mut self, prompt: &str) -> io::Result<String> {
+            let input: serde_json::Value = serde_json::from_str(prompt).unwrap();
+            let action = match self.call {
+                0 => {
+                    serde_json::json!({"tool":"propose_edit","path":"src/lib.rs","old":"old_name","new":"new_name"})
+                }
+                1 => {
+                    serde_json::json!({"tool":"propose_file","path":"src/new.rs","content":"new_name"})
+                }
+                2 => serde_json::json!({"tool":"search","query":"new_name"}),
+                3 => {
+                    let matches = input["history"][2]["result"]["data"]["matches"]
+                        .as_array()
+                        .unwrap();
+                    assert_eq!(matches.len(), 2);
+                    assert!(matches.iter().any(|entry| entry["path"] == "src/new.rs"));
+                    serde_json::json!({"tool":"list"})
+                }
+                _ => {
+                    let files = input["history"][3]["result"]["data"]["files"]
+                        .as_array()
+                        .unwrap();
+                    assert!(files.iter().any(|path| path == "src/new.rs"));
+                    done("Pending view inspected; tests not run")
+                }
+            };
+            self.call += 1;
+            Ok(action.to_string())
+        }
+    }
+    let repo = Repo::new();
+    repo.write("src/lib.rs", "old_name\r\n");
+    let mut workspace = Workspace::open(&repo.0, &[]).unwrap();
+    let report = agent::execute(
+        &mut Overlay { call: 0 },
+        &mut workspace,
+        "Rename symbol",
+        false,
+        6,
+    );
+    assert_eq!(report.status, "completed");
+    assert_eq!(
+        std::fs::read_to_string(repo.0.join("src/lib.rs")).unwrap(),
+        "old_name\r\n"
+    );
+    assert!(!repo.0.join("src/new.rs").exists());
+}
+
+#[test]
+fn cancellation_during_a_model_call_cannot_turn_into_successful_finish() {
+    struct Cancelling {
+        flag: std::sync::atomic::AtomicBool,
+        transport_error: bool,
+    }
+    impl Model for Cancelling {
+        fn cancellation(&self) -> &std::sync::atomic::AtomicBool {
+            &self.flag
+        }
+        fn respond(&mut self, _: &str) -> io::Result<String> {
+            self.flag.store(true, std::sync::atomic::Ordering::Relaxed);
+            if self.transport_error {
+                return Err(io::Error::new(
+                    io::ErrorKind::TimedOut,
+                    "transport expired after cancellation",
+                ));
+            }
+            Ok(done("Completed despite cancellation").to_string())
+        }
+    }
+    let repo = Repo::new();
+    for transport_error in [false, true] {
+        let mut workspace = Workspace::open(&repo.0, &[]).unwrap();
+        let report = agent::execute(
+            &mut Cancelling {
+                flag: std::sync::atomic::AtomicBool::new(false),
+                transport_error,
+            },
+            &mut workspace,
+            "Inspect",
+            false,
+            2,
+        );
+        assert_eq!(report.status, "cancelled");
+        assert_eq!(report.outcome, agent::TaskOutcome::Incomplete);
+        assert!(report.summaries.is_empty());
+        assert_eq!(report.calls, 1);
+    }
+}
+
+#[test]
+fn agent_discovers_and_edits_a_file_outside_the_initial_prompt_subset() {
+    struct Discover(usize);
+    impl Model for Discover {
+        fn respond(&mut self, prompt: &str) -> io::Result<String> {
+            let value: serde_json::Value = serde_json::from_str(prompt).unwrap();
+            let action = match self.0 {
+                0 => {
+                    assert!(
+                        !value["files"]
+                            .as_array()
+                            .unwrap()
+                            .iter()
+                            .any(|p| p == "zz_target.rs")
+                    );
+                    serde_json::json!({"tool":"list_files","prefix":"zz_","offset":0})
+                }
+                1 => {
+                    assert!(
+                        value["files"]
+                            .as_array()
+                            .unwrap()
+                            .iter()
+                            .any(|p| p == "zz_target.rs")
+                    );
+                    serde_json::json!({"tool":"read_range","path":"zz_target.rs","start_line":1,"count":10})
+                }
+                2 => {
+                    assert_eq!(
+                        value["history"][1]["result"]["data"]["content"],
+                        "fn target() { old(); }\r\n"
+                    );
+                    serde_json::json!({"tool":"propose_edit","path":"zz_target.rs","old":"old()","new":"fixed()"})
+                }
+                _ => done("prepared"),
+            };
+            self.0 += 1;
+            Ok(action.to_string())
+        }
+    }
+    let repo = Repo::new();
+    for i in 0..400 {
+        repo.write(&format!("file{i:03}.rs"), "filler\n");
+    }
+    repo.write("zz_target.rs", "fn target() { old(); }\r\n");
+    let mut workspace = Workspace::open(&repo.0, &[]).unwrap();
+    let report = agent::execute(
+        &mut Discover(0),
+        &mut workspace,
+        "Fix the discovered implementation",
+        false,
+        8,
+    );
+    assert_eq!(report.status, "completed");
+    assert_eq!(report.proposals[0].path, "zz_target.rs");
+    assert_eq!(
+        std::fs::read_to_string(repo.0.join("zz_target.rs")).unwrap(),
+        report.proposals[0].original
+    );
+}
+
+#[test]
+fn oversized_tool_observations_are_budgeted_before_the_next_model_call() {
+    struct Budgeted(usize);
+    impl Model for Budgeted {
+        fn input_limit(&self) -> usize {
+            8000
+        }
+        fn respond(&mut self, prompt: &str) -> io::Result<String> {
+            assert!(prompt.len() <= 8000);
+            let value: serde_json::Value = serde_json::from_str(prompt).unwrap();
+            assert_eq!(value["task"], "Keep this exact task\r\n");
+            let result = if self.0 == 0 {
+                serde_json::json!({"tool":"read_file","path":"source.rs"})
+            } else {
+                assert_eq!(value["context_selection"]["lossy"], true);
+                assert!(value["history"][0]["result"]["data"]["context_provenance"].is_object());
+                done("inspected partial source")
+            };
+            self.0 += 1;
+            Ok(result.to_string())
+        }
+    }
+    let repo = Repo::new();
+    repo.write("source.rs", &"source data\r\n".repeat(3000));
+    let mut workspace = Workspace::open(&repo.0, &[]).unwrap();
+    let report = agent::execute(
+        &mut Budgeted(0),
+        &mut workspace,
+        "Keep this exact task\r\n",
+        false,
+        4,
+    );
+    assert_eq!(report.status, "completed");
+    assert_eq!(report.prompt_budgets.len(), 2);
+    assert!(
+        report.prompt_budgets[1].units_before > 8000
+            && report.prompt_budgets[1].units_after <= 8000
+    );
+}
+
+#[test]
+fn large_module_is_edited_from_a_small_range_without_returning_its_full_text_to_the_model() {
+    let repo = Repo::new();
+    let original = format!("// {}\r\nfn target() {{ old(); }}\r\n", "x".repeat(100_000));
+    repo.write("src/large.rs", &original);
+    let mut model = Script::new(vec![
+        serde_json::json!({"tool":"read_range","path":"src/large.rs","start_line":2,"count":1}),
+        serde_json::json!({"tool":"propose_edit","path":"src/large.rs","old":"old()","new":"fixed()"}),
+        done("fixed pending module"),
+    ]);
+    let mut workspace = Workspace::open(&repo.0, &[]).unwrap();
+    let report = agent::execute(&mut model, &mut workspace, "Fix target()", false, 8);
+    assert_eq!(report.status, "completed");
+    assert_eq!(report.proposals[0].original, original);
+    assert!(
+        report.proposals[0]
+            .replacement
+            .ends_with("fn target() { fixed(); }\r\n")
+    );
+    lyra::publication::apply(&repo.0, &report.proposals).unwrap();
+    assert_eq!(
+        std::fs::read_to_string(repo.0.join("src/large.rs")).unwrap(),
+        report.proposals[0].replacement
+    );
+}
+
+#[test]
+fn a_task_can_prepare_and_publish_more_than_eight_modules_as_one_set() {
+    let repo = Repo::new();
+    let mut actions:Vec<_>=(0..12).map(|i|serde_json::json!({"tool":"propose_file","path":format!("src/module{i}.rs"),"content":format!("// module {i}\n")})).collect();
+    actions.push(done("prepared modules"));
+    let mut model = Script::new(actions);
+    let mut workspace = Workspace::open(&repo.0, &[]).unwrap();
+    let report = agent::execute(&mut model, &mut workspace, "Prepare modules", false, 20);
+    assert_eq!(report.status, "completed");
+    assert_eq!(report.proposals.len(), 12);
+    lyra::publication::apply(&repo.0, &report.proposals).unwrap();
+    for i in 0..12 {
+        assert_eq!(
+            std::fs::read_to_string(repo.0.join(format!("src/module{i}.rs"))).unwrap(),
+            format!("// module {i}\n")
+        );
+    }
 }

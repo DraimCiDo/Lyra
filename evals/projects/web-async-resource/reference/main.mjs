@@ -1,0 +1,1 @@
+export class Resource {constructor(){this.version=0;this.loading=false;this.data=null;this.error=null;} async load(fetcher){const v=++this.version;this.loading=true;this.error=null;try{const data=await fetcher();if(v===this.version)this.data=data;}catch(error){if(v===this.version)this.error=error;}finally{if(v===this.version)this.loading=false;}}}

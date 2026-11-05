@@ -1,0 +1,10 @@
+{
+  "image": "python@sha256:ae14d4ce8771606477a81446e7ef429edd6762305fc50c84507c1041fa8285d1",
+  "program": "python",
+  "args": [
+    "-c",
+    "from orders import checkout; from pricing import subtotal, discounted; assert subtotal([(10, 2), (3, 4)]) == 32; assert discounted(100, 25) == 75; assert checkout([(10, 2), (3, 4)], 25) == 24; assert checkout([], 0) == 0; assert checkout([(5, 3)], 0) == 15"
+  ],
+  "timeout_secs": 30,
+  "memory_mib": 256
+}

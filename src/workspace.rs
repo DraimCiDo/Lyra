@@ -9,12 +9,31 @@ use std::{
     path::{Component, Path, PathBuf},
 };
 
-pub const FILE_LIMIT: usize = 64 * 1024;
+pub(crate) fn private_tempdir(prefix: &str) -> io::Result<tempfile::TempDir> {
+    let mut builder = tempfile::Builder::new();
+    builder.prefix(prefix);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        builder.permissions(std::fs::Permissions::from_mode(0o700));
+    }
+    builder.tempdir()
+}
+
+pub const MAX_PROPOSALS: usize = 32;
+pub const INDEX_LIMIT: usize = 8192;
+pub const ENTRY_LIMIT: usize = 100_000;
+pub const SNAPSHOT_FILES: usize = 2048;
+pub const SNAPSHOT_FILE_LIMIT: usize = 2 * 1024 * 1024;
+pub const SNAPSHOT_BUDGET: usize = 16 * 1024 * 1024;
+
+const RULE_FILE_LIMIT: usize = 64 * 1024;
+pub const FILE_LIMIT: usize = 256 * 1024;
 pub const READ_BUDGET: usize = 512 * 1024;
 
 pub struct Workspace {
     pub root: PathBuf,
-    dir: Dir,
+    pub(crate) dir: Dir,
     pub files: BTreeSet<String>,
     pub truncated: bool,
     pub bytes_read: usize,
@@ -72,6 +91,34 @@ fn permitted(path: &str) -> bool {
 
 impl Workspace {
     pub fn open(root: &Path, selected: &[String]) -> io::Result<Self> {
+        if selected.len() > 32 {
+            return Err(error("Не более 32 явно выбранных файлов."));
+        }
+        Self::open_index(root, selected, selected.is_empty())
+    }
+    pub(crate) fn for_snapshot(root: &Path, selected: &[String]) -> io::Result<Self> {
+        if selected.len() > SNAPSHOT_FILES {
+            return Err(error(
+                "Snapshot exceeds 2048 files; select files explicitly",
+            ));
+        }
+        let workspace = Self::open_index(root, selected, selected.is_empty())?;
+        if workspace.truncated || workspace.files.len() > SNAPSHOT_FILES {
+            return Err(error(
+                "Snapshot index incomplete or exceeds 2048 files; select files explicitly",
+            ));
+        }
+        Ok(workspace)
+    }
+    pub(crate) fn exact_snapshot_scope(root: &Path, selected: &[String]) -> io::Result<Self> {
+        if selected.len() > SNAPSHOT_FILES {
+            return Err(error("Snapshot scope exceeds limit"));
+        }
+        let mut workspace = Self::open_index(root, selected, false)?;
+        workspace.files.retain(|p| selected.contains(p));
+        Ok(workspace)
+    }
+    fn open_index(root: &Path, selected: &[String], discover: bool) -> io::Result<Self> {
         let root = root.canonicalize()?;
         let dir = Dir::open_ambient_dir(&root, ambient_authority())?;
         let mut workspace = Self {
@@ -84,10 +131,7 @@ impl Workspace {
             ignore_dirs: BTreeSet::new(),
         };
         workspace.load_ignore("")?;
-        if selected.len() > 32 {
-            return Err(error("Не более 32 явно выбранных файлов."));
-        }
-        if selected.is_empty() {
+        if discover {
             let mut pending = vec![String::new()];
             let mut seen = 0;
             while let Some(folder) = pending.pop() {
@@ -99,7 +143,7 @@ impl Workspace {
                 };
                 for entry in entries {
                     seen += 1;
-                    if seen > 1024 || workspace.files.len() >= 128 {
+                    if seen > ENTRY_LIMIT || workspace.files.len() >= INDEX_LIMIT {
                         workspace.truncated = true;
                         break;
                     }
@@ -147,6 +191,20 @@ impl Workspace {
                 workspace.files.insert(path.clone());
             }
         }
+        // Explicit file selection also carries applicable ancestor guidance.
+        for selected_path in selected {
+            let mut parent = Path::new(selected_path).parent();
+            while let Some(folder) = parent.filter(|p| !p.as_os_str().is_empty()) {
+                let scope = format!("{}/AGENTS.md", folder.to_string_lossy().replace('\\', "/"));
+                if workspace.safe_path(&scope).is_ok()
+                    && !workspace.ignored(&scope, false)
+                    && workspace.dir.metadata(&scope).is_ok_and(|m| m.is_file())
+                {
+                    workspace.files.insert(scope);
+                }
+                parent = folder.parent();
+            }
+        }
         if workspace.safe_path("AGENTS.md").is_ok()
             && !workspace.ignored("AGENTS.md", false)
             && workspace
@@ -186,9 +244,9 @@ impl Workspace {
         let mut text = String::new();
         self.dir
             .open(&path)?
-            .take((FILE_LIMIT + 1) as u64)
+            .take((RULE_FILE_LIMIT + 1) as u64)
             .read_to_string(&mut text)?;
-        if text.len() > FILE_LIMIT {
+        if text.len() > RULE_FILE_LIMIT {
             return Err(error("gitignore слишком большой."));
         }
         self.bytes_read = self.bytes_read.saturating_add(text.len());
@@ -227,7 +285,7 @@ impl Workspace {
         ignored
     }
 
-    fn safe_path(&self, path: &str) -> io::Result<()> {
+    pub(crate) fn safe_path(&self, path: &str) -> io::Result<()> {
         if !permitted(path) {
             return Err(error("Путь запрещён политикой проекта."));
         }
@@ -274,11 +332,72 @@ impl Workspace {
         String::from_utf8(bytes).map_err(|_| error("Файл не является UTF-8."))
     }
 
+    /// Interactive bounded read; bulk snapshots continue to use `read`'s total budget.
+    pub fn read_tool(&self, path: &str) -> io::Result<String> {
+        self.read_bounded(path, FILE_LIMIT)
+    }
+    pub(crate) fn read_snapshot(&self, path: &str) -> io::Result<String> {
+        self.read_bounded(path, SNAPSHOT_FILE_LIMIT)
+    }
+    fn read_bounded(&self, path: &str, limit: usize) -> io::Result<String> {
+        if !self.files.contains(path) {
+            return Err(error("Файл не входит в выбранный контекст."));
+        }
+        self.safe_path(path)?;
+        if !self.dir.symlink_metadata(path)?.is_file() {
+            return Err(error("Ожидается обычный файл."));
+        }
+        let file = self.dir.open(path)?;
+        if !file.metadata()?.is_file() {
+            return Err(error("Ожидается обычный файл."));
+        }
+        let mut bytes = Vec::new();
+        file.take((limit + 1) as u64).read_to_end(&mut bytes)?;
+        if bytes.len() > limit || bytes.contains(&0) {
+            return Err(error("Файл превышает лимит чтения или содержит NUL."));
+        }
+        String::from_utf8(bytes).map_err(|_| error("Файл не является UTF-8."))
+    }
+
+    pub fn scoped_instructions(&self, path: &str) -> io::Result<Vec<serde_json::Value>> {
+        if !permitted(path) {
+            return Err(error("Путь вне выбранного контекста."));
+        }
+        let mut scopes = vec!["AGENTS.md".to_owned()];
+        let mut prefix = PathBuf::new();
+        if let Some(parent) = Path::new(path).parent() {
+            for part in parent.components() {
+                prefix.push(part);
+                scopes.push(format!(
+                    "{}/AGENTS.md",
+                    prefix.to_string_lossy().replace('\\', "/")
+                ));
+            }
+        }
+        if scopes.len() > 16 {
+            return Err(error("Слишком глубокая вложенность инструкций."));
+        }
+        let mut out = Vec::new();
+        let mut total = 0;
+        for scope in scopes {
+            if !self.files.contains(&scope) {
+                continue;
+            }
+            let content = self.read_tool(&scope)?;
+            total += content.len();
+            if total > 16384 {
+                return Err(error("Scoped instructions превышают 16 KiB."));
+            }
+            out.push(serde_json::json!({"path":scope,"sha256":crate::retrieval::sha256(content.as_bytes()),"content":content,"untrusted":true}));
+        }
+        Ok(out)
+    }
+
     pub fn propose(&mut self, path: &str, old: &str, new: &str) -> io::Result<Edit> {
-        if old.is_empty() || old == new || new.len() > FILE_LIMIT {
+        if old.is_empty() || old == new || new.len() > FILE_LIMIT || new.contains('\0') {
             return Err(error("Некорректная точная замена."));
         }
-        let original = self.read(path)?;
+        let original = self.read_tool(path)?;
         if original.matches(old).count() != 1 {
             return Err(error(
                 "Исходный фрагмент должен встречаться ровно один раз.",
@@ -296,10 +415,47 @@ impl Workspace {
         })
     }
 
+    /// Read the overlay while retaining the on-disk original as the apply precondition.
+    pub fn read_pending(&mut self, pending: &Edit) -> io::Result<String> {
+        if pending.create {
+            self.new_path(&pending.path)?;
+        } else if self.read_tool(&pending.path)? != pending.original {
+            return Err(error(
+                "Конфликт: исходный файл изменился после предложения.",
+            ));
+        }
+        Ok(pending.replacement.clone())
+    }
+
+    pub fn revise(&mut self, pending: &Edit, old: &str, new: &str) -> io::Result<Edit> {
+        if old.is_empty() || old == new || new.len() > FILE_LIMIT || new.contains('\0') {
+            return Err(error("Некорректная точная замена."));
+        }
+        let current = self.read_pending(pending)?;
+        if current.matches(old).count() != 1 {
+            return Err(error(
+                "Фрагмент должен встречаться ровно один раз в текущем предложении.",
+            ));
+        }
+        let replacement = current.replacen(old, new, 1);
+        if replacement.len() > FILE_LIMIT || replacement.contains('\0') {
+            return Err(error("Изменённый файл превышает лимит или содержит NUL."));
+        }
+        if !pending.create && replacement == pending.original {
+            return Err(error(
+                "Правка возвращает исходный файл; используй discard_proposal.",
+            ));
+        }
+        Ok(Edit {
+            replacement,
+            ..pending.clone()
+        })
+    }
+
     pub fn propose_new(&mut self, path: &str, content: &str) -> io::Result<Edit> {
         self.new_path(path)?;
         if content.len() > FILE_LIMIT || content.contains('\0') {
-            return Err(error("Новый файл: до 64 KiB текста без NUL."));
+            return Err(error("Новый файл: до 256 KiB текста без NUL."));
         }
         Ok(Edit {
             path: path.into(),
@@ -309,7 +465,7 @@ impl Workspace {
         })
     }
 
-    fn new_path(&mut self, path: &str) -> io::Result<()> {
+    pub(crate) fn new_path(&mut self, path: &str) -> io::Result<()> {
         crate::project::validate_path(path, false)?;
         if !permitted(path) {
             return Err(error("Путь запрещён политикой проекта."));
@@ -339,6 +495,14 @@ impl Workspace {
                         return Err(error("Родитель файла не является каталогом."));
                     }
                     self.load_ignore(&prefix.to_string_lossy().replace('\\', "/"))?;
+                    let scope =
+                        format!("{}/AGENTS.md", prefix.to_string_lossy().replace('\\', "/"));
+                    if self.safe_path(&scope).is_ok()
+                        && !self.ignored(&scope, false)
+                        && self.dir.metadata(&scope).is_ok_and(|m| m.is_file())
+                    {
+                        self.files.insert(scope);
+                    }
                 }
                 Err(e) if e.kind() == io::ErrorKind::NotFound => {}
                 Err(e) => return Err(e),
@@ -346,6 +510,55 @@ impl Workspace {
         }
         if self.ignored(path, false) {
             return Err(error("Новый файл исключён gitignore."));
+        }
+        Ok(())
+    }
+
+    /// Validate without writing. Batch publication checks every edit first.
+    pub(crate) fn validate_edit(&mut self, edit: &Edit) -> io::Result<()> {
+        crate::project::validate_path(&edit.path, false)?;
+        if edit.original.len() > FILE_LIMIT
+            || edit.replacement.len() > FILE_LIMIT
+            || edit.original.contains('\0')
+            || edit.replacement.contains('\0')
+        {
+            return Err(error("Некорректный размер или NUL в предложении."));
+        }
+        if edit.create {
+            if !edit.original.is_empty() {
+                return Err(error("Новый файл не может иметь исходное содержимое."));
+            }
+            return self.new_path(&edit.path);
+        }
+        if !self.files.contains(&edit.path) {
+            return Err(error("Файл вне выбранного контекста."));
+        }
+        if edit.original.len() > FILE_LIMIT
+            || edit.replacement.len() > FILE_LIMIT
+            || edit.original == edit.replacement
+        {
+            return Err(error("Некорректное предложение изменения."));
+        }
+        self.safe_path(&edit.path)?;
+        if !self.dir.symlink_metadata(&edit.path)?.is_file() {
+            return Err(error("Ожидается обычный файл."));
+        }
+        let current = self.dir.open(&edit.path)?;
+        let permissions = current.metadata()?.permissions();
+        if permissions.readonly() {
+            return Err(io::Error::new(
+                io::ErrorKind::PermissionDenied,
+                "Файл помечен read-only; замена запрещена.",
+            ));
+        }
+        let mut text = String::new();
+        current
+            .take((FILE_LIMIT + 1) as u64)
+            .read_to_string(&mut text)?;
+        if text != edit.original {
+            return Err(error(
+                "Конфликт: исходный файл изменился. Применение отменено.",
+            ));
         }
         Ok(())
     }
@@ -407,33 +620,8 @@ impl Workspace {
             let _ = self.dir.remove_file(&temp);
             return result;
         }
-        if !self.files.contains(&edit.path) {
-            return Err(error("Файл вне выбранного контекста."));
-        }
-        if edit.original.len() > FILE_LIMIT
-            || edit.replacement.len() > FILE_LIMIT
-            || edit.original == edit.replacement
-        {
-            return Err(error("Некорректное предложение изменения."));
-        }
-        self.safe_path(&edit.path)?;
-        let current = self.dir.open(&edit.path)?;
-        let permissions = current.metadata()?.permissions();
-        if permissions.readonly() {
-            return Err(io::Error::new(
-                io::ErrorKind::PermissionDenied,
-                "Файл помечен read-only; замена запрещена.",
-            ));
-        }
-        let mut text = String::new();
-        current
-            .take((FILE_LIMIT + 1) as u64)
-            .read_to_string(&mut text)?;
-        if text != edit.original {
-            return Err(error(
-                "Конфликт: исходный файл изменился. Применение отменено.",
-            ));
-        }
+        self.validate_edit(edit)?;
+        let permissions = self.dir.open(&edit.path)?.metadata()?.permissions();
         let nonce = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .map_err(io::Error::other)?

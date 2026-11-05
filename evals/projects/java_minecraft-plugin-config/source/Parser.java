@@ -1,0 +1,1 @@
+import java.util.*;public class Parser {public static Map<String,String> parse(String text){var out=new HashMap<String,String>();for(String line:text.split("\\n")){String[] p=line.split("=",2);out.put(p[0],p[1]);}return out;}}

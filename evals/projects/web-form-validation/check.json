@@ -1,0 +1,11 @@
+{
+  "image": "node@sha256:a43f7fc3e52e87d12a905f46eea0275def84ca8f2981a5b53fed44d7fb398ee0",
+  "program": "node",
+  "args": [
+    "--input-type=module",
+    "-e",
+    "import assert from 'node:assert/strict';\nimport * as sut from '/source/main.mjs';\nassert.equal(sut.quantity(' 12 '),12);for(const v of ['', ' ', '0','1.5','1e2','-1','1000',true,null])assert.equal(sut.quantity(v),null);assert.equal(sut.quantity('999'),999);\n"
+  ],
+  "timeout_secs": 60,
+  "memory_mib": 512
+}

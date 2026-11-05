@@ -1,0 +1,10 @@
+{
+  "image": "python@sha256:ae14d4ce8771606477a81446e7ef429edd6762305fc50c84507c1041fa8285d1",
+  "program": "python",
+  "args": [
+    "-c",
+    "import sys\nsys.path.insert(0,\"/source\")\nfrom main import *\ncalls=[]\ndef eventual():\n    calls.append(1)\n    if len(calls)<3: raise Retryable()\n    return 0\nassert retry(eventual,3)==0 and len(calls)==3\ncalls.clear()\ntry: retry(eventual,2)\nexcept Retryable: pass\nelse: raise AssertionError('retry swallowed')\nassert len(calls)==2\ntry: retry(lambda: (_ for _ in ()).throw(TypeError()),4)\nexcept TypeError: pass\nelse: raise AssertionError('non-retryable swallowed')\ntry: retry(lambda: None,0)\nexcept ValueError: pass\nelse: raise AssertionError('zero attempts')\n"
+  ],
+  "timeout_secs": 60,
+  "memory_mib": 512
+}

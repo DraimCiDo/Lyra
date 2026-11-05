@@ -1,0 +1,10 @@
+{
+  "image": "python@sha256:ae14d4ce8771606477a81446e7ef429edd6762305fc50c84507c1041fa8285d1",
+  "program": "python",
+  "args": [
+    "-c",
+    "import sys\nsys.path.insert(0,\"/source\")\nfrom main import *\nstore=Idempotency();calls=[]\ndef op(): calls.append(1);return None\nassert store.execute('a','key','fp',op) is None\nassert store.execute('a','key','fp',op) is None and len(calls)==1\nstore.execute('b','key','fp',op);assert len(calls)==2\ntry: store.execute('a','key','changed',op)\nexcept ValueError: pass\nelse: raise AssertionError('conflicting request')\ntry: store.execute('a','failed','fp',lambda:1/0)\nexcept ZeroDivisionError: pass\nassert store.execute('a','failed','fp',lambda:42)==42\n"
+  ],
+  "timeout_secs": 60,
+  "memory_mib": 512
+}

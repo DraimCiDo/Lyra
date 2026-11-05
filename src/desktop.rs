@@ -11,6 +11,7 @@ mod settings;
 mod skills;
 mod theme;
 pub mod updater;
+mod workflows;
 use crate::agent::Report;
 use eframe::egui::{self, Color32, RichText};
 use icons::Icon;
@@ -203,6 +204,12 @@ enum Operation {
     #[cfg(feature = "gateway-http")]
     CloudChat,
     Apply(usize),
+    ApplyAll,
+    RecoveryStatus,
+    RecoveryRollback,
+    RecoveryComplete,
+    SessionList,
+    EnvironmentPrepare,
     Doctor,
     ProjectPlan,
     ProjectCreate,
@@ -211,6 +218,10 @@ enum Operation {
 }
 
 struct Desktop {
+    artifact_temp: Option<tempfile::TempDir>,
+    artifact_preview: Option<(String, egui::TextureHandle)>,
+    failed_artifact_preview: Option<String>,
+    environment_prepare_id: String,
     conversations: history::History,
     history_available: bool,
     model_installer: models::Installer,
@@ -247,13 +258,25 @@ struct Desktop {
     message: String,
     log: String,
     hardware: Option<serde_json::Value>,
-    confirm: Option<usize>,
+    confirm: Option<Operation>,
+    recovery_open: bool,
+    recovery_root: Option<PathBuf>,
+    recovery_view: Option<workflows::RecoveryView>,
+    saved_tasks_open: bool,
+    saved_tasks: Option<crate::session::SessionPage>,
+    saved_tasks_offset: usize,
+    saved_tasks_db: Option<PathBuf>,
+    resume_task: Option<String>,
     error: bool,
 }
 
 impl Default for Desktop {
     fn default() -> Self {
         Self {
+            artifact_temp: None,
+            artifact_preview: None,
+            failed_artifact_preview: None,
+            environment_prepare_id: String::new(),
             conversations: history::History::default(),
             history_available: true,
             model_installer: models::Installer::default(),
@@ -291,6 +314,14 @@ impl Default for Desktop {
             log: String::new(),
             hardware: None,
             confirm: None,
+            recovery_open: false,
+            recovery_root: None,
+            recovery_view: None,
+            saved_tasks_open: false,
+            saved_tasks: None,
+            saved_tasks_offset: 0,
+            saved_tasks_db: None,
+            resume_task: None,
             error: false,
         }
     }
@@ -306,7 +337,7 @@ impl Desktop {
         if self.job.is_some() || self.updates.kind() == Some(updater::Kind::Prepare) {
             return Err(io::Error::other("Дождитесь текущей операции."));
         }
-        let temp = tempfile::Builder::new().prefix("lyra-desktop-").tempdir()?;
+        let temp = crate::workspace::private_tempdir("lyra-desktop-")?;
         let mut args: Vec<OsString> = Vec::new();
         let deadline = match operation {
             Operation::LocalChat => {
@@ -487,33 +518,58 @@ impl Desktop {
                 if self.prefs.dedup_tool_context {
                     args.push("--dedup-tool-context".into());
                 }
+                self.append_task_workflow_args(&mut args)?;
+                if let Some(registry) = &self.prefs.environments {
+                    let current = crate::retrieval::sha256(
+                        crate::knowledge::read_text(registry, 256 * 1024)?.as_bytes(),
+                    );
+                    if self.prefs.environment_manifest_sha256.as_ref() != Some(&current) {
+                        return Err(io::Error::other(
+                            "Реестр сред изменился. Выберите его повторно и подтвердите разрешенные среды.",
+                        ));
+                    }
+                    let artifacts = crate::workspace::private_tempdir("lyra-desktop-artifacts-")?;
+                    args.extend([
+                        "--environments".into(),
+                        registry.as_os_str().into(),
+                        "--artifacts-dir".into(),
+                        artifacts.path().as_os_str().into(),
+                    ]);
+                    for id in &self.prefs.allowed_environments {
+                        args.extend(["--allow-environment".into(), id.into()]);
+                    }
+                    self.artifact_temp = Some(artifacts);
+                }
                 self.report = None;
                 self.report_json.clear();
                 self.applied.clear();
                 self.selected = 0;
                 Some(Duration::from_secs(self.prefs.timeout + 5))
             }
-            Operation::Apply(index) => {
-                let report = self
-                    .report
-                    .as_ref()
-                    .ok_or_else(|| io::Error::other("Нет отчёта."))?;
-                if !can_apply(report, index, &self.applied) {
-                    return Err(io::Error::other("Предложение нельзя применить."));
-                }
-                let path = temp.path().join("report.json");
-                std::fs::write(&path, &self.report_json)?;
-                args.extend([
-                    "apply".into(),
-                    "--repo".into(),
-                    report.workspace.as_os_str().into(),
-                    "--report".into(),
-                    path.into_os_string(),
-                    "--index".into(),
-                    index.to_string().into(),
-                ]);
-                None // Do not kill a worker while it commits a file replacement.
+            Operation::Apply(_)
+            | Operation::ApplyAll
+            | Operation::RecoveryStatus
+            | Operation::RecoveryRollback
+            | Operation::RecoveryComplete => {
+                self.prepare_publication_job(operation, &temp, &mut args)?
             }
+            Operation::EnvironmentPrepare => {
+                let registry = self
+                    .prefs
+                    .environments
+                    .as_ref()
+                    .ok_or_else(|| io::Error::other("Выберите реестр сред"))?;
+                args.extend([
+                    "environment".into(),
+                    "--registry".into(),
+                    registry.as_os_str().into(),
+                    "prepare".into(),
+                    self.environment_prepare_id.clone().into(),
+                    "--accept".into(),
+                ]);
+                Some(Duration::from_secs(610))
+            }
+            Operation::SessionList => self.prepare_saved_tasks_job(&mut args)?,
             Operation::ProjectPlan
             | Operation::ProjectCreate
             | Operation::DocsFetch
@@ -527,11 +583,21 @@ impl Desktop {
         self.job = Some(Job::start(
             args,
             temp,
-            !matches!(operation, Operation::Apply(_) | Operation::ProjectCreate),
+            !matches!(
+                operation,
+                Operation::Apply(_)
+                    | Operation::ApplyAll
+                    | Operation::RecoveryRollback
+                    | Operation::RecoveryComplete
+                    | Operation::ProjectCreate
+            ),
             deadline,
             move || ctx.request_repaint(),
         )?);
         self.operation = operation;
+        if operation == Operation::Task {
+            self.resume_task = None;
+        }
         self.error = false;
         self.message = match operation {
             Operation::Task => "Модель работает…",
@@ -539,6 +605,11 @@ impl Desktop {
             #[cfg(feature = "gateway-http")]
             Operation::CloudChat => "HTTP-провайдер отвечает…",
             Operation::Apply(_) => "Применение выбранной правки…",
+            Operation::ApplyAll => "Применение набора правок…",
+            Operation::RecoveryStatus => "Чтение состояния восстановления…",
+            Operation::EnvironmentPrepare => "Подготовка выбранной среды…",
+            Operation::SessionList => "Чтение сохраненных задач…",
+            Operation::RecoveryRollback | Operation::RecoveryComplete => "Восстановление файлов…",
             Operation::Doctor => "Сбор сведений о ПК…",
             Operation::ProjectPlan => "Готовлю план проекта…",
             Operation::ProjectCreate => "Создаю новый проект…",
@@ -568,10 +639,10 @@ impl Desktop {
     }
 
     fn complete(&mut self, result: ResultData) {
-        self.log = result.stderr;
+        self.log = result.stderr.clone();
         let structured_task_timeout = self.operation == Operation::Task
             && serde_json::from_slice::<Report>(&result.stdout)
-                .is_ok_and(|r| matches!(r.schema_version, 1..=3) && r.status == "timeout");
+                .is_ok_and(|r| matches!(r.schema_version, 1..=5) && r.status == "timeout");
         if (result.timed_out || result.code == Some(124)) && !structured_task_timeout {
             self.fail(if self.operation == Operation::ProjectPlan {
                 "Истёк таймаут подготовки плана. Увеличь таймаут в настройках модели или сократи запрос. Файлы проекта ещё не создавались. Подробности — в журнале."
@@ -594,6 +665,14 @@ impl Desktop {
         }
         let seconds = result.elapsed.as_secs_f32();
         match self.operation {
+            Operation::EnvironmentPrepare => {
+                if result.code == Some(0) {
+                    self.message = "Среда подготовлена".into();
+                    self.error = false;
+                } else {
+                    self.fail("Подготовка среды не завершена; проверьте журнал");
+                }
+            }
             Operation::LocalChat => {
                 if result.code == Some(0) {
                     match String::from_utf8(result.stdout) {
@@ -627,7 +706,7 @@ impl Desktop {
             | Operation::DocsFetch
             | Operation::DocsImport => self.complete_project_job(result.code, &result.stdout),
             Operation::Task => match serde_json::from_slice::<Report>(&result.stdout) {
-                Ok(report) if matches!(report.schema_version, 1..=3) => {
+                Ok(report) if matches!(report.schema_version, 1..=5) => {
                     self.error = result.code != Some(0) || report.status != "completed";
                     self.message = format!(
                         "{} · {} {} · {:.1} s · {} {}",
@@ -637,7 +716,7 @@ impl Desktop {
                                 .text("Истёк таймаут задачи; предложения не применялись")
                         } else if self.error {
                             self.prefs.language.text("Задача не завершена")
-                        } else if report.proposals.is_empty() {
+                        } else if report.proposals.is_empty() && report.file_proposals.is_empty() {
                             self.prefs
                                 .language
                                 .text("Протокол завершён; предложений нет")
@@ -647,7 +726,7 @@ impl Desktop {
                         report.calls,
                         self.prefs.language.text("вызовов"),
                         seconds,
-                        report.proposals.len(),
+                        report.proposals.len() + report.file_proposals.len(),
                         self.prefs.language.text("предложений")
                     );
                     if !report.context_optimization.is_empty() {
@@ -676,15 +755,12 @@ impl Desktop {
                     result.code
                 )),
             },
-            Operation::Apply(index) => {
-                if result.code == Some(0) {
-                    self.applied.push(index);
-                    self.message = "Правка применена. Запустите тесты проекта отдельно.".into();
-                    self.error = false;
-                } else {
-                    self.fail("Правка не применена: конфликт или ошибка доступа. Откройте журнал.");
-                }
-            }
+            Operation::Apply(_)
+            | Operation::ApplyAll
+            | Operation::RecoveryStatus
+            | Operation::RecoveryRollback
+            | Operation::RecoveryComplete => self.complete_publication_job(&result),
+            Operation::SessionList => self.complete_saved_tasks_job(&result),
             Operation::Doctor => {
                 if result.code == Some(0) {
                     self.hardware = serde_json::from_slice(&result.stdout).ok();
@@ -697,7 +773,11 @@ impl Desktop {
         if !self.error
             && matches!(
                 self.operation,
-                Operation::Apply(_) | Operation::ProjectCreate
+                Operation::Apply(_)
+                    | Operation::ApplyAll
+                    | Operation::RecoveryRollback
+                    | Operation::RecoveryComplete
+                    | Operation::ProjectCreate
             )
         {
             self.chat.notice(self.message.clone());
@@ -733,6 +813,20 @@ impl Desktop {
                 {
                     self.settings_open = true;
                     self.transition = Some(Instant::now());
+                }
+                if self.job.is_none()
+                    && (self.prefs.repo.is_some() || self.report.is_some())
+                    && icons::button(
+                        ui,
+                        Icon::Folder,
+                        l.text("Восстановление проекта"),
+                        false,
+                        c.muted,
+                    )
+                    .clicked()
+                    && let Err(e) = self.start(Operation::RecoveryStatus, ui.ctx())
+                {
+                    self.fail(e);
                 }
                 let response = icons::button(
                     ui,
@@ -939,14 +1033,15 @@ impl Desktop {
                         ui.label(RichText::new(l.text("Сокращается только история чата; исходники и ошибки не переписываются.")).small().weak());
                         ui.separator();
                         ui.checkbox(&mut self.prefs.dedup_tool_context, l.text("Дедупликация результатов инструментов (задачи)"));
-                        ui.label(RichText::new(l.text("Повторные старые результаты передаются один раз со ссылками. Последний результат, ошибки и патчи сохраняются дословно. Экономия показывается в байтах; токены не оцениваются.")).small().weak());
+                        ui.label(RichText::new(l.text("Дедупликация сохраняет выбранные наблюдения дословно. При нехватке окна контекст отдельно сокращается с хешами. Локальные задачи считают токены выбранной моделью.")).small().weak());
                     }).response,
                     SettingsPage::Workers=>ui.add_enabled_ui(self.job.is_none(),|ui|{
                         icons::toggle(ui,&mut self.prefs.subagents,l.text("Исследователь и ревьюер"),self.prefs.animations,c.accent,c.on_accent);
                         if self.prefs.subagents{self.prefs.calls=self.prefs.calls.max(3);}
                         ui.label(RichText::new(l.text("Роли работают последовательно с одной моделью. Дополнительные проверки требуют времени.")).small().weak());
                         let min=if self.prefs.subagents{3}else{1};
-                        setting_slider(ui,l.text("Общий лимит вызовов"),&mut self.prefs.calls,min..=24,false,l.text("Бюджет общий для всех ролей. Исследователь и ревьюер не изменяют файлы."),c.muted);
+                        setting_slider(ui,l.text("Общий лимит вызовов"),&mut self.prefs.calls,min..=256,false,l.text("Бюджет общий для всех ролей. Исследователь и ревьюер не изменяют файлы."),c.muted);
+                        self.workflow_settings(ui);
                     }).response,
                     SettingsPage::Appearance=>ui.vertical(|ui|{
                         ui.label(l.text("Тема"));
@@ -1178,7 +1273,38 @@ impl Desktop {
             .truncate(),
         )
         .on_hover_text(report.workspace.display().to_string());
-        if report.proposals.is_empty() {
+        if let Some(run) = report.executions.last() {
+            ui.label(format!(
+                "{} · {} · exit {:?}",
+                l.text("Среда выполнения"),
+                run.environment,
+                run.exit_code
+            ))
+            .on_hover_text(&run.image);
+        }
+        if let Some(plan) = &report.work_plan {
+            ui.collapsing(
+                l.text("Выбранные технологии и план"),
+                |ui| {
+                    ui.label(&plan.goal);
+                    for technology in &plan.technologies {
+                        ui.label(format!("{} · {}", technology.name, technology.purpose));
+                        ui.small(&technology.rationale);
+                    }
+                    for step in &plan.steps {
+                        ui.label(step);
+                    }
+                    if !plan.required_capabilities.is_empty() {
+                        ui.label(format!(
+                            "{}: {}",
+                            l.text("Необходимые возможности"),
+                            plan.required_capabilities.join(", ")
+                        ));
+                    }
+                },
+            );
+        }
+        if report.proposals.is_empty() && report.file_proposals.is_empty() {
             ui.label(l.text(
                 "Применимых предложений нет. Завершение протокола не доказывает решения задачи.",
             ));
@@ -1190,11 +1316,24 @@ impl Desktop {
                             .proposals
                             .get(self.selected)
                             .map(|e| e.path.as_str())
+                            .or_else(|| {
+                                self.selected
+                                    .checked_sub(report.proposals.len())
+                                    .and_then(|i| report.file_proposals.get(i))
+                                    .map(|f| f.path.as_str())
+                            })
                             .unwrap_or("—"),
                     )
                     .show_ui(ui, |ui| {
                         for (index, edit) in report.proposals.iter().enumerate() {
                             ui.selectable_value(&mut self.selected, index, &edit.path);
+                        }
+                        for (index, file) in report.file_proposals.iter().enumerate() {
+                            ui.selectable_value(
+                                &mut self.selected,
+                                report.proposals.len() + index,
+                                &file.path,
+                            );
                         }
                     });
                 let allowed = self.job.is_none() && can_apply(report, self.selected, &self.applied);
@@ -1208,7 +1347,16 @@ impl Desktop {
                     )
                     .clicked()
                 {
-                    self.confirm = Some(self.selected);
+                    self.confirm = Some(Operation::Apply(self.selected));
+                }
+                if ui
+                    .add_enabled(
+                        self.job.is_none() && workflows::can_apply_all(report, &self.applied),
+                        egui::Button::new(l.text("Применить весь набор…")),
+                    )
+                    .clicked()
+                {
+                    self.confirm = Some(Operation::ApplyAll);
                 }
                 if icons::button(
                     ui,
@@ -1233,6 +1381,89 @@ impl Desktop {
                     RichText::new(l.text("Применено. Запусти тесты проекта отдельно."))
                         .color(c.success),
                 );
+            }
+            if let Some(file) = self
+                .selected
+                .checked_sub(report.proposals.len())
+                .and_then(|i| report.file_proposals.get(i))
+            {
+                ui.label(format!(
+                    "{} · {} bytes · SHA256 {}",
+                    file.path, file.replacement.bytes, file.replacement.sha256
+                ));
+                ui.label("Содержимое и внешний вид требуют просмотра перед применением.");
+                if let Some(root) = &report.artifact_store {
+                    if ui
+                        .button(l.text("Сохранить копию для просмотра…"))
+                        .clicked()
+                        && let Some(destination) = rfd::FileDialog::new()
+                            .set_file_name(
+                                std::path::Path::new(&file.path)
+                                    .file_name()
+                                    .unwrap_or_default()
+                                    .to_string_lossy(),
+                            )
+                            .save_file()
+                    {
+                        match crate::universal::artifacts::Store::open(root)
+                            .and_then(|s| s.get(&file.replacement))
+                            .and_then(|b| std::fs::write(destination, b))
+                        {
+                            Ok(()) => {}
+                            Err(e) => {
+                                ui.label(e.to_string());
+                            }
+                        }
+                    }
+                    if self.failed_artifact_preview.as_ref() != Some(&file.replacement.sha256)
+                        && file.path.to_lowercase().ends_with(".png")
+                        && self
+                            .artifact_preview
+                            .as_ref()
+                            .is_none_or(|(sha, _)| sha != &file.replacement.sha256)
+                    {
+                        let decoded = (|| -> io::Result<egui::ColorImage> {
+                            let bytes = crate::universal::artifacts::Store::open(root)?
+                                .get(&file.replacement)?;
+                            let mut reader = image::ImageReader::with_format(
+                                std::io::Cursor::new(bytes),
+                                image::ImageFormat::Png,
+                            );
+                            let mut limits = image::Limits::default();
+                            limits.max_image_width = Some(2048);
+                            limits.max_image_height = Some(2048);
+                            limits.max_alloc = Some(32 * 1024 * 1024);
+                            reader.limits(limits);
+                            let image = reader.decode().map_err(io::Error::other)?.into_rgba8();
+                            Ok(egui::ColorImage::from_rgba_unmultiplied(
+                                [image.width() as usize, image.height() as usize],
+                                image.as_raw(),
+                            ))
+                        })();
+                        if decoded.is_err() {
+                            self.failed_artifact_preview = Some(file.replacement.sha256.clone());
+                        }
+                        if let Ok(image) = decoded {
+                            self.artifact_preview = Some((
+                                file.replacement.sha256.clone(),
+                                ui.ctx().load_texture(
+                                    "document-preview",
+                                    image,
+                                    egui::TextureOptions::LINEAR,
+                                ),
+                            ));
+                        }
+                    }
+                    if let Some((sha, texture)) = &self.artifact_preview
+                        && sha == &file.replacement.sha256
+                    {
+                        ui.add(
+                            egui::Image::new(texture)
+                                .max_width(ui.available_width())
+                                .max_height(500.),
+                        );
+                    }
+                }
             }
             if let Some(edit) = report.proposals.get(self.selected) {
                 ui.columns(2, |columns| {
@@ -1316,16 +1547,50 @@ impl Desktop {
                     self.chat_home(ui);
                 }
             });
-        if let Some(index) = self.confirm {
-            let path = self
-                .report
-                .as_ref()
-                .and_then(|r| r.proposals.get(index))
-                .map(|e| e.path.clone())
-                .unwrap_or_default();
+        if let Some(operation) = self.confirm {
+            let path = match operation {
+                Operation::Apply(index) => self
+                    .report
+                    .as_ref()
+                    .and_then(|r| {
+                        r.proposals.get(index).map(|e| e.path.clone()).or_else(|| {
+                            index
+                                .checked_sub(r.proposals.len())
+                                .and_then(|i| r.file_proposals.get(i))
+                                .map(|p| p.path.clone())
+                        })
+                    })
+                    .unwrap_or_default(),
+                Operation::ApplyAll => self
+                    .report
+                    .as_ref()
+                    .map(|r| {
+                        r.proposals
+                            .iter()
+                            .map(|e| e.path.as_str())
+                            .chain(r.file_proposals.iter().map(|p| p.path.as_str()))
+                            .collect::<Vec<_>>()
+                            .join("\n")
+                    })
+                    .unwrap_or_default(),
+                _ => self
+                    .recovery_root
+                    .as_ref()
+                    .map(|p| p.display().to_string())
+                    .unwrap_or_default(),
+            };
             egui::Modal::new(egui::Id::unique("confirm-apply")).show(ui.ctx(), |ui| {
-                ui.heading(l.text("Применить изменение?"));
-                ui.label(path);
+                ui.heading(l.text(match operation {
+                    Operation::ApplyAll => "Применить весь набор?",
+                    Operation::RecoveryRollback => "Откатить публикацию?",
+                    Operation::RecoveryComplete => "Завершить публикацию?",
+                    _ => "Применить изменение?",
+                }));
+                egui::ScrollArea::vertical()
+                    .max_height(220.0)
+                    .show(ui, |ui| {
+                        ui.label(path);
+                    });
                 ui.label(l.text(
                     "Исходное содержимое будет проверено ещё раз. При конфликте запись отменится.",
                 ));
@@ -1333,7 +1598,7 @@ impl Desktop {
                     if icons::action(ui, Icon::Check, l.text("Применить"), c.accent).clicked()
                     {
                         self.confirm = None;
-                        if let Err(e) = self.start(Operation::Apply(index), ui.ctx()) {
+                        if let Err(e) = self.start(operation, ui.ctx()) {
                             self.fail(e);
                         }
                     }
@@ -1343,6 +1608,8 @@ impl Desktop {
                 });
             });
         }
+        self.recovery_window(ui.ctx());
+        self.saved_tasks_window(ui.ctx());
         if self.update_confirm {
             egui::Modal::new(egui::Id::unique("confirm-update")).show(ui.ctx(), |ui| {
                 ui.set_max_width(430.0);
@@ -1372,7 +1639,7 @@ impl Desktop {
                 ));
                 ui.label(
                     RichText::new(l.text(
-                        "Модель не запускает shell и тесты. Ревью AI не заменяет проверку кода.",
+                        "Модель выполняет только явно выбранную Docker-проверку. Ревью AI не заменяет тестирование.",
                     ))
                     .small()
                     .weak(),
@@ -1592,13 +1859,22 @@ fn validate_task(task: &str, files: &str) -> io::Result<()> {
     Ok(())
 }
 fn can_apply(report: &Report, index: usize, applied: &[usize]) -> bool {
-    matches!(report.schema_version, 1..=3)
+    matches!(report.schema_version, 1..=5)
         && report.status == "completed"
-        && report
+        && (report.schema_version < 4
+            || matches!(
+                report.outcome,
+                crate::agent::TaskOutcome::ChangesProposed
+                    | crate::agent::TaskOutcome::ChangesVerified
+            ))
+        && !applied.contains(&index)
+        && (report
             .proposals
             .get(index)
-            .is_some_and(|p| !p.create || report.schema_version == 2)
-        && !applied.contains(&index)
+            .is_some_and(|p| !p.create || report.schema_version >= 2)
+            || report.schema_version == 5
+                && index >= report.proposals.len()
+                && index - report.proposals.len() < report.file_proposals.len())
 }
 
 #[cfg(test)]
@@ -1625,11 +1901,26 @@ mod tests {
         assert!(can_apply(&report, 0, &[]));
         assert!(!can_apply(&report, 1, &[]));
         assert!(!can_apply(&report, 0, &[0]));
+        report.proposals[0].create = true;
+        report.proposals[0].original.clear();
+        report.outcome = crate::agent::TaskOutcome::ChangesProposed;
+        for schema in [2, 3, 4] {
+            report.schema_version = schema;
+            assert!(can_apply(&report, 0, &[]));
+        }
+        report.schema_version = 1;
+        assert!(!can_apply(&report, 0, &[]));
+        report.schema_version = 4;
+        report.outcome = crate::agent::TaskOutcome::Incomplete;
+        assert!(!can_apply(&report, 0, &[]));
+        report.outcome = crate::agent::TaskOutcome::ChangesProposed;
+        report.proposals[0].create = false;
+        report.proposals[0].original = "left - right\r\n".into();
         let ctx = egui::Context::default();
         configure(&ctx);
         let mut app = Desktop::default();
         app.report = Some(report);
-        app.confirm = Some(0);
+        app.confirm = Some(Operation::Apply(0));
         let mut output = ctx.run_ui(
             egui::RawInput {
                 screen_rect: Some(egui::Rect::from_min_size(
