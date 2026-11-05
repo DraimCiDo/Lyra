@@ -235,6 +235,10 @@ fn scripts_return_binary_artifacts_in_sandbox() {
         b"abc\0def"
     );
     assert!(!repo.path().join("result.bin").exists());
+    let (verbose,files)=session.run(&w,&[],"python","import sys\nfrom pathlib import Path\nsys.stderr.write('x'*70000)\nPath('/output/verbose.bin').write_bytes(b'valid')",&[],&["verbose.bin".into()],&std::sync::atomic::AtomicBool::new(false)).unwrap();
+    assert_eq!(verbose["execution"]["output_truncated"], true);
+    assert_eq!(files.len(), 1);
+    assert_eq!(session.store.get(&files[0].replacement).unwrap(), b"valid");
 }
 #[test]
 #[ignore = "requires the bundled document image and enforced cgroups"]
@@ -554,4 +558,48 @@ fn changing_execution_timing_does_not_hide_a_no_progress_loop() {
         report.status
     );
     assert_eq!(report.calls, 4);
+}
+#[test]
+fn partial_binary_publication_accepts_dependencies_already_applied_from_the_same_report() {
+    let repo = tempfile::tempdir().unwrap();
+    let cache = tempfile::tempdir().unwrap();
+    let store = Store::open(cache.path()).unwrap();
+    fs::write(repo.path().join("input.docx"), b"old\0doc").unwrap();
+    let original = store.put(b"old\0doc").unwrap();
+    let input = Input {
+        path: "input.docx".into(),
+        blob: original.clone(),
+    };
+    let files = vec![
+        FileProposal {
+            path: "input.docx".into(),
+            original: Some(original),
+            replacement: store.put(b"new\0doc").unwrap(),
+            inputs: vec![input.clone()],
+        },
+        FileProposal {
+            path: "summary.pdf".into(),
+            original: None,
+            replacement: store.put(b"pdf\0result").unwrap(),
+            inputs: vec![input],
+        },
+    ];
+    for index in 0..2 {
+        lyra::universal::artifacts::publish_in_context(
+            repo.path(),
+            &store,
+            std::slice::from_ref(&files[index]),
+            &files,
+            || Ok(()),
+        )
+        .unwrap();
+    }
+    assert_eq!(
+        fs::read(repo.path().join("input.docx")).unwrap(),
+        b"new\0doc"
+    );
+    assert_eq!(
+        fs::read(repo.path().join("summary.pdf")).unwrap(),
+        b"pdf\0result"
+    );
 }

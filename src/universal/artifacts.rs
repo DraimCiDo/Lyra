@@ -203,6 +203,7 @@ fn checked(
     files: &[FileProposal],
     allow_applied: bool,
     check_inputs: bool,
+    approved: &[FileProposal],
 ) -> io::Result<Vec<bool>> {
     let mut seen = BTreeSet::new();
     let mut result = Vec::new();
@@ -235,11 +236,11 @@ fn checked(
             let bytes = read(workspace, &input.path)?;
             let actual = crate::retrieval::sha256(&bytes);
             if actual != input.blob.sha256
-                && !files.iter().any(|p| {
+                && !approved.iter().any(|p| {
                     p.path == input.path
                         && ((p.replacement.sha256 == input.blob.sha256
                             && p.original.as_ref().is_some_and(|o| o.sha256 == actual))
-                            || allow_applied && p.replacement.sha256 == actual)
+                            || p.replacement.sha256 == actual)
                 })
             {
                 return Err(bad(format!(
@@ -312,12 +313,21 @@ pub fn publish(
     files: &[FileProposal],
     guard: impl Fn() -> io::Result<()>,
 ) -> io::Result<()> {
+    publish_in_context(repo, store, files, files, guard)
+}
+pub fn publish_in_context(
+    repo: &Path,
+    store: &Store,
+    files: &[FileProposal],
+    approved: &[FileProposal],
+    guard: impl Fn() -> io::Result<()>,
+) -> io::Result<()> {
     let workspace = Workspace::open(repo, &[])?;
     let state = crate::publication::State::open(&workspace)?;
     if state.pending()? {
         return Err(bad("Unfinished publication; run recover first"));
     }
-    checked(&workspace, files, false, true)?;
+    checked(&workspace, files, false, true, approved)?;
     guard()?;
     let objects = Store::child(
         &state.dir,
@@ -347,10 +357,10 @@ pub fn publish(
     sync(&state.dir)?;
     let result = (|| {
         for f in files {
-            checked(&workspace, files, true, true)?;
+            checked(&workspace, files, true, true, approved)?;
             write(&workspace, &f.path, Some(&objects.get(&f.replacement)?))?;
         }
-        checked(&workspace, files, true, true)?;
+        checked(&workspace, files, true, true, approved)?;
         guard()?;
         Ok(())
     })();
@@ -402,7 +412,7 @@ fn restore(
     complete: bool,
 ) -> io::Result<()> {
     // Validate the complete set before touching any file. External edits are preserved.
-    let states = checked(workspace, files, true, false)?;
+    let states = checked(workspace, files, true, false, files)?;
     for (f, applied) in files.iter().zip(states) {
         if applied == complete {
             continue;
@@ -507,7 +517,7 @@ pub(crate) fn recover_locked(
     if j.schema_version != 2 || j.root != workspace.root {
         return Err(bad("Artifact journal belongs to another workspace"));
     }
-    let states = checked(workspace, &j.files, true, false)?;
+    let states = checked(workspace, &j.files, true, false, &j.files)?;
     use crate::publication::RecoveryAction;
     if action != RecoveryAction::Status {
         let store = Store::child(

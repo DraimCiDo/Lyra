@@ -1627,7 +1627,13 @@ pub fn apply(args: ApplyArgs, output: &mut impl Write) -> io::Result<()> {
                     .ok_or_else(|| io::Error::other("Index missing"))?,
             )
         };
-        crate::universal::artifacts::publish(&args.repo, &store, selected, || Ok(()))?;
+        crate::universal::artifacts::publish_in_context(
+            &args.repo,
+            &store,
+            selected,
+            &files,
+            || Ok(()),
+        )?;
         return writeln!(output, "Применено предложений: {}", selected.len());
     }
     let edits = if args.all {

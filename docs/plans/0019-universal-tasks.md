@@ -82,3 +82,18 @@ Mirror/lock CI загрузил и проверил пакеты, затем о�
 ошибку для local .deb («Pathname ... not absolute»). Флаг убран; network=none
 сохранен. Реальная установка pinned libexpat1 с SHA256 из lock внутри
 контейнера без сети завершилась exit 0. Установке задан noninteractive frontend.
+
+На 403d219 все CPU CI для Linux/Windows завершились success, включая release,
+Desktop smoke и tiny GGUF; corpus — 36 cases / 120 variants, все четыре jobs success.
+Universal CI успешно собрал закрепленную document image, выполнил создание
+DOCX/XLSX/PPTX/PDF в sandbox, настоящий LibreOffice/PDF render, девять trusted
+Python checks и выполнение Go/PHP. CUDA compilation на момент записи еще идет;
+это не подтверждение GPU runtime или качества работы на сложных проектах.
+
+Финальная regression исправляет последовательный apply отдельных документов из
+одного отчета: зависимость принимает точный ранее опубликованный SHA того же
+набора, но внешние изменения по-прежнему отклоняются. Ограничение длинной
+диагностики больше не отбрасывает корректный бинарный архив; переполнение самого
+архива остается ошибкой. Локально universal 12 passed / 3 ignored, session 9,
+publication 3, Clippy Desktop+HTTP с -D warnings прошли. Новый sandbox-сценарий
+с длинным stderr выполняется только CI с enforced cgroups.

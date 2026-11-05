@@ -206,7 +206,7 @@ impl ExecutionSession {
         let clean = executor::capture(cleanup, Duration::from_secs(10), &AtomicBool::new(false));
         let (mut result, archive) = result?;
         result.cleanup_confirmed = clean.is_ok_and(|r| r.exit_code == Some(0) && !r.timed_out);
-        if !result.passed() || result.output_truncated {
+        if !result.passed() || archive.len() >= artifacts::TOTAL_LIMIT + 1024 * 1024 {
             return Ok((
                 json!({"environment":env.id,"image":env.image,"script_sha256":crate::retrieval::sha256(script.as_bytes()),"execution":result,"outputs":[],"artifact_checks_passed":false}),
                 vec![],
