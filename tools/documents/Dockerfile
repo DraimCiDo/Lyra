@@ -3,8 +3,8 @@ FROM python@sha256:ae14d4ce8771606477a81446e7ef429edd6762305fc50c84507c1041fa828
 # Freeze OS dependencies to a signed Debian snapshot as well as the base image.
 RUN sed -i -e 's#http://deb.debian.org/debian-security#https://snapshot.debian.org/archive/debian-security/20261101T000000Z/#g' -e 's#http://deb.debian.org/debian#https://snapshot.debian.org/archive/debian/20261101T000000Z/#g' /etc/apt/sources.list.d/debian.sources \
  && echo 'Acquire::Check-Valid-Until "false";' > /etc/apt/apt.conf.d/99snapshot \
- && apt-get update \
- && apt-get install -y --no-install-recommends libreoffice-writer libreoffice-calc libreoffice-impress poppler-utils tesseract-ocr-eng tesseract-ocr-rus fonts-dejavu-core fonts-liberation \
+ && apt-get -o Acquire::Retries=3 -o Acquire::https::Timeout=45 update \
+ && apt-get -o Acquire::Retries=3 -o Acquire::https::Timeout=45 install -y --no-install-recommends libreoffice-writer libreoffice-calc libreoffice-impress poppler-utils tesseract-ocr-eng tesseract-ocr-rus fonts-dejavu-core fonts-liberation \
  && rm -rf /var/lib/apt/lists/*
 COPY requirements.lock /opt/lyra/requirements.lock
 RUN --mount=type=secret,id=proxy_ca \

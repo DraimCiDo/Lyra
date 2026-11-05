@@ -622,6 +622,7 @@ pub fn execute_workflow(
                 .last()
                 .into_iter()
                 .chain(report.proposals.iter().map(|p| &p.path))
+                .chain(report.file_proposals.iter().map(|p| &p.path))
             {
                 let scopes = match workspace.scoped_instructions(path) {
                     Ok(scopes) => scopes,
@@ -1368,6 +1369,19 @@ fn execution_session(
                 args.allowed_environments.clone(),
                 root,
             )?;
+            if args
+                .repo
+                .canonicalize()?
+                .join(".lyra/artifact-objects")
+                .canonicalize()
+                .ok()
+                .as_ref()
+                == Some(&execution.store.root)
+            {
+                return Err(io::Error::other(
+                    "Choose an artifact store outside reserved publication backup storage",
+                ));
+            }
             execution.deadline =
                 Some(std::time::Instant::now() + std::time::Duration::from_secs(args.timeout_secs));
             Ok(execution)

@@ -220,6 +220,7 @@ enum Operation {
 struct Desktop {
     artifact_temp: Option<tempfile::TempDir>,
     artifact_preview: Option<(String, egui::TextureHandle)>,
+    failed_artifact_preview: Option<String>,
     environment_prepare_id: String,
     conversations: history::History,
     history_available: bool,
@@ -274,6 +275,7 @@ impl Default for Desktop {
         Self {
             artifact_temp: None,
             artifact_preview: None,
+            failed_artifact_preview: None,
             environment_prepare_id: String::new(),
             conversations: history::History::default(),
             history_available: true,
@@ -1398,7 +1400,8 @@ impl Desktop {
                             }
                         }
                     }
-                    if file.path.to_lowercase().ends_with(".png")
+                    if self.failed_artifact_preview.as_ref() != Some(&file.replacement.sha256)
+                        && file.path.to_lowercase().ends_with(".png")
                         && self
                             .artifact_preview
                             .as_ref()
@@ -1420,6 +1423,9 @@ impl Desktop {
                                 image.as_raw(),
                             ))
                         })();
+                        if decoded.is_err() {
+                            self.failed_artifact_preview = Some(file.replacement.sha256.clone());
+                        }
                         if let Ok(image) = decoded {
                             self.artifact_preview = Some((
                                 file.replacement.sha256.clone(),

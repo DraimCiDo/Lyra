@@ -49,3 +49,13 @@ rollback, input drift и binary resume. Первый full run выявил ус�
 Смысловая/визуальная приемка и качество выбора моделью требуют реальных прогонов.
 Legacy check-config пока проверяет текстовый snapshot; binary proposals не могут
 получить changes_verified на основании этой проверки. Показатель остается честным.
+
+Первый CI на 2fafc98: Linux/Windows Clippy и тестовые матрицы прошли; все четыре
+Docker corpus jobs завершились success. Document image build и release/CUDA
+проверяются отдельно. Review добавил skip неизмененных файлов при rollback
+(Windows Word-lock regression), cleanup orphan staging без удаления project data,
+кеширование отказа PNG preview и scoped instructions для file proposals.
+Локально review Clippy прошел, universal regressions 9 passed / 3 ignored.
+
+Первый document image CI остановлен snapshot.debian.org HTTP 504 на нескольких
+пакетах. Добавлены bounded apt retries/timeout, без смены закрепленного snapshot.

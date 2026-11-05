@@ -402,8 +402,11 @@ fn restore(
     complete: bool,
 ) -> io::Result<()> {
     // Validate the complete set before touching any file. External edits are preserved.
-    checked(workspace, files, true, false)?;
-    for f in files {
+    let states = checked(workspace, files, true, false)?;
+    for (f, applied) in files.iter().zip(states) {
+        if applied == complete {
+            continue;
+        }
         let blob = if complete {
             Some(&f.replacement)
         } else {
@@ -424,18 +427,76 @@ pub(crate) fn recover_locked(
     out: &mut impl Write,
 ) -> io::Result<bool> {
     if !state.try_exists(JOURNAL)? {
-        if state.try_exists("artifact-journal.tmp")? {
-            if action != crate::publication::RecoveryAction::Status {
-                state.remove_file("artifact-journal.tmp")?;
-            }
-            writeln!(
-                out,
-                "{}",
-                serde_json::json!({"status":"staging_only_no_project_writes"})
-            )?;
-            return Ok(true);
+        // Uncommitted staging contains backups only, never published project writes.
+        // Prefer an existing legacy journal before cleaning unrelated staging.
+        if state.try_exists("apply-journal.json")? {
+            return Ok(false);
         }
-        return Ok(false);
+        let mut staging = Vec::new();
+        for (index, entry) in state.entries()?.enumerate() {
+            if index > 10000 {
+                return Err(bad("Publication state exceeds entry limit"));
+            }
+            let entry = entry?;
+            let name = entry.file_name().to_string_lossy().into_owned();
+            let temporary = name
+                .strip_prefix("artifact-write-")
+                .and_then(|s| s.strip_suffix(".tmp"))
+                .is_some_and(|s| {
+                    !s.is_empty() && s.bytes().all(|b| b.is_ascii_digit() || b == b'-')
+                });
+            if temporary || name == "artifact-journal.tmp" {
+                let m = state.symlink_metadata(&name)?;
+                if !ordinary(&m) || !m.is_file() {
+                    return Err(bad("Changed publication staging preserved"));
+                }
+                staging.push(name);
+            }
+        }
+        let objects = if state.try_exists("artifact-objects")? {
+            Some(Store::child(
+                state,
+                "artifact-objects",
+                workspace.root.join(".lyra/artifact-objects"),
+            )?)
+        } else {
+            None
+        };
+        let mut blobs = Vec::new();
+        if let Some(store) = &objects {
+            for (index, entry) in store.dir.entries()?.enumerate() {
+                if index > 4096 {
+                    return Err(bad("Too many staging objects"));
+                }
+                let entry = entry?;
+                let name = entry.file_name().to_string_lossy().into_owned();
+                let m = store.dir.symlink_metadata(&name)?;
+                if !hash(&name) || !ordinary(&m) || !m.is_file() {
+                    return Err(bad("Unknown staging object preserved"));
+                }
+                blobs.push(name);
+            }
+        }
+        if staging.is_empty() && blobs.is_empty() {
+            return Ok(false);
+        }
+        let status = if action == crate::publication::RecoveryAction::Status {
+            "staging_only_no_project_writes"
+        } else {
+            for name in staging {
+                state.remove_file(name)?;
+            }
+            if let Some(store) = objects {
+                for name in blobs {
+                    store.dir.remove_file(name)?;
+                }
+                sync(&store.dir)?;
+            }
+            sync(state)?;
+            "staging_discarded_no_project_writes"
+        };
+        writeln!(out, "{}", serde_json::json!({"status":status}))?;
+        return Ok(true);
     }
     let m = state.symlink_metadata(JOURNAL)?;
     if !ordinary(&m) || !m.is_file() || m.len() > 1024 * 1024 {

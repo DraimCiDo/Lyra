@@ -351,3 +351,64 @@ fn task_plan_does_not_grant_script_execution() {
     );
     assert!(!repo.path().join("out.txt").exists());
 }
+#[test]
+fn recovery_discards_orphan_staging_without_touching_project_files() {
+    let repo = tempfile::tempdir().unwrap();
+    fs::create_dir(repo.path().join(".lyra")).unwrap();
+    let store = Store::open(&repo.path().join(".lyra/artifact-objects")).unwrap();
+    let blob = store.put(b"private backup").unwrap();
+    fs::write(repo.path().join("keep.txt"), b"user data").unwrap();
+    let mut out = Vec::new();
+    lyra::publication::recover(
+        lyra::publication::RecoveryArgs {
+            repo: repo.path().into(),
+            action: lyra::publication::RecoveryAction::Status,
+        },
+        &mut out,
+    )
+    .unwrap();
+    assert!(
+        String::from_utf8(out)
+            .unwrap()
+            .contains("staging_only_no_project_writes")
+    );
+    assert!(store.get(&blob).is_ok());
+    lyra::publication::recover(
+        lyra::publication::RecoveryArgs {
+            repo: repo.path().into(),
+            action: lyra::publication::RecoveryAction::Rollback,
+        },
+        &mut Vec::new(),
+    )
+    .unwrap();
+    assert!(store.get(&blob).is_err());
+    assert_eq!(
+        fs::read(repo.path().join("keep.txt")).unwrap(),
+        b"user data"
+    );
+}
+#[cfg(windows)]
+#[test]
+fn windows_locked_unchanged_file_does_not_block_rollback_of_other_files() {
+    use std::os::windows::fs::OpenOptionsExt;
+    let repo = tempfile::tempdir().unwrap();
+    let cache = tempfile::tempdir().unwrap();
+    let store = Store::open(cache.path()).unwrap();
+    for name in ["a.txt", "locked.docx"] {
+        fs::write(repo.path().join(name), b"old").unwrap();
+    }
+    let _lock = fs::OpenOptions::new()
+        .read(true)
+        .share_mode(1)
+        .open(repo.path().join("locked.docx"))
+        .unwrap();
+    let files = ["a.txt", "locked.docx"].map(|name| FileProposal {
+        path: name.into(),
+        original: Some(store.put(b"old").unwrap()),
+        replacement: store.put(b"new").unwrap(),
+        inputs: vec![],
+    });
+    assert!(lyra::universal::artifacts::publish(repo.path(), &store, &files, || Ok(())).is_err());
+    assert_eq!(fs::read(repo.path().join("a.txt")).unwrap(), b"old");
+    assert!(!repo.path().join(".lyra/artifact-journal.json").exists());
+}
