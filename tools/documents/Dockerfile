@@ -4,9 +4,9 @@ COPY debian.lock.json install_debian.py /opt/lyra/
 RUN --mount=type=secret,id=proxy_ca \
  if [ -f /run/secrets/proxy_ca ]; then SSL_CERT_FILE=/run/secrets/proxy_ca python /opt/lyra/install_debian.py /opt/lyra/debian.lock.json /packages; else python /opt/lyra/install_debian.py /opt/lyra/debian.lock.json /packages; fi
 FROM python@sha256:ae14d4ce8771606477a81446e7ef429edd6762305fc50c84507c1041fa8285d1
-# Install only the verified snapshot closure; no package acquisition during install.
+# Install only the verified snapshot closure; no network acquisition during install.
 RUN --network=none --mount=type=bind,from=packages,source=/packages,target=/packages,readonly \
- apt-get --no-download --no-install-recommends -y install /packages/*.deb \
+ DEBIAN_FRONTEND=noninteractive apt-get --no-install-recommends -y install /packages/*.deb \
  && rm -rf /var/lib/apt/lists/*
 COPY requirements.lock /opt/lyra/requirements.lock
 RUN --mount=type=secret,id=proxy_ca \

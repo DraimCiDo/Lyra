@@ -77,3 +77,8 @@ CPU CI на fc87ea2 выявил устаревшее help assertion «ещё н
 обновления CLI. Проверка заменена на наличие environment, изоляции и отдельного
 apply; отсутствие необходимости модели/ключа и точная версия проверяются прежним
 тестом. Universal controller tests теперь 11 passed / 3 ignored на Linux.
+
+Mirror/lock CI загрузил и проверил пакеты, затем обнаружил apt --no-download
+ошибку для local .deb («Pathname ... not absolute»). Флаг убран; network=none
+сохранен. Реальная установка pinned libexpat1 с SHA256 из lock внутри
+контейнера без сети завершилась exit 0. Установке задан noninteractive frontend.
