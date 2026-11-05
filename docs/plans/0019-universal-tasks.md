@@ -72,3 +72,8 @@ OS lock downloader: 3 stdlib tests passed, реальный coinor-libcoinmp0 с
 universal regressions 11 passed / 3 ignored, session/project regressions прошли.
 Execution records фиксируют image/скрипт/результат; volatile elapsed исключен
 из no-progress сравнения (отдельная regression).
+
+CPU CI на fc87ea2 выявил устаревшее help assertion «ещё не реализованы» после
+обновления CLI. Проверка заменена на наличие environment, изоляции и отдельного
+apply; отсутствие необходимости модели/ключа и точная версия проверяются прежним
+тестом. Universal controller tests теперь 11 passed / 3 ignored на Linux.

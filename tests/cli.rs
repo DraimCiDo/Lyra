@@ -127,7 +127,9 @@ fn help_and_version_do_not_require_a_model_or_api_key() {
     assert!(help.status.success());
     let help = String::from_utf8(help.stdout).unwrap();
     assert!(help.contains("doctor"));
-    assert!(help.contains("ещё не реализованы"));
+    assert!(help.contains("environment"));
+    assert!(help.contains("изолированной"));
+    assert!(help.contains("отдельно"));
     let version = lyra(&["--version"]);
     assert!(version.status.success());
     assert_eq!(
