@@ -41,8 +41,8 @@ enum FileState {
     Original,
     Applied,
 }
-struct State {
-    dir: Dir,
+pub(crate) struct State {
+    pub(crate) dir: Dir,
     _lock: std::fs::File,
 }
 fn error(message: impl std::fmt::Display) -> io::Error {
@@ -84,7 +84,7 @@ fn sync_dir(dir: &Dir) -> io::Result<()> {
     Ok(())
 }
 impl State {
-    fn open(workspace: &Workspace) -> io::Result<Self> {
+    pub(crate) fn open(workspace: &Workspace) -> io::Result<Self> {
         match workspace.dir.create_dir(".lyra") {
             Ok(()) => {}
             Err(e) if e.kind() == io::ErrorKind::AlreadyExists => {}
@@ -113,8 +113,11 @@ impl State {
             .map_err(|e| error(format!("Another publication/recovery is active: {e}")))?;
         Ok(Self { dir, _lock: lock })
     }
-    fn pending(&self) -> io::Result<bool> {
-        Ok(checked_exists(&self.dir, JOURNAL)? || checked_exists(&self.dir, STAGING)?)
+    pub(crate) fn pending(&self) -> io::Result<bool> {
+        Ok(checked_exists(&self.dir, JOURNAL)?
+            || checked_exists(&self.dir, STAGING)?
+            || checked_exists(&self.dir, "artifact-journal.json")?
+            || checked_exists(&self.dir, "artifact-journal.tmp")?)
     }
     fn begin(&self, root: &Path, edits: &[Edit]) -> io::Result<()> {
         if self.pending()? {
@@ -368,6 +371,9 @@ fn apply_controlled(
 pub fn recover(args: RecoveryArgs, output: &mut impl Write) -> io::Result<()> {
     let workspace = Workspace::open(&args.repo, &[])?;
     let state = State::open(&workspace)?;
+    if crate::universal::artifacts::recover_locked(&workspace, &state.dir, args.action, output)? {
+        return Ok(());
+    }
     if !checked_exists(&state.dir, JOURNAL)? {
         let staged = checked_exists(&state.dir, STAGING)?;
         if staged && args.action != RecoveryAction::Status {

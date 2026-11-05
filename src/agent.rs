@@ -10,7 +10,7 @@ use std::{
 };
 
 pub const ACTION_GRAMMAR: &str = r#"
-root ::= (list | page | range | scan | read | search | docs | edit | create | discard | review | verify | finish) ws
+root ::= (list | page | range | scan | read | search | docs | edit | create | discard | review | verify | execute | workplan | inspectdoc | artifact | finish) ws
 list ::= "{" ws "\"tool\"" ws ":" ws "\"list\"" ws "}"
 read ::= "{" ws "\"tool\"" ws ":" ws "\"read_file\"" ws "," ws "\"path\"" ws ":" ws path ws "}"
 search ::= "{" ws "\"tool\"" ws ":" ws "\"search\"" ws "," ws "\"query\"" ws ":" ws string ws "}"
@@ -24,6 +24,14 @@ discard ::= "{" ws "\"tool\"" ws ":" ws "\"discard_proposal\"" ws "," ws "\"path
 page ::= "{" ws "\"tool\"" ws ":" ws "\"list_files\"" ws "," ws "\"prefix\"" ws ":" ws string ws "," ws "\"offset\"" ws ":" ws number ws "}"
 range ::= "{" ws "\"tool\"" ws ":" ws "\"read_range\"" ws "," ws "\"path\"" ws ":" ws path ws "," ws "\"start_line\"" ws ":" ws number ws "," ws "\"count\"" ws ":" ws number ws "}"
 scan ::= "{" ws "\"tool\"" ws ":" ws "\"search_page\"" ws "," ws "\"query\"" ws ":" ws string ws "," ws "\"offset\"" ws ":" ws number ws "}"
+execute ::= "{" ws "\"tool\"" ws ":" ws "\"run_script\"" ws "," ws "\"environment\"" ws ":" ws string ws "," ws "\"script\"" ws ":" ws string ws "," ws "\"inputs\"" ws ":" ws strings ws "," ws "\"outputs\"" ws ":" ws strings ws "}"
+workplan ::= "{" ws "\"tool\"" ws ":" ws "\"set_work_plan\"" ws "," ws "\"plan\"" ws ":" ws object ws "}"
+inspectdoc ::= "{" ws "\"tool\"" ws ":" ws "\"inspect_document\"" ws "," ws "\"environment\"" ws ":" ws string ws "," ws "\"path\"" ws ":" ws string ws "," ws "\"start\"" ws ":" ws number ws "," ws "\"count\"" ws ":" ws number ws "}"
+artifact ::= "{" ws "\"tool\"" ws ":" ws "\"read_artifact\"" ws "," ws "\"path\"" ws ":" ws string ws "}"
+strings ::= "[" ws (string (ws "," ws string)*)? ws "]"
+object ::= "{" ws (string ws ":" ws value (ws "," ws string ws ":" ws value)*)? ws "}"
+value ::= string | number | object | array | "true" | "false" | "null"
+array ::= "[" ws (value (ws "," ws value)*)? ws "]"
 number ::= "0" | [1-9] [0-9]{0,6}
 string ::= "\"" ([^"\\\x00-\x1F] | "\\" (["\\/bfnrt] | "u" [0-9a-fA-F]{4}))* "\""
 ws ::= [ \t\n\r]*
@@ -39,7 +47,9 @@ pub fn action_grammar(files: &[String], read_only: bool) -> io::Result<String> {
         grammar = grammar
             .replace(" | edit", "")
             .replace(" | create", "")
-            .replace(" | discard", "");
+            .replace(" | discard", "")
+            .replace(" | execute", "")
+            .replace(" | workplan", "");
     }
     if files.is_empty() {
         grammar = grammar
@@ -79,7 +89,7 @@ pub struct TaskArgs {
     #[cfg(feature = "gateway-http")]
     #[arg(long = "cloud-model")]
     pub cloud_model: Option<String>,
-    #[arg(long)]
+    #[arg(long, alias = "workspace")]
     pub repo: PathBuf,
     /// UTF-8 файл задания (до 16 KiB)
     #[arg(long)]
@@ -102,6 +112,12 @@ pub struct TaskArgs {
     /// Explicit trusted Docker check configuration; model cannot change image or argv
     #[arg(long)]
     pub check_config: Option<PathBuf>,
+    #[arg(long)]
+    pub environments: Option<PathBuf>,
+    #[arg(long = "allow-environment", requires = "environments")]
+    pub allowed_environments: Vec<String>,
+    #[arg(long, requires = "environments")]
+    pub artifacts_dir: Option<PathBuf>,
     /// Explicit local SQLite checkpoint store (contains selected source code)
     #[arg(long)]
     pub session_db: Option<PathBuf>,
@@ -130,7 +146,7 @@ pub struct TaskArgs {
 
 #[derive(Debug, Args)]
 pub struct ApplyArgs {
-    #[arg(long)]
+    #[arg(long, alias = "workspace")]
     pub repo: PathBuf,
     #[arg(long)]
     pub report: PathBuf,
@@ -145,6 +161,24 @@ pub struct ApplyArgs {
 #[derive(Debug, Deserialize, Serialize)]
 #[serde(tag = "tool", rename_all = "snake_case", deny_unknown_fields)]
 pub enum Action {
+    InspectDocument {
+        environment: String,
+        path: String,
+        start: usize,
+        count: usize,
+    },
+    ReadArtifact {
+        path: String,
+    },
+    RunScript {
+        environment: String,
+        script: String,
+        inputs: Vec<String>,
+        outputs: Vec<String>,
+    },
+    SetWorkPlan {
+        plan: crate::universal::WorkPlan,
+    },
     Verify,
     List,
     ListFiles {
@@ -225,6 +259,12 @@ pub struct VerificationEvidence {
 pub struct Report {
     pub schema_version: u32,
     pub workspace: PathBuf,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub work_plan: Option<crate::universal::WorkPlan>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub artifact_store: Option<PathBuf>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub file_proposals: Vec<crate::universal::artifacts::FileProposal>,
     pub status: String,
     #[serde(default)]
     pub outcome: TaskOutcome,
@@ -252,6 +292,26 @@ pub struct Report {
 }
 
 pub trait Model {
+    fn run_script(
+        &mut self,
+        _workspace: &Workspace,
+        _pending: &[Edit],
+        _environment: &str,
+        _script: &str,
+        _inputs: &[String],
+        _outputs: &[String],
+    ) -> io::Result<(
+        serde_json::Value,
+        Vec<crate::universal::artifacts::FileProposal>,
+    )> {
+        Err(io::Error::new(
+            io::ErrorKind::PermissionDenied,
+            "No execution permission",
+        ))
+    }
+    fn execution(&mut self) -> Option<&mut crate::universal::execution::ExecutionSession> {
+        None
+    }
     fn cancellation(&self) -> &std::sync::atomic::AtomicBool {
         static NEVER: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
         &NEVER
@@ -342,7 +402,14 @@ impl Model for Session<'_> {
             }
         }
         let mut grammar = action_grammar(&files, envelope["read_only"].as_bool().unwrap_or(true))?;
-        for (tool, branch) in [("verify", " | verify"), ("request_changes", " | review")] {
+        for (tool, branch) in [
+            ("verify", " | verify"),
+            ("request_changes", " | review"),
+            ("run_script", " | execute"),
+            ("set_work_plan", " | workplan"),
+            ("inspect_document", " | inspectdoc"),
+            ("read_artifact", " | artifact"),
+        ] {
             if !envelope["tools"]
                 .as_array()
                 .is_some_and(|tools| tools.iter().any(|entry| entry["tool"] == tool))
@@ -447,6 +514,9 @@ pub fn execute_workflow(
     let context = crate::project::inspect(workspace).unwrap_or_default();
     let mut report = previous.unwrap_or_else(|| Report {
         schema_version: 4,
+        work_plan: None,
+        artifact_store: None,
+        file_proposals: Vec::new(),
         workspace: workspace.root.clone(),
         status: "incomplete".into(),
         outcome: TaskOutcome::Incomplete,
@@ -469,7 +539,9 @@ pub fn execute_workflow(
     report.outcome = TaskOutcome::Incomplete;
     report.subagents = subagents;
     report.truncated_index = workspace.truncated;
-    if report.workspace != workspace.root || report.schema_version != 4 || report.calls >= max_calls
+    if report.workspace != workspace.root
+        || !matches!(report.schema_version, 4 | 5)
+        || report.calls >= max_calls
     {
         report.status = "invalid_resume_or_budget".into();
         return report;
@@ -593,6 +665,19 @@ pub fn execute_workflow(
                 serde_json::json!({"tool":"discard_proposal","path":example_path}),
                 serde_json::json!({"tool":"finish","summary":"result and limitations"}),
             ];
+            let execution_catalog = model.execution().map(|e| e.catalog());
+            if execution_catalog.is_some() {
+                tools.push(serde_json::json!({"tool":"inspect_document","environment":"registered-document-id","path":example_path,"start":0,"count":20}));
+            }
+            if !report.file_proposals.is_empty() {
+                tools.push(serde_json::json!({"tool":"read_artifact","path":report.file_proposals[0].path}));
+            }
+            if execution_catalog.is_some() && !role_spec.read_only() {
+                tools.push(serde_json::json!({"tool":"run_script","environment":"registered-id","script":"complete script; inputs at /source and outputs at /output","inputs":[example_path],"outputs":["result.txt"]}));
+            }
+            if !role_spec.read_only() {
+                tools.push(serde_json::json!({"tool":"set_work_plan","plan":{"schema_version":1,"goal":task,"technologies":[],"inputs":[],"outputs":[],"constraints":[],"steps":[],"required_capabilities":[],"acceptance":[]}}));
+            }
             if check.is_some() && !role_spec.read_only() {
                 tools.push(serde_json::json!({"tool":"verify"}));
             }
@@ -616,6 +701,7 @@ pub fn execute_workflow(
                     "remaining_calls":(budget-step).min(max_calls-report.calls),
                     "pending_paths":report.proposals.iter().map(|p| &p.path).collect::<Vec<_>>(),"writes_applied":false,
                     "completion_rule":"If pending proposals cover the task and any required verification is current and passed, finish. Otherwise inspect remaining files. Read pending content before revising it; old must match the current pending text. Discard a proposal to undo it."},
+                "technology_selection_policy":crate::universal::SELECTION_POLICY,"work_plan":report.work_plan,"execution_environments":execution_catalog,"file_proposals":report.file_proposals,
                 "task":task,"project_instructions":instructions,"active_project_instructions":active_instructions,"verification_required":check.is_some(),"verification_current":verification_current,
                 "verification_evidence":report.verifications.last(),
                 "project_context":context,"platform_guidance":context.profile.guidance(),
@@ -732,6 +818,10 @@ pub fn execute_workflow(
                 }
             };
             let tool = match &action {
+                Action::InspectDocument { .. } => "inspect_document",
+                Action::ReadArtifact { .. } => "read_artifact",
+                Action::RunScript { .. } => "run_script",
+                Action::SetWorkPlan { .. } => "set_work_plan",
                 Action::Verify => "verify",
                 Action::List => "list",
                 Action::ListFiles { .. } => "list_files",
@@ -746,7 +836,37 @@ pub fn execute_workflow(
                 Action::SearchDocs { .. } => "search_docs",
                 Action::Finish { .. } => "finish",
             };
+            if let Some(execution) = model.execution() {
+                execution.staged_files = report.file_proposals.clone();
+                execution.staged_store = report.artifact_store.clone();
+            }
             let outcome = match &action {
+                Action::ReadArtifact{path}=>{( || {let file=report.file_proposals.iter().find(|f|&f.path==path).ok_or_else(||io::Error::other("Artifact missing"))?;let store=crate::universal::artifacts::Store::open(report.artifact_store.as_ref().ok_or_else(||io::Error::other("Artifact store missing"))?)?;let bytes=store.get(&file.replacement)?;if bytes.len()>65536{return Ok(serde_json::json!({"path":path,"blob":file.replacement,"note":"Use document inspection for binary/large content"}));}match String::from_utf8(bytes){Ok(text)=>Ok(serde_json::json!({"path":path,"text":text,"untrusted":true})),Err(_)=>Ok(serde_json::json!({"path":path,"blob":file.replacement,"binary":true}))}})()},
+                Action::InspectDocument{environment,path,start,count}=>{( || {
+                    if *start>100000 || !(1..=200).contains(count){return Err(io::Error::other("Invalid document range"));}
+                    let script=format!("import json,lyra_documents as d\nfrom pathlib import Path\nPath('/output/inspection.json').write_text(json.dumps(d.inspect('/source/'+{}, {}, {}),ensure_ascii=False),encoding='utf-8')",serde_json::to_string(path).map_err(io::Error::other)?,start,count);
+                    let (_,files)=model.run_script(workspace,&report.proposals,environment,&script,std::slice::from_ref(path),&["inspection.json".into()])?;
+                    let result=files.first().ok_or_else(||io::Error::other("Document inspection failed"))?;
+                    let bytes=model.execution().ok_or_else(||io::Error::other("Environment unavailable"))?.store.get(&result.replacement)?;
+                    if bytes.len()>65536{return Err(io::Error::other("Inspection exceeds context bound"));}
+                    serde_json::from_slice(&bytes).map_err(io::Error::other)
+                })()},
+
+                Action::SetWorkPlan{plan}=> {if role_spec.read_only(){Err(io::Error::other("Read-only role cannot change work plan"))}else{plan.validate().map(|()|{report.work_plan=Some(plan.clone());serde_json::json!({"plan_accepted":true,"execution_granted":false})})}},
+                Action::RunScript{environment,script,inputs,outputs}=> {
+                    if role_spec.read_only(){Err(io::Error::other("Read-only role cannot execute scripts"))}
+                    else if let Some(root)=model.execution().map(|e|e.store.root.clone()) {
+                        model.run_script(workspace,&report.proposals,environment,script,inputs,outputs).and_then(|(value,files)|{
+                            if !files.is_empty(){
+                                let mut combined=report.file_proposals.clone();
+                                for file in files {combined.retain(|p|p.path!=file.path);combined.push(file);}
+                                if combined.len()+report.proposals.len()>32{return Err(io::Error::other("Too many proposals"));}
+                                if combined.iter().any(|p|report.proposals.iter().any(|t|t.path==p.path)){return Err(io::Error::other("Text and binary proposals overlap"));}
+                                report.file_proposals=combined;report.artifact_store=Some(root);report.schema_version=5;
+                            }Ok(value)
+                        })
+                    }else{Err(io::Error::new(io::ErrorKind::PermissionDenied,"No execution environment granted"))}
+                },
                 Action::Verify => {
                     if role_spec.read_only() {
                         Err(io::Error::new(io::ErrorKind::PermissionDenied, "Verify is a coder tool"))
@@ -1026,7 +1146,7 @@ pub fn execute_workflow(
     report.status = "completed".into();
     report.outcome = if verified {
         TaskOutcome::ChangesVerified
-    } else if report.proposals.is_empty() {
+    } else if report.proposals.is_empty() && report.file_proposals.is_empty() {
         TaskOutcome::AnalysisComplete
     } else {
         TaskOutcome::ChangesProposed
@@ -1052,6 +1172,9 @@ fn verification_matches(
     check: Option<&crate::executor::ExecutionRequest>,
     workspace: &Workspace,
 ) -> bool {
+    if !report.file_proposals.is_empty() {
+        return false;
+    }
     report.verifications.last().is_some_and(|evidence| {
         evidence.result.passed()
             && proposal_digest(&report.proposals)
@@ -1231,6 +1354,27 @@ fn cloud_task_model(
     }))
 }
 
+fn execution_session(
+    args: &TaskArgs,
+) -> io::Result<Option<crate::universal::execution::ExecutionSession>> {
+    args.environments
+        .as_ref()
+        .map(|p| {
+            let root = args.artifacts_dir.as_ref().ok_or_else(|| {
+                io::Error::other("--artifacts-dir is required for isolated execution")
+            })?;
+            let mut execution = crate::universal::execution::ExecutionSession::new(
+                crate::universal::environment::Registry::load(p)?,
+                args.allowed_environments.clone(),
+                root,
+            )?;
+            execution.deadline =
+                Some(std::time::Instant::now() + std::time::Duration::from_secs(args.timeout_secs));
+            Ok(execution)
+        })
+        .transpose()
+}
+
 pub fn task(args: TaskArgs, output: &mut impl Write) -> io::Result<()> {
     let started = std::time::Instant::now();
     let task = limited_file(&args.task_file, 16384)?;
@@ -1307,6 +1451,10 @@ pub fn task(args: TaskArgs, output: &mut impl Write) -> io::Result<()> {
             inner: &mut cloud,
             guidance: &skill_guidance,
         };
+        let mut model = crate::universal::execution::ExecutionModel {
+            inner: &mut model,
+            execution: execution_session(&args)?,
+        };
         let mut report = execute_workflow(
             &mut model,
             &mut workspace,
@@ -1339,7 +1487,7 @@ pub fn task(args: TaskArgs, output: &mut impl Write) -> io::Result<()> {
         }
         return Ok(());
     }
-    let model_path = args.model.ok_or_else(|| {
+    let model_path = args.model.clone().ok_or_else(|| {
         io::Error::new(
             io::ErrorKind::InvalidInput,
             "Specify --model or --provider-config",
@@ -1362,6 +1510,10 @@ pub fn task(args: TaskArgs, output: &mut impl Write) -> io::Result<()> {
         let mut model = SkilledModel {
             inner: &mut session,
             guidance: &skill_guidance,
+        };
+        let mut model = crate::universal::execution::ExecutionModel {
+            inner: &mut model,
+            execution: execution_session(&args)?,
         };
         let mut report = execute_workflow(
             &mut model,
@@ -1400,6 +1552,52 @@ pub fn task(args: TaskArgs, output: &mut impl Write) -> io::Result<()> {
 pub fn apply(args: ApplyArgs, output: &mut impl Write) -> io::Result<()> {
     let report: Report = serde_json::from_str(&limited_file(&args.report, 2 * 1024 * 1024)?)
         .map_err(io::Error::other)?;
+    if report.schema_version == 5 && !report.file_proposals.is_empty() {
+        if report.workspace != args.repo.canonicalize()?
+            || report.status != "completed"
+            || !matches!(
+                report.outcome,
+                TaskOutcome::ChangesProposed | TaskOutcome::ChangesVerified
+            )
+        {
+            return Err(io::Error::other("Incomplete report or wrong workspace"));
+        }
+        let store = crate::universal::artifacts::Store::open(
+            report
+                .artifact_store
+                .as_ref()
+                .ok_or_else(|| io::Error::other("Artifact store missing"))?,
+        )?;
+        let mut files = report.file_proposals.clone();
+        for text in &report.proposals {
+            files.push(crate::universal::artifacts::FileProposal {
+                path: text.path.clone(),
+                original: if text.create {
+                    None
+                } else {
+                    Some(store.put(text.original.as_bytes())?)
+                },
+                replacement: store.put(text.replacement.as_bytes())?,
+                inputs: Vec::new(),
+            });
+        }
+        // Index order is text proposals first in CLI and Desktop.
+        files.rotate_right(report.proposals.len());
+        let selected = if args.all {
+            files.as_slice()
+        } else {
+            std::slice::from_ref(
+                files
+                    .get(
+                        args.index
+                            .ok_or_else(|| io::Error::other("Index required"))?,
+                    )
+                    .ok_or_else(|| io::Error::other("Index missing"))?,
+            )
+        };
+        crate::universal::artifacts::publish(&args.repo, &store, selected, || Ok(()))?;
+        return writeln!(output, "Применено предложений: {}", selected.len());
+    }
     let edits = if args.all {
         report.proposals.as_slice()
     } else {

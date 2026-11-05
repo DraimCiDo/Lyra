@@ -11,6 +11,7 @@ use std::{
     path::{Path, PathBuf},
 };
 
+const BINARY_SCHEMA: &str = "CREATE TABLE binary_sources (session_id TEXT NOT NULL REFERENCES sessions(id) ON DELETE CASCADE, path TEXT NOT NULL, sha256 TEXT NOT NULL, bytes INTEGER NOT NULL, PRIMARY KEY(session_id,path))";
 const APPLICATION_ID: u32 = 0x4c595241;
 const SESSION_SCHEMA: &str = "CREATE TABLE sessions (id TEXT PRIMARY KEY, root TEXT NOT NULL, task TEXT NOT NULL, report TEXT, revision INTEGER NOT NULL DEFAULT 0)";
 const SOURCE_SCHEMA: &str = "CREATE TABLE source_files (session_id TEXT NOT NULL REFERENCES sessions(id) ON DELETE CASCADE, path TEXT NOT NULL, content TEXT NOT NULL, PRIMARY KEY(session_id,path))";
@@ -47,11 +48,19 @@ fn verify_database_format(
     if version == 0 && objects.is_empty() {
         return Ok(());
     }
-    let expected = [
-        ("sessions", SESSION_SCHEMA),
-        ("source_files", SOURCE_SCHEMA),
-    ];
-    if version != 1
+    let expected = if version == 2 {
+        vec![
+            ("binary_sources", BINARY_SCHEMA),
+            ("sessions", SESSION_SCHEMA),
+            ("source_files", SOURCE_SCHEMA),
+        ]
+    } else {
+        vec![
+            ("sessions", SESSION_SCHEMA),
+            ("source_files", SOURCE_SCHEMA),
+        ]
+    };
+    if !matches!(version, 1 | 2)
         || objects.len() != expected.len()
         || objects
             .iter()
@@ -76,6 +85,7 @@ fn error(error: impl std::fmt::Display) -> io::Error {
 type SessionMetadata = (String, String, Option<String>, i64);
 
 pub struct SessionStore {
+    blobs_root: PathBuf,
     connection: Connection,
     revisions: std::cell::RefCell<std::collections::HashMap<String, i64>>,
 }
@@ -134,7 +144,7 @@ impl SessionStore {
         let version: u32 = connection
             .query_row("PRAGMA user_version", [], |row| row.get(0))
             .map_err(error)?;
-        if version > 1 {
+        if version > 2 {
             return Err(error("Unsupported session database version"));
         }
         let application: u32 = connection
@@ -151,14 +161,22 @@ impl SessionStore {
             .pragma_update(None, "max_page_count", 32_u32 * 1024 * 1024 / page_size)
             .map_err(error)?;
         if version == 0 {
-            connection.execute_batch(&format!("BEGIN IMMEDIATE; {SESSION_SCHEMA}; {SOURCE_SCHEMA}; PRAGMA application_id={APPLICATION_ID}; PRAGMA user_version=1; COMMIT;")).map_err(error)?;
+            connection.execute_batch(&format!("BEGIN IMMEDIATE; {SESSION_SCHEMA}; {SOURCE_SCHEMA}; {BINARY_SCHEMA}; PRAGMA application_id={APPLICATION_ID}; PRAGMA user_version=2; COMMIT;")).map_err(error)?;
         } else if application == 0 {
             // Only the exact known v1 schema may be adopted; unrelated SQLite files are never initialized.
             connection
                 .pragma_update(None, "application_id", APPLICATION_ID)
                 .map_err(error)?;
         }
+        if version == 1 {
+            connection
+                .execute_batch(&format!(
+                    "BEGIN IMMEDIATE; {BINARY_SCHEMA}; PRAGMA user_version=2; COMMIT;"
+                ))
+                .map_err(error)?;
+        }
         Ok(Self {
+            blobs_root: path.with_extension("artifacts"),
             connection,
             revisions: Default::default(),
         })
@@ -174,22 +192,37 @@ impl SessionStore {
             .to_str()
             .ok_or_else(|| error("Session root must be UTF-8"))?
             .to_owned();
+        let nonce = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map_err(error)?
+            .as_nanos();
+        let id = format!("{}-{nonce}", std::process::id());
         let mut sources = Vec::new();
+        let mut binary = Vec::new();
+        let mut binary_bytes = 0usize;
         let mut total = 0usize;
         for path in workspace.files.clone() {
             crate::project::validate_path(&path, false)?;
-            let content = workspace.read_snapshot(&path)?;
+            let content = match workspace.read_snapshot(&path) {
+                Ok(text) => text,
+                Err(_) => {
+                    let bytes = crate::universal::artifacts::read(&workspace, &path)?;
+                    binary_bytes += bytes.len();
+                    if binary_bytes > crate::universal::artifacts::TOTAL_LIMIT {
+                        return Err(error("Binary snapshot exceeds 256 MiB"));
+                    }
+                    let blob = crate::universal::artifacts::Store::session(&self.blobs_root, &id)?
+                        .put(&bytes)?;
+                    binary.push((path, blob));
+                    continue;
+                }
+            };
             total += content.len();
             if total > SNAPSHOT_BUDGET {
                 return Err(error("Session snapshot exceeds 16 MiB"));
             }
             sources.push((path, content));
         }
-        let nonce = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map_err(error)?
-            .as_nanos();
-        let id = format!("{}-{nonce}", std::process::id());
         let transaction = self.connection.transaction().map_err(error)?;
         transaction
             .execute(
@@ -205,13 +238,26 @@ impl SessionStore {
                 )
                 .map_err(error)?;
         }
+        for (path, blob) in binary {
+            transaction
+                .execute(
+                    "INSERT INTO binary_sources(session_id,path,sha256,bytes) VALUES (?1,?2,?3,?4)",
+                    params![id, path, blob.sha256, blob.bytes as i64],
+                )
+                .map_err(error)?;
+        }
         transaction.commit().map_err(error)?;
         self.revisions.borrow_mut().insert(id.clone(), 0);
         Ok(id)
     }
 
     fn metadata(&self, id: &str) -> io::Result<SessionMetadata> {
-        if id.len() > 128 {
+        if id.is_empty()
+            || id.len() > 128
+            || !id
+                .bytes()
+                .all(|c| c.is_ascii_alphanumeric() || b"-_".contains(&c))
+        {
             return Err(error("Invalid session id"));
         }
         self.connection.query_row("SELECT root,task,report,revision FROM sessions WHERE id=?1 AND length(CAST(root AS BLOB))<=16384 AND length(CAST(task AS BLOB))<=16384 AND (report IS NULL OR length(CAST(report AS BLOB))<=2097152)", [id], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?))).map_err(error)
@@ -259,11 +305,43 @@ impl SessionStore {
             }
             std::fs::write(destination, content)?;
         }
+        let mut binaries = self
+            .connection
+            .prepare("SELECT path,sha256,bytes FROM binary_sources WHERE session_id=?1 LIMIT 2049")
+            .map_err(error)?;
+        let entries = binaries
+            .query_map([id], |r| {
+                Ok((
+                    r.get::<_, String>(0)?,
+                    r.get::<_, String>(1)?,
+                    r.get::<_, u32>(2)? as usize,
+                ))
+            })
+            .map_err(error)?;
+        let mut total_binary = 0usize;
+        for entry in entries {
+            let (path, sha256, bytes) = entry.map_err(error)?;
+            crate::project::validate_path(&path, false)?;
+            total_binary += bytes;
+            if total_binary > crate::universal::artifacts::TOTAL_LIMIT {
+                return Err(error("Binary snapshot exceeds limits"));
+            }
+            let content = crate::universal::artifacts::Store::session(&self.blobs_root, id)?
+                .get(&crate::universal::artifacts::Blob { sha256, bytes })?;
+            let destination = directory.path().join(&path);
+            if destination.exists() {
+                return Err(error("Duplicate binary/text source"));
+            }
+            if let Some(parent) = destination.parent() {
+                std::fs::create_dir_all(parent)?;
+            }
+            std::fs::write(destination, content)?;
+        }
         let mut report: Option<Report> = report
             .map(|json| serde_json::from_str(&json).map_err(error))
             .transpose()?;
         if let Some(report) = &mut report {
-            if report.schema_version != 4
+            if !matches!(report.schema_version, 4 | 5)
                 || report.workspace != Path::new(&root)
                 || report.calls > 256
                 || report.proposals.len() > crate::workspace::MAX_PROPOSALS
@@ -289,6 +367,22 @@ impl SessionStore {
             .ok_or_else(|| error("Materialize the session before checkpointing"))?;
         let mut value = serde_json::to_value(report).map_err(error)?;
         value["workspace"] = serde_json::Value::String(root);
+        if !report.file_proposals.is_empty() {
+            let source = crate::universal::artifacts::Store::open(
+                report
+                    .artifact_store
+                    .as_ref()
+                    .ok_or_else(|| error("Artifact store missing"))?,
+            )?;
+            let destination = crate::universal::artifacts::Store::session(&self.blobs_root, id)?;
+            for f in &report.file_proposals {
+                destination.put(&source.get(&f.replacement)?)?;
+                if let Some(b) = &f.original {
+                    destination.put(&source.get(b)?)?;
+                }
+            }
+            value["artifact_store"] = serde_json::to_value(destination.root).map_err(error)?;
+        }
         let json = serde_json::to_string(&value).map_err(error)?;
         if json.len() > REPORT_LIMIT {
             return Err(error("Session report exceeds 2 MiB"));
@@ -318,11 +412,26 @@ impl SessionStore {
     }
 
     pub fn delete(&mut self, id: &str) -> io::Result<bool> {
-        Ok(self
+        if !self.exists(id)? {
+            return Ok(false);
+        }
+        self.metadata(id)?;
+        let deleted = self
             .connection
             .execute("DELETE FROM sessions WHERE id=?1", [id])
             .map_err(error)?
-            == 1)
+            != 0;
+        if deleted {
+            let root = self.blobs_root.join(id);
+            if root.try_exists()? {
+                let parent = cap_std::fs::Dir::open_ambient_dir(
+                    &self.blobs_root,
+                    cap_std::ambient_authority(),
+                )?;
+                parent.remove_dir_all(id)?;
+            }
+        }
+        Ok(deleted)
     }
 
     pub fn list(&self, offset: usize, limit: usize) -> io::Result<SessionPage> {

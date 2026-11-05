@@ -12,7 +12,7 @@ pub fn starter(args: &StarterArgs) -> io::Result<Blueprint> {
         ));
     }
     profile::version_text(&args.target_version)?;
-    let mut plan=Blueprint{schema_version:1,name:args.name.clone(),profile:args.profile,target_version:args.target_version.clone(),summary:format!("Minimal {} starter; the requested feature is not implemented yet.",args.profile.label()),requirements:if args.task.is_empty(){vec![]}else{vec![if args.task.len()<=2048 {args.task.clone()}else{"Full requested task is recorded in README.md".into()}]},assumptions:vec!["This is a starter, not an AI implementation of the task. Build and runtime tests have not been run by Lyra.".into()],questions:Vec::new(),files:Vec::new(),required_files:Vec::new(),provided_sources:Vec::new()};
+    let mut plan=Blueprint{work_plan:None,schema_version:1,name:args.name.clone(),profile:args.profile,target_version:args.target_version.clone(),summary:format!("Minimal {} starter; the requested feature is not implemented yet.",args.profile.label()),requirements:if args.task.is_empty(){vec![]}else{vec![if args.task.len()<=2048 {args.task.clone()}else{"Full requested task is recorded in README.md".into()}]},assumptions:vec!["This is a starter, not an AI implementation of the task. Build and runtime tests have not been run by Lyra.".into()],questions:Vec::new(),files:Vec::new(),required_files:Vec::new(),provided_sources:Vec::new()};
     let mut add = |path: &str, content: String| {
         plan.files.push(PlannedFile {
             path: path.into(),

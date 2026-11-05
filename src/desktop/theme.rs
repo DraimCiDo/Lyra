@@ -616,6 +616,25 @@ impl Language {
             }
             "Предыдущая страница" => "Previous page",
             "Следующая страница" => "Next page",
+            "Выбранные технологии и план" => {
+                "Selected technologies and plan"
+            }
+            "Необходимые возможности" => "Required capabilities",
+            "Сохранить копию для просмотра…" => {
+                "Save a copy for review…"
+            }
+            "Среды выполнения и документы" => {
+                "Execution environments and documents"
+            }
+            "Выбрать реестр сред…" => "Choose environment registry…",
+            "Скачать образ этой среды" => "Download this environment image",
+            "Отключить выполнение скриптов" => {
+                "Disable script execution"
+            }
+            "Выбрать входные файлы…" => "Choose input files…",
+            "Скрипты выполняются без сети в разрешенных контейнерах. Исходники меняются после применения результата." => {
+                "Scripts run offline in permitted containers. Source files change only when results are applied."
+            }
             "Применить весь набор…" => "Apply all changes…",
             "Применить весь набор?" => "Apply all changes?",
             "Восстановление проекта" => "Project recovery",

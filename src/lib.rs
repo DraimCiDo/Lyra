@@ -20,6 +20,7 @@ pub mod skill_package;
 pub mod skills;
 pub mod task_context;
 pub mod task_report;
+pub mod universal;
 pub mod workspace;
 
 use clap::{Parser, Subcommand};
@@ -40,6 +41,8 @@ pub struct Cli {
 
 #[derive(Debug, Subcommand)]
 pub enum Command {
+    /// Inspect or explicitly prepare registered execution environments
+    Environment(universal::environment::EnvironmentArgs),
     /// Создание проектов с нуля: blueprint, каркас, явное создание, контекст
     Project(project::ProjectArgs),
     /// Локальная документация, поиск и явная загрузка официальных источников
@@ -128,6 +131,7 @@ pub enum Command {
 
 pub fn run(cli: Cli, output: &mut impl Write) -> io::Result<()> {
     match cli.command {
+        Command::Environment(args) => universal::environment::run(args, output),
         Command::Project(args) => project::run(args, output),
         Command::Docs(args) => knowledge::run(args, output),
         Command::Task(args) => agent::task(*args, output),

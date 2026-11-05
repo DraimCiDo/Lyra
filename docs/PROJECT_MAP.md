@@ -116,3 +116,8 @@ Chat reliability/activity: [план](plans/0014-chat-reliability-activity.md), 
 Ограничения durable report: [task_report](../src/task_report.rs).
 Сравнение локальных моделей: [matrix runner](../tools/evaluate_models.py),
 [измерение ресурсов](../tools/eval_resources.py).
+
+Универсальные задачи: [контракты/WorkPlan](../src/universal/mod.rs),
+[реестр](../src/universal/environment.rs), [исполнение](../src/universal/execution.rs),
+[blobs/publication](../src/universal/artifacts.rs), [Office/PDF](../tools/documents/lyra_documents.py),
+[инструкция](UNIVERSAL.md), [план](plans/0019-universal-tasks.md).

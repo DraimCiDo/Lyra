@@ -13,9 +13,10 @@ pub(super) struct RecoveryView {
     pub files: Vec<RecoveryFile>,
 }
 pub(super) fn can_apply_all(report: &Report, applied: &[usize]) -> bool {
-    !report.proposals.is_empty()
-        && report.proposals.len() <= crate::workspace::MAX_PROPOSALS
-        && (0..report.proposals.len()).all(|i| can_apply(report, i, applied))
+    report.proposals.len() + report.file_proposals.len() > 0
+        && report.proposals.len() + report.file_proposals.len() <= crate::workspace::MAX_PROPOSALS
+        && (0..report.proposals.len() + report.file_proposals.len())
+            .all(|i| can_apply(report, i, applied))
 }
 impl Desktop {
     pub(super) fn prepare_publication_job(
@@ -94,7 +95,8 @@ impl Desktop {
             Operation::Apply(i) => self.applied.push(i),
             Operation::ApplyAll => {
                 if let Some(report) = &self.report {
-                    self.applied = (0..report.proposals.len()).collect();
+                    self.applied =
+                        (0..report.proposals.len() + report.file_proposals.len()).collect();
                 }
             }
             _ => {
@@ -294,6 +296,81 @@ impl Desktop {
     }
     pub(super) fn workflow_settings(&mut self, ui: &mut egui::Ui) {
         let l = self.prefs.language;
+        ui.separator();
+        ui.label(l.text("Среды выполнения и документы"));
+        if ui.button(l.text("Выбрать реестр сред…")).clicked()
+            && let Some(path) = rfd::FileDialog::new()
+                .add_filter("JSON", &["json"])
+                .pick_file()
+        {
+            match crate::universal::environment::Registry::load(&path) {
+                Ok(_) => {
+                    self.prefs.environments = Some(path);
+                    self.prefs.allowed_environments.clear();
+                }
+                Err(e) => self.fail(e),
+            }
+        }
+        if let Some(path) = &self.prefs.environments {
+            ui.label(path.display().to_string());
+            match crate::universal::environment::Registry::load(path) {
+                Ok(registry) => {
+                    for env in registry.environments {
+                        let mut granted = self.prefs.allowed_environments.contains(&env.id);
+                        if ui
+                            .checkbox(&mut granted, format!("{} — {}", env.id, env.description))
+                            .changed()
+                        {
+                            self.prefs.allowed_environments.retain(|s| s != &env.id);
+                            if granted {
+                                self.prefs.allowed_environments.push(env.id.clone());
+                            }
+                        }
+                        ui.small(&env.image);
+                        if ui
+                            .add_enabled(
+                                self.job.is_none(),
+                                egui::Button::new(l.text("Скачать образ этой среды")),
+                            )
+                            .clicked()
+                        {
+                            self.environment_prepare_id = env.id;
+                            if let Err(e) = self.start(Operation::EnvironmentPrepare, ui.ctx()) {
+                                self.fail(e);
+                            }
+                        }
+                    }
+                }
+                Err(e) => {
+                    ui.label(e.to_string());
+                }
+            }
+            if ui.button(l.text("Отключить выполнение скриптов")).clicked()
+            {
+                self.prefs.environments = None;
+                self.prefs.allowed_environments.clear();
+            }
+        }
+        if ui.button(l.text("Выбрать входные файлы…")).clicked()
+            && let Some(paths) = rfd::FileDialog::new().pick_files()
+        {
+            if let Some(root) = &self.prefs.repo {
+                let selected = paths
+                    .iter()
+                    .map(|p| {
+                        p.strip_prefix(root)
+                            .map(|p| p.to_string_lossy().replace('\\', "/"))
+                    })
+                    .collect::<Result<Vec<_>, _>>();
+                match selected {
+                    Ok(paths) if paths.len() <= 32 => self.prefs.files = paths.join("\n"),
+                    _ => self.fail("Выберите до 32 файлов внутри рабочей папки"),
+                }
+            } else {
+                self.fail("Сначала выберите рабочую папку")
+            }
+        }
+        ui.label(l.text("Скрипты выполняются без сети в разрешенных контейнерах. Исходники меняются после применения результата."));
         ui.separator();
         ui.label(l.text("Проверка проекта в Docker"));
         if let Some(path) = &self.prefs.check_config {

@@ -36,6 +36,9 @@ pub struct Preferences {
     pub cloud_model: String,
     pub documentation: Option<PathBuf>,
     pub check_config: Option<PathBuf>,
+    pub environments: Option<PathBuf>,
+    pub environment_manifest_sha256: Option<String>,
+    pub allowed_environments: Vec<String>,
     pub save_task_sessions: bool,
     pub task_session_db: Option<PathBuf>,
     pub files: String,
@@ -71,6 +74,9 @@ impl Default for Preferences {
             cloud_model: String::new(),
             documentation: None,
             check_config: None,
+            environments: None,
+            environment_manifest_sha256: None,
+            allowed_environments: Vec::new(),
             save_task_sessions: false,
             task_session_db: None,
             files: String::new(),
@@ -124,6 +130,11 @@ impl Preferences {
                 == self.active_skills.len()
             && self.cloud_provider.len() <= 128
             && self.cloud_model.len() <= 256
+            && self.allowed_environments.len() <= 64
+            && self
+                .allowed_environments
+                .iter()
+                .all(|s| crate::universal::environment::valid_id(s))
             && self.files.len() <= 32768
             && self.files.lines().filter(|l| !l.trim().is_empty()).count() <= 32
             && [
@@ -133,6 +144,7 @@ impl Preferences {
                 &self.provider_registry,
                 &self.skill_manifest,
                 &self.check_config,
+                &self.environments,
                 &self.task_session_db,
             ]
             .into_iter()

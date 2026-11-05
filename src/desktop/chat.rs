@@ -122,8 +122,9 @@ impl Chat {
 
 /// Controller facts stay separate from unverified model summaries.
 fn task_facts(report: &crate::agent::Report, language: Language) -> String {
-    let count = report.proposals.len();
-    let verified = report.outcome == crate::agent::TaskOutcome::ChangesVerified
+    let count = report.proposals.len() + report.file_proposals.len();
+    let verified = report.file_proposals.is_empty()
+        && report.outcome == crate::agent::TaskOutcome::ChangesVerified
         && report
             .verifications
             .last()

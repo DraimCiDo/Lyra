@@ -61,6 +61,11 @@ impl ExecutionRequest {
                     && digest.len() == 64
                     && digest.bytes().all(|c| c.is_ascii_hexdigit())
             });
+        let pinned = pinned
+            || self
+                .image
+                .strip_prefix("sha256:")
+                .is_some_and(|s| s.len() == 64 && s.bytes().all(|b| b.is_ascii_hexdigit()));
         if !pinned
             || self.program.is_empty()
             || self.program.starts_with('-')
@@ -80,7 +85,7 @@ impl ExecutionRequest {
         Ok(())
     }
 
-    fn command(&self, source: &Path, name: &str) -> io::Result<Command> {
+    pub(crate) fn command(&self, source: &Path, name: &str) -> io::Result<Command> {
         self.validate()?;
         let path = source
             .to_str()
@@ -160,11 +165,28 @@ fn bounded_read(mut pipe: impl Read, limit: usize) -> io::Result<(String, bool)>
     Ok((String::from_utf8_lossy(&kept).into_owned(), truncated))
 }
 
-fn capture(
-    mut command: Command,
+pub(crate) fn capture(
+    command: Command,
     timeout: Duration,
     cancel: &AtomicBool,
 ) -> io::Result<VerificationResult> {
+    capture_inner(command, timeout, cancel, OUTPUT_LIMIT, false).map(|r| r.0)
+}
+pub(crate) fn capture_binary(
+    command: Command,
+    timeout: Duration,
+    cancel: &AtomicBool,
+    limit: usize,
+) -> io::Result<(VerificationResult, Vec<u8>)> {
+    capture_inner(command, timeout, cancel, limit, true)
+}
+fn capture_inner(
+    mut command: Command,
+    timeout: Duration,
+    cancel: &AtomicBool,
+    limit: usize,
+    binary: bool,
+) -> io::Result<(VerificationResult, Vec<u8>)> {
     let started = Instant::now();
     let mut child = command
         .stdin(Stdio::null())
@@ -181,8 +203,22 @@ fn capture(
         .ok_or_else(|| io::Error::other("Missing check stderr"))?;
     let out = match thread::Builder::new()
         .name("lyra-check-stdout".into())
-        .spawn(move || bounded_read(stdout, OUTPUT_LIMIT))
-    {
+        .spawn(move || {
+            let mut kept = Vec::new();
+            let mut chunk = [0; 8192];
+            let mut cut = false;
+            let mut pipe = stdout;
+            loop {
+                let n = pipe.read(&mut chunk)?;
+                if n == 0 {
+                    break;
+                }
+                let take = n.min(limit.saturating_sub(kept.len()));
+                kept.extend_from_slice(&chunk[..take]);
+                cut |= take < n;
+            }
+            Ok::<_, io::Error>((kept, cut))
+        }) {
         Ok(reader) => reader,
         Err(error) => {
             let _ = child.kill();
@@ -228,18 +264,26 @@ fn capture(
     let (stderr, err_cut) = err
         .join()
         .map_err(|_| io::Error::other("Check stderr reader failed"))??;
-    Ok(VerificationResult {
-        exit_code: status?.code(),
-        timed_out,
-        cancelled,
-        stdout,
-        stderr,
-        output_truncated: out_cut || err_cut,
-        elapsed_ms: started.elapsed().as_millis() as u64,
-        cleanup_confirmed: false,
-        source_sha256: None,
-        source_scope: Vec::new(),
-    })
+    let text = if binary {
+        String::new()
+    } else {
+        String::from_utf8_lossy(&stdout).into_owned()
+    };
+    Ok((
+        VerificationResult {
+            exit_code: status?.code(),
+            timed_out,
+            cancelled,
+            stdout: text,
+            stderr,
+            output_truncated: out_cut || err_cut,
+            elapsed_ms: started.elapsed().as_millis() as u64,
+            cleanup_confirmed: false,
+            source_sha256: None,
+            source_scope: Vec::new(),
+        },
+        if binary { stdout } else { Vec::new() },
+    ))
 }
 
 #[derive(Deserialize)]
@@ -312,7 +356,7 @@ fn image_metadata_bounded(image: &serde_json::Value) -> bool {
     image["os"] == "linux" && image.get("volumes").is_some_and(image_mounts_bounded)
 }
 
-fn preflight_image(image: &str, cancel: &AtomicBool) -> io::Result<()> {
+pub(crate) fn preflight_image(image: &str, cancel: &AtomicBool) -> io::Result<()> {
     let mut command = Command::new("docker");
     command.args([
         "image",

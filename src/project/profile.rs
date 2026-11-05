@@ -47,7 +47,7 @@ impl Profile {
     ];
     pub fn label(self) -> &'static str {
         match self {
-            Self::Generic => "Другой / выбор AI",
+            Self::Generic => "Автовыбор технологий",
             Self::Rust => "Rust",
             Self::Python => "Python",
             Self::JavaScript => "JavaScript",
@@ -88,7 +88,7 @@ impl Profile {
     pub fn guidance(self) -> &'static str {
         match self {
             Self::Generic => {
-                "Choose a stack from the actual requirements and platform. Ask questions for material unknowns. Do not default every project to Rust. Define measurable acceptance criteria and keep the first implementation small."
+                "Choose any language, combination of technologies, document tool or no-code operation from actual requirements and platform. Existing presets do not limit available technologies. Ask questions for material unknowns. Do not default every project to Rust. Define measurable acceptance criteria and keep the first implementation small."
             }
             Self::Rust => {
                 "Use Cargo and Rust's standard library first. No optimization claims without measurements. Avoid unnecessary unsafe and dependencies. Add executable tests for behavior."
@@ -198,9 +198,6 @@ pub fn infer(task: &str) -> Profile {
         Profile::Java
     } else if has(".net") || has("c#") {
         Profile::Dotnet
-    } else if has("website") || has("landing") || has("сайт") || has("сайта") || has("лендинг")
-    {
-        Profile::VueTypeScript
     } else {
         Profile::Generic
     }

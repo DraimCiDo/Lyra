@@ -69,3 +69,6 @@ DLL runtime не входят в архив; инструкция и остал�
 Веб-профиль Vue/TypeScript и визуальные критерии описаны в `docs/WEB_PROJECTS.md`.
 Проверка независимого корпуса и границы оценок качества — `docs/EVALUATION.md`;
 developer harness требует checkout исходного репозитория и отдельные toolchains.
+
+Универсальные задачи, дополнительные языки и Office/PDF: `docs/UNIVERSAL.md`.
+Manifest сред находится в `environments/`; подготовка Docker-среды явная.
