@@ -265,6 +265,8 @@ pub struct Report {
     pub artifact_store: Option<PathBuf>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub file_proposals: Vec<crate::universal::artifacts::FileProposal>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub executions: Vec<crate::universal::execution::ExecutionRecord>,
     pub status: String,
     #[serde(default)]
     pub outcome: TaskOutcome,
@@ -517,6 +519,7 @@ pub fn execute_workflow(
         work_plan: None,
         artifact_store: None,
         file_proposals: Vec::new(),
+        executions: Vec::new(),
         workspace: workspace.root.clone(),
         status: "incomplete".into(),
         outcome: TaskOutcome::Incomplete,
@@ -702,7 +705,7 @@ pub fn execute_workflow(
                     "remaining_calls":(budget-step).min(max_calls-report.calls),
                     "pending_paths":report.proposals.iter().map(|p| &p.path).collect::<Vec<_>>(),"writes_applied":false,
                     "completion_rule":"If pending proposals cover the task and any required verification is current and passed, finish. Otherwise inspect remaining files. Read pending content before revising it; old must match the current pending text. Discard a proposal to undo it."},
-                "technology_selection_policy":crate::universal::SELECTION_POLICY,"work_plan":report.work_plan,"execution_environments":execution_catalog,"file_proposals":report.file_proposals,
+                "technology_selection_policy":crate::universal::SELECTION_POLICY,"work_plan":report.work_plan,"execution_environments":execution_catalog,"file_proposals":report.file_proposals.iter().map(|p|serde_json::json!({"path":p.path,"replacement":p.replacement,"create":p.original.is_none()})).collect::<Vec<_>>(),"last_execution":report.executions.last().map(|r|serde_json::json!({"environment":r.environment,"image":r.image,"script_sha256":r.script_sha256,"exit_code":r.exit_code,"timed_out":r.timed_out,"cancelled":r.cancelled,"cleanup_confirmed":r.cleanup_confirmed})),
                 "task":task,"project_instructions":instructions,"active_project_instructions":active_instructions,"verification_required":check.is_some(),"verification_current":verification_current,
                 "verification_evidence":report.verifications.last(),
                 "project_context":context,"platform_guidance":context.profile.guidance(),
@@ -845,24 +848,30 @@ pub fn execute_workflow(
                 Action::ReadArtifact{path}=>{( || {let file=report.file_proposals.iter().find(|f|&f.path==path).ok_or_else(||io::Error::other("Artifact missing"))?;let store=crate::universal::artifacts::Store::open(report.artifact_store.as_ref().ok_or_else(||io::Error::other("Artifact store missing"))?)?;let bytes=store.get(&file.replacement)?;if bytes.len()>65536{return Ok(serde_json::json!({"path":path,"blob":file.replacement,"note":"Use document inspection for binary/large content"}));}match String::from_utf8(bytes){Ok(text)=>Ok(serde_json::json!({"path":path,"text":text,"untrusted":true})),Err(_)=>Ok(serde_json::json!({"path":path,"blob":file.replacement,"binary":true}))}})()},
                 Action::InspectDocument{environment,path,start,count}=>{( || {
                     if *start>100000 || !(1..=200).contains(count){return Err(io::Error::other("Invalid document range"));}
+                    let extension=std::path::Path::new(path).extension().and_then(|s|s.to_str()).unwrap_or_default().to_ascii_lowercase();
+                    if !["docx","xlsx","pptx","pdf","txt","md","csv","json","html"].contains(&extension.as_str()){return Err(io::Error::other("Use read_file or an explicitly granted script for this input type"));}
                     let script=format!("import json,lyra_documents as d\nfrom pathlib import Path\nPath('/output/inspection.json').write_text(json.dumps(d.inspect('/source/'+{}, {}, {}),ensure_ascii=False),encoding='utf-8')",serde_json::to_string(path).map_err(io::Error::other)?,start,count);
-                    let (_,files)=model.run_script(workspace,&report.proposals,environment,&script,std::slice::from_ref(path),&["inspection.json".into()])?;
-                    let result=files.first().ok_or_else(||io::Error::other("Document inspection failed"))?;
+                    let (execution,files)=model.run_script(workspace,&report.proposals,environment,&script,std::slice::from_ref(path),&["inspection.json".into()])?;
+                    crate::universal::execution::record(&mut report,&execution);
+                    let result=files.first().ok_or_else(||io::Error::other(format!("Document inspection failed: {}",crate::task_report::diagnostic(execution["execution"]["stderr"].as_str().unwrap_or_default()))))?;
                     let bytes=model.execution().ok_or_else(||io::Error::other("Environment unavailable"))?.store.get(&result.replacement)?;
                     if bytes.len()>65536{return Err(io::Error::other("Inspection exceeds context bound"));}
                     serde_json::from_slice(&bytes).map_err(io::Error::other)
                 })()},
 
-                Action::SetWorkPlan{plan}=> {if role_spec.read_only(){Err(io::Error::other("Read-only role cannot change work plan"))}else{plan.validate().map(|()|{report.work_plan=Some(plan.clone());serde_json::json!({"plan_accepted":true,"execution_granted":false})})}},
+                Action::SetWorkPlan{plan}=> {if role_spec.read_only(){Err(io::Error::other("Read-only role cannot change work plan"))}else{plan.validate().map(|()|{report.work_plan=Some(plan.clone());report.schema_version=5;serde_json::json!({"plan_accepted":true,"execution_granted":false})})}},
                 Action::RunScript{environment,script,inputs,outputs}=> {
                     if role_spec.read_only(){Err(io::Error::other("Read-only role cannot execute scripts"))}
                     else if let Some(root)=model.execution().map(|e|e.store.root.clone()) {
                         model.run_script(workspace,&report.proposals,environment,script,inputs,outputs).and_then(|(value,files)|{
+                            crate::universal::execution::record(&mut report,&value);
                             if !files.is_empty(){
                                 let mut combined=report.file_proposals.clone();
                                 for file in files {combined.retain(|p|p.path!=file.path);combined.push(file);}
                                 if combined.len()+report.proposals.len()>32{return Err(io::Error::other("Too many proposals"));}
                                 if combined.iter().any(|p|report.proposals.iter().any(|t|t.path==p.path)){return Err(io::Error::other("Text and binary proposals overlap"));}
+                                if serde_json::to_vec(&combined).map_err(io::Error::other)?.len()>256*1024{return Err(io::Error::other("File proposal metadata exceeds 256 KiB"));}
+                                for file in &combined{if file.original.is_none(){workspace.new_path(&file.path)?;}}
                                 report.file_proposals=combined;report.artifact_store=Some(root);report.schema_version=5;
                             }Ok(value)
                         })
@@ -1025,6 +1034,8 @@ pub fn execute_workflow(
                 tool: tool.into(),
                 outcome: label,
                 argument: match &action {
+                    Action::RunScript { environment, .. }
+                    | Action::InspectDocument { environment, .. } => Some(environment.clone()),
                     Action::ReadFile { path }
                     | Action::ReadRange { path, .. }
                     | Action::ProposeEdit { path, .. }
@@ -1087,7 +1098,14 @@ pub fn execute_workflow(
                 }
                 _ => serde_json::to_value(&action).unwrap_or(serde_json::Value::Null),
             };
-            let signature = serde_json::json!({"action":recorded,"result":observation,"proposal_state":proposal_digest(&report.proposals).ok()}).to_string();
+            let mut stable_observation = observation.clone();
+            if let Some(data) = stable_observation["data"].as_object_mut() {
+                data.remove("elapsed_ms");
+                if let Some(execution) = data.get_mut("execution").and_then(|v| v.as_object_mut()) {
+                    execution.remove("elapsed_ms");
+                }
+            }
+            let signature = serde_json::json!({"action":recorded,"result":stable_observation,"proposal_state":proposal_digest(&report.proposals).ok()}).to_string();
             if signature == last_observation {
                 unchanged_steps += 1;
             } else {
@@ -1357,6 +1375,7 @@ fn cloud_task_model(
 
 fn execution_session(
     args: &TaskArgs,
+    started: std::time::Instant,
 ) -> io::Result<Option<crate::universal::execution::ExecutionSession>> {
     args.environments
         .as_ref()
@@ -1382,8 +1401,7 @@ fn execution_session(
                     "Choose an artifact store outside reserved publication backup storage",
                 ));
             }
-            execution.deadline =
-                Some(std::time::Instant::now() + std::time::Duration::from_secs(args.timeout_secs));
+            execution.deadline = Some(started + std::time::Duration::from_secs(args.timeout_secs));
             Ok(execution)
         })
         .transpose()
@@ -1467,7 +1485,7 @@ pub fn task(args: TaskArgs, output: &mut impl Write) -> io::Result<()> {
         };
         let mut model = crate::universal::execution::ExecutionModel {
             inner: &mut model,
-            execution: execution_session(&args)?,
+            execution: execution_session(&args, started)?,
         };
         let mut report = execute_workflow(
             &mut model,
@@ -1527,7 +1545,7 @@ pub fn task(args: TaskArgs, output: &mut impl Write) -> io::Result<()> {
         };
         let mut model = crate::universal::execution::ExecutionModel {
             inner: &mut model,
-            execution: execution_session(&args)?,
+            execution: execution_session(&args, started)?,
         };
         let mut report = execute_workflow(
             &mut model,
@@ -1625,10 +1643,10 @@ pub fn apply(args: ApplyArgs, output: &mut impl Write) -> io::Result<()> {
                 .ok_or_else(|| io::Error::other("Предложение не найдено."))?,
         )
     };
-    if !matches!(report.schema_version, 1..=4)
+    if !matches!(report.schema_version, 1..=5)
         || report.schema_version == 1 && edits.iter().any(|edit| edit.create)
         || report.status != "completed"
-        || report.schema_version == 4
+        || report.schema_version >= 4
             && !matches!(
                 report.outcome,
                 TaskOutcome::ChangesProposed | TaskOutcome::ChangesVerified

@@ -1273,6 +1273,15 @@ impl Desktop {
             .truncate(),
         )
         .on_hover_text(report.workspace.display().to_string());
+        if let Some(run) = report.executions.last() {
+            ui.label(format!(
+                "{} · {} · exit {:?}",
+                l.text("Среда выполнения"),
+                run.environment,
+                run.exit_code
+            ))
+            .on_hover_text(&run.image);
+        }
         if let Some(plan) = &report.work_plan {
             ui.collapsing(
                 l.text("Выбранные технологии и план"),
@@ -1307,6 +1316,12 @@ impl Desktop {
                             .proposals
                             .get(self.selected)
                             .map(|e| e.path.as_str())
+                            .or_else(|| {
+                                self.selected
+                                    .checked_sub(report.proposals.len())
+                                    .and_then(|i| report.file_proposals.get(i))
+                                    .map(|f| f.path.as_str())
+                            })
                             .unwrap_or("—"),
                     )
                     .show_ui(ui, |ui| {
@@ -1410,8 +1425,10 @@ impl Desktop {
                         let decoded = (|| -> io::Result<egui::ColorImage> {
                             let bytes = crate::universal::artifacts::Store::open(root)?
                                 .get(&file.replacement)?;
-                            let mut reader = image::ImageReader::new(std::io::Cursor::new(bytes))
-                                .with_guessed_format()?;
+                            let mut reader = image::ImageReader::with_format(
+                                std::io::Cursor::new(bytes),
+                                image::ImageFormat::Png,
+                            );
                             let mut limits = image::Limits::default();
                             limits.max_image_width = Some(2048);
                             limits.max_image_height = Some(2048);

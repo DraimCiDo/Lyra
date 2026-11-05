@@ -67,6 +67,7 @@ impl ExecutionRequest {
                 .strip_prefix("sha256:")
                 .is_some_and(|s| s.len() == 64 && s.bytes().all(|b| b.is_ascii_hexdigit()));
         if !pinned
+            || self.image.len() > 1024
             || self.program.is_empty()
             || self.program.starts_with('-')
             || self.program.len() > 1024
@@ -170,7 +171,32 @@ pub(crate) fn capture(
     timeout: Duration,
     cancel: &AtomicBool,
 ) -> io::Result<VerificationResult> {
-    capture_inner(command, timeout, cancel, OUTPUT_LIMIT, false).map(|r| r.0)
+    capture_inner(command, timeout, cancel, OUTPUT_LIMIT, false, false).map(|r| r.0)
+}
+pub(crate) fn capture_build(
+    command: Command,
+    timeout: Duration,
+    cancel: &AtomicBool,
+) -> io::Result<VerificationResult> {
+    capture_inner(command, timeout, cancel, OUTPUT_LIMIT, false, true).map(|r| r.0)
+}
+fn bounded_tail(mut pipe: impl Read, limit: usize) -> io::Result<(String, bool)> {
+    let mut kept = std::collections::VecDeque::new();
+    let mut chunk = [0; 8192];
+    let mut cut = false;
+    loop {
+        let n = pipe.read(&mut chunk)?;
+        if n == 0 {
+            break;
+        }
+        kept.extend(&chunk[..n]);
+        if kept.len() > limit {
+            kept.drain(..kept.len() - limit);
+            cut = true;
+        }
+    }
+    let bytes: Vec<u8> = kept.into_iter().collect();
+    Ok((String::from_utf8_lossy(&bytes).into_owned(), cut))
 }
 pub(crate) fn capture_binary(
     command: Command,
@@ -178,7 +204,7 @@ pub(crate) fn capture_binary(
     cancel: &AtomicBool,
     limit: usize,
 ) -> io::Result<(VerificationResult, Vec<u8>)> {
-    capture_inner(command, timeout, cancel, limit, true)
+    capture_inner(command, timeout, cancel, limit, true, false)
 }
 fn capture_inner(
     mut command: Command,
@@ -186,6 +212,7 @@ fn capture_inner(
     cancel: &AtomicBool,
     limit: usize,
     binary: bool,
+    tail_stderr: bool,
 ) -> io::Result<(VerificationResult, Vec<u8>)> {
     let started = Instant::now();
     let mut child = command
@@ -228,8 +255,13 @@ fn capture_inner(
     };
     let err = match thread::Builder::new()
         .name("lyra-check-stderr".into())
-        .spawn(move || bounded_read(stderr, OUTPUT_LIMIT))
-    {
+        .spawn(move || {
+            if tail_stderr {
+                bounded_tail(stderr, OUTPUT_LIMIT)
+            } else {
+                bounded_read(stderr, OUTPUT_LIMIT)
+            }
+        }) {
         Ok(reader) => reader,
         Err(error) => {
             let _ = child.kill();
@@ -768,6 +800,9 @@ mod tests {
     }
     #[test]
     fn bounded_logs_and_verified_evidence() {
+        let (tail, cut) = bounded_tail(&b"abcdef"[..], 3).unwrap();
+        assert_eq!(tail, "def");
+        assert!(cut);
         let (out, truncated) = bounded_read(&b"abcdef"[..], 3).unwrap();
         assert_eq!(out, "abc");
         assert!(truncated);

@@ -196,6 +196,14 @@ fn build_documents(
     for (name, content) in [
         ("Dockerfile", RECIPE),
         (
+            "debian.lock.json",
+            include_str!("../../tools/documents/debian.lock.json"),
+        ),
+        (
+            "install_debian.py",
+            include_str!("../../tools/documents/install_debian.py"),
+        ),
+        (
             "requirements.lock",
             include_str!("../../tools/documents/requirements.lock"),
         ),
@@ -208,7 +216,8 @@ fn build_documents(
     }
     let iid = temp.path().join("image-id");
     let mut c = Command::new("docker");
-    c.args(["build", "--iidfile"]).arg(&iid);
+    c.args(["build", "--platform=linux/amd64", "--iidfile"])
+        .arg(&iid);
     if let Some(ca) = proxy_ca {
         if !ca.is_file() {
             return Err(io::Error::other("CA bundle missing"));
@@ -217,7 +226,7 @@ fn build_documents(
             .arg(format!("id=proxy_ca,src={}", ca.display()));
     }
     c.arg(temp.path());
-    let r = crate::executor::capture(c, Duration::from_secs(1800), &AtomicBool::new(false))?;
+    let r = crate::executor::capture_build(c, Duration::from_secs(1800), &AtomicBool::new(false))?;
     if r.exit_code != Some(0) || r.timed_out {
         return Err(io::Error::other(format!(
             "Document image build failed: {}",

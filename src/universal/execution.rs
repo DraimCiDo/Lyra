@@ -208,7 +208,7 @@ impl ExecutionSession {
         result.cleanup_confirmed = clean.is_ok_and(|r| r.exit_code == Some(0) && !r.timed_out);
         if !result.passed() || result.output_truncated {
             return Ok((
-                json!({"execution":result,"outputs":[],"artifact_checks_passed":false}),
+                json!({"environment":env.id,"image":env.image,"script_sha256":crate::retrieval::sha256(script.as_bytes()),"execution":result,"outputs":[],"artifact_checks_passed":false}),
                 vec![],
             ));
         }
@@ -231,8 +231,9 @@ impl ExecutionSession {
                 inputs: fingerprints.clone(),
             });
         }
+        let descriptors:Vec<_>=proposals.iter().map(|p|json!({"path":p.path,"replacement":p.replacement,"create":p.original.is_none()})).collect();
         Ok((
-            json!({"execution":result,"outputs":proposals,"artifact_checks_passed":false,"visual_review":"pending","note":"Execution and SHA256 do not establish semantic or visual correctness. Review outputs before applying."}),
+            json!({"environment":env.id,"image":env.image,"script_sha256":crate::retrieval::sha256(script.as_bytes()),"execution":result,"outputs":descriptors,"artifact_checks_passed":false,"visual_review":"pending","note":"Execution and SHA256 do not establish semantic or visual correctness. Review outputs before applying."}),
             proposals,
         ))
     }
@@ -339,5 +340,51 @@ impl<M: crate::agent::Model> crate::agent::Model for ExecutionModel<'_, M> {
     }
     fn execution(&mut self) -> Option<&mut ExecutionSession> {
         self.execution.as_mut()
+    }
+}
+
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ExecutionRecord {
+    pub environment: String,
+    pub image: String,
+    pub script_sha256: String,
+    pub exit_code: Option<i32>,
+    pub timed_out: bool,
+    pub cancelled: bool,
+    pub cleanup_confirmed: bool,
+    pub outputs: Vec<(String, String)>,
+}
+pub fn record(report: &mut crate::agent::Report, value: &Value) {
+    let Some(environment) = value["environment"].as_str() else {
+        return;
+    };
+    let result = &value["execution"];
+    report.schema_version = 5;
+    report.executions.push(ExecutionRecord {
+        environment: environment.into(),
+        image: value["image"].as_str().unwrap_or_default().into(),
+        script_sha256: value["script_sha256"].as_str().unwrap_or_default().into(),
+        exit_code: result["exit_code"]
+            .as_i64()
+            .and_then(|x| i32::try_from(x).ok()),
+        timed_out: result["timed_out"] == true,
+        cancelled: result["cancelled"] == true,
+        cleanup_confirmed: result["cleanup_confirmed"] == true,
+        outputs: value["outputs"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .filter_map(|x| {
+                Some((
+                    x["path"].as_str()?.into(),
+                    x["replacement"]["sha256"].as_str()?.into(),
+                ))
+            })
+            .take(32)
+            .collect(),
+    });
+    if report.executions.len() > 8 {
+        report.executions.remove(0);
     }
 }

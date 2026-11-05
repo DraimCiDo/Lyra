@@ -412,3 +412,146 @@ fn windows_locked_unchanged_file_does_not_block_rollback_of_other_files() {
     assert_eq!(fs::read(repo.path().join("a.txt")).unwrap(), b"old");
     assert!(!repo.path().join(".lyra/artifact-journal.json").exists());
 }
+#[test]
+fn task_loop_records_runtime_and_carries_nested_instructions_for_binary_outputs() {
+    struct M {
+        calls: usize,
+        execution: lyra::universal::execution::ExecutionSession,
+    }
+    impl lyra::agent::Model for M {
+        fn execution(&mut self) -> Option<&mut lyra::universal::execution::ExecutionSession> {
+            Some(&mut self.execution)
+        }
+        fn respond(&mut self, prompt: &str) -> io::Result<String> {
+            self.calls += 1;
+            if self.calls == 1 {
+                Ok(serde_json::json!({"tool":"run_script","environment":"python","script":"trusted test stub; never executed","inputs":[],"outputs":["docs/result.docx"]}).to_string())
+            } else {
+                let value: serde_json::Value = serde_json::from_str(prompt).unwrap();
+                assert!(
+                    value["active_project_instructions"]
+                        .as_array()
+                        .unwrap()
+                        .iter()
+                        .any(|s| s["path"] == "docs/AGENTS.md")
+                );
+                Ok(serde_json::json!({"tool":"finish","summary":"Prepared binary proposal; review is required"}).to_string())
+            }
+        }
+        fn run_script(
+            &mut self,
+            _: &Workspace,
+            _: &[lyra::workspace::Edit],
+            environment: &str,
+            script: &str,
+            _: &[String],
+            _: &[String],
+        ) -> io::Result<(serde_json::Value, Vec<FileProposal>)> {
+            let file = FileProposal {
+                path: "docs/result.docx".into(),
+                original: None,
+                replacement: self.execution.store.put(b"fixture\0bytes")?,
+                inputs: vec![],
+            };
+            Ok((
+                serde_json::json!({"environment":environment,"image":self.execution.registry.get(environment)?.image,"script_sha256":lyra::retrieval::sha256(script.as_bytes()),"execution":{"exit_code":0,"timed_out":false,"cancelled":false,"cleanup_confirmed":true},"outputs":[file]}),
+                vec![file],
+            ))
+        }
+    }
+    let repo = tempfile::tempdir().unwrap();
+    let cache = tempfile::tempdir().unwrap();
+    fs::write(repo.path().join("input.txt"), "input").unwrap();
+    fs::create_dir(repo.path().join("docs")).unwrap();
+    fs::write(
+        repo.path().join("docs/AGENTS.md"),
+        "Preserve document typography",
+    )
+    .unwrap();
+    let mut w = Workspace::open(repo.path(), &["input.txt".into()]).unwrap();
+    let registry = Registry::load(std::path::Path::new("environments/runtimes.json")).unwrap();
+    let execution = lyra::universal::execution::ExecutionSession::new(
+        registry,
+        vec!["python".into()],
+        cache.path(),
+    )
+    .unwrap();
+    let report = lyra::agent::execute(
+        &mut M {
+            calls: 0,
+            execution,
+        },
+        &mut w,
+        "Create document",
+        false,
+        4,
+    );
+    assert_eq!(report.schema_version, 5);
+    assert_eq!(report.file_proposals.len(), 1);
+    assert_eq!(report.executions.len(), 1);
+    assert_eq!(report.executions[0].environment, "python");
+    assert_eq!(report.executions[0].exit_code, Some(0));
+    assert!(!repo.path().join("docs/result.docx").exists());
+}
+#[test]
+fn changing_execution_timing_does_not_hide_a_no_progress_loop() {
+    struct M {
+        calls: usize,
+        execution: lyra::universal::execution::ExecutionSession,
+    }
+    impl lyra::agent::Model for M {
+        fn execution(&mut self) -> Option<&mut lyra::universal::execution::ExecutionSession> {
+            Some(&mut self.execution)
+        }
+        fn respond(&mut self, _: &str) -> io::Result<String> {
+            self.calls += 1;
+            Ok(serde_json::json!({"tool":"run_script","environment":"python","script":"unchanged trusted test stub","inputs":[],"outputs":["result.txt"]}).to_string())
+        }
+        fn run_script(
+            &mut self,
+            _: &Workspace,
+            _: &[lyra::workspace::Edit],
+            _: &str,
+            _: &str,
+            _: &[String],
+            _: &[String],
+        ) -> io::Result<(serde_json::Value, Vec<FileProposal>)> {
+            let file = FileProposal {
+                path: "result.txt".into(),
+                original: None,
+                replacement: self.execution.store.put(b"same output")?,
+                inputs: vec![],
+            };
+            Ok((
+                serde_json::json!({"execution":{"elapsed_ms":self.calls,"exit_code":0,"cleanup_confirmed":true},"outputs":[file]}),
+                vec![file],
+            ))
+        }
+    }
+    let repo = tempfile::tempdir().unwrap();
+    let cache = tempfile::tempdir().unwrap();
+    let mut w = Workspace::open(repo.path(), &[]).unwrap();
+    let registry = Registry::load(std::path::Path::new("environments/runtimes.json")).unwrap();
+    let execution = lyra::universal::execution::ExecutionSession::new(
+        registry,
+        vec!["python".into()],
+        cache.path(),
+    )
+    .unwrap();
+    let report = lyra::agent::execute(
+        &mut M {
+            calls: 0,
+            execution,
+        },
+        &mut w,
+        "Create result",
+        false,
+        10,
+    );
+    assert!(
+        report.status.starts_with("no_progress"),
+        "{}",
+        report.status
+    );
+    assert_eq!(report.calls, 4);
+}

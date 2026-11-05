@@ -39,7 +39,7 @@ jobs:
       - name: Trusted document regression fixtures
         run: |
           image=$(python3 -c 'import json,os;print(json.load(open(os.environ["LYRA_DOCUMENT_REGISTRY"]))["environments"][0]["image"])')
-          docker run --rm --network=none --memory=2048m --cpus=2 --pids-limit=128 --mount "type=bind,src=$PWD/tools/documents,dst=/tests,readonly" --env LYRA_DOCUMENT_SANDBOX=0 --env PYTHONPATH=/tests "$image" python -m unittest discover -s /tests -p test_documents.py
+          docker run --rm --network=none --memory=2048m --cpus=2 --pids-limit=128 --mount "type=bind,src=$PWD/tools/documents,dst=/tests,readonly" --env LYRA_DOCUMENT_SANDBOX=0 --env PYTHONPATH=/tests "$image" python -m unittest discover -s /tests -p 'test_*.py'
       - name: Explicitly prepare additional language environments
         run: |
           target/debug/lyra environment --registry environments/runtimes.json prepare golang --accept

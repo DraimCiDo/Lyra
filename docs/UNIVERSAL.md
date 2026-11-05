@@ -43,8 +43,10 @@ stdout программы — диагностика; результаты во�
 ## Office и PDF
 
 Образ документов строится отдельно по встроенному рецепту: закрепленный Python,
-подписанный Debian snapshot, LibreOffice, Poppler, Tesseract rus/eng и Unicode fonts;
-Python-зависимости закреплены версиями и хешами wheel. Для Office/OCR нужно
+190 Debian-пакетов из подписанного snapshot с версиями/SHA256, LibreOffice, Poppler, Tesseract rus/eng и Unicode fonts;
+Python-зависимости закреплены версиями и хешами wheel. Debian payload загружается
+с основного зеркала с резервом snapshot; любой источник обязан дать точный размер
+и SHA256 из lock. Установка .deb выполняется без сети. Для Office/OCR нужно
 несколько GiB свободного места в Docker. Python/Office на host не обязательны.
 
 ```sh
@@ -79,7 +81,9 @@ OCR помечается как распознавание с непровере
 
 ## Результаты и восстановление
 
-Отчет v5 добавляет `work_plan`, `artifact_store`, `file_proposals`; документы не
+Отчет v5 добавляет `work_plan`, `artifact_store`, `file_proposals`, `executions`;
+последние восемь исполнений сохраняют фактическую среду/image digest, SHA скрипта,
+exit/cancel/timeout/cleanup и хеши результатов без полного вывода или скрипта; документы не
 помещаются в JSON/base64. Blobs проверяются по SHA256 и размеру. Лимиты: 64 MiB
 на файл, 256 MiB входов/выходов, 32 предложения; metadata файлов — до 256 KiB.
 Исходные документы и зависимости проверяются перед публикацией. Текст и документы

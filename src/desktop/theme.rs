@@ -619,6 +619,7 @@ impl Language {
             "Выбранные технологии и план" => {
                 "Selected technologies and plan"
             }
+            "Среда выполнения" => "Execution environment",
             "Необходимые возможности" => "Required capabilities",
             "Сохранить копию для просмотра…" => {
                 "Save a copy for review…"

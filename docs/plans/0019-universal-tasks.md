@@ -59,3 +59,16 @@ Docker corpus jobs завершились success. Document image build и relea
 
 Первый document image CI остановлен snapshot.debian.org HTTP 504 на нескольких
 пакетах. Добавлены bounded apt retries/timeout, без смены закрепленного snapshot.
+
+Повторный CI обнаружил устойчивые 503 на Snapshot InRelease. Dependency closure
+разрешен один раз apt с GPG-verified snapshot metadata внутри точного base image:
+190 пакетов, 148.26 MiB downloads. В debian.lock.json закреплены версии/размеры/SHA256;
+основной Debian mirror может выдавать только те же байты, Snapshot — резерв.
+Установка local .deb выполняется с network=none; подмена версий/отключение TLS
+или hash checks не применяется. Downloader имеет bounded retries и stdlib tests.
+
+OS lock downloader: 3 stdlib tests passed, реальный coinor-libcoinmp0 скачан
+с основного mirror и SHA256/размер проверены. Latest local Clippy прошел;
+universal regressions 11 passed / 3 ignored, session/project regressions прошли.
+Execution records фиксируют image/скрипт/результат; volatile elapsed исключен
+из no-progress сравнения (отдельная regression).
