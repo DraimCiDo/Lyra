@@ -14,6 +14,8 @@ The complete feature inventory/SBOM in P00 remains pending; see
 | Source | Feature family | Lyra destination | Status | Acceptance |
 | --- | --- | --- | --- | --- |
 | ECC | Sequential researcher/coder/reviewer roles and proposal/apply | src/agent.rs | implemented before integration | Existing agent tests; not worktree orchestration |
+| ECC | Verify-and-repair loop (tester role, scratch copy, coder repair rounds) | src/verify.rs / src/agent.rs | implemented | Unit + repair-flow test; no OS sandbox |
+| Lyra | GitHub connector (issues, PR, files, comment, publish PR) | src/github.rs | implemented | Loopback stub tests; live GitHub not exercised |
 | ECC | Worktrees, checkpoints and extended orchestration | Agent Runtime | planned | P07 |
 | ECC | Explicit role contracts, scoped tools, structured recovery feedback | src/agent_runtime.rs / src/agent.rs | implemented; stage-1 verification pending | Recovery/read_only/native fixture tests |
 | ECC | JSON packs, bounded SKILL.md import, explicit selection | src/skills.rs / src/agent_runtime.rs | implemented | Unit tests / gateway tests; full YAML and resources pending |

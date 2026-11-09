@@ -512,6 +512,15 @@ impl Desktop {
                 if self.prefs.dedup_tool_context {
                     args.push("--dedup-tool-context".into());
                 }
+                for line in self
+                    .prefs
+                    .check_commands
+                    .lines()
+                    .filter(|l| !l.trim().is_empty())
+                {
+                    crate::verify::parse_command(line)?;
+                    args.extend(["--check".into(), line.trim().into()]);
+                }
                 self.report = None;
                 self.report_json.clear();
                 self.applied.clear();
@@ -596,7 +605,7 @@ impl Desktop {
         self.log = result.stderr;
         let structured_task_timeout = self.operation == Operation::Task
             && serde_json::from_slice::<Report>(&result.stdout)
-                .is_ok_and(|r| matches!(r.schema_version, 1..=3) && r.status == "timeout");
+                .is_ok_and(|r| matches!(r.schema_version, 1..=4) && r.status == "timeout");
         if (result.timed_out || result.code == Some(124)) && !structured_task_timeout {
             self.fail(if self.operation == Operation::ProjectPlan {
                 "Истёк таймаут подготовки плана. Увеличь таймаут в настройках модели или сократи запрос. Файлы проекта ещё не создавались. Подробности — в журнале."
@@ -652,7 +661,7 @@ impl Desktop {
             | Operation::DocsFetch
             | Operation::DocsImport => self.complete_project_job(result.code, &result.stdout),
             Operation::Task => match serde_json::from_slice::<Report>(&result.stdout) {
-                Ok(report) if matches!(report.schema_version, 1..=3) => {
+                Ok(report) if matches!(report.schema_version, 1..=4) => {
                     self.error = result.code != Some(0) || report.status != "completed";
                     self.message = format!(
                         "{} · {} {} · {:.1} s · {} {}",
@@ -1062,6 +1071,9 @@ impl Desktop {
                         if self.prefs.subagents{self.prefs.calls=self.prefs.calls.max(3);}
                         ui.label(RichText::new(l.text("Роли работают последовательно с одной моделью. Дополнительные проверки требуют времени.")).small().weak());
                         let min=if self.prefs.subagents{3}else{1};
+                        ui.label(l.text("Проверки (по одной команде в строке)"));
+                        ui.add(egui::TextEdit::multiline(&mut self.prefs.check_commands).desired_rows(3).desired_width(f32::INFINITY).char_limit(4096).hint_text("cargo test\nnpm test"));
+                        ui.label(RichText::new(l.text("Команды выполняются во временной копии с предложениями, без shell; при сбое кодер исправляет правки. Это не песочница ОС.")).small().weak());
                         setting_slider(ui,l.text("Общий лимит вызовов"),&mut self.prefs.calls,min..=24,false,l.text("Бюджет общий для всех ролей. Исследователь и ревьюер не изменяют файлы."),c.muted);
                     }).response,
                     SettingsPage::Appearance=>ui.vertical(|ui|{
@@ -1699,7 +1711,7 @@ fn validate_task(task: &str, files: &str) -> io::Result<()> {
     Ok(())
 }
 fn can_apply(report: &Report, index: usize, applied: &[usize]) -> bool {
-    matches!(report.schema_version, 1..=3)
+    matches!(report.schema_version, 1..=4)
         && report.status == "completed"
         && report
             .proposals

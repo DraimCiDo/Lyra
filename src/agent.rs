@@ -89,6 +89,16 @@ pub struct TaskArgs {
     /// Два read-only подагента: исследователь до кодера, ревьюер после
     #[arg(long)]
     pub subagents: bool,
+    /// Команда проверки (cargo/npm/pytest/…): выполняется в временной копии с предложениями,
+    /// без shell; можно повторить. Сбой возвращается кодеру для исправления.
+    #[arg(long = "check")]
+    pub checks: Vec<String>,
+    /// Таймаут каждой команды проверки, секунды
+    #[arg(long,default_value_t=300,value_parser=clap::value_parser!(u64).range(1..=3600))]
+    pub check_timeout_secs: u64,
+    /// Сколько раз кодер может исправить предложения после неудачной проверки
+    #[arg(long,default_value_t=2,value_parser=clap::value_parser!(u32).range(0..=3))]
+    pub repair_rounds: u32,
     #[arg(long,default_value_t=12,value_parser=clap::value_parser!(u32).range(1..=24))]
     pub max_calls: u32,
     #[arg(long,default_value_t=4096,value_parser=clap::value_parser!(u32).range(128..=32768))]
@@ -171,7 +181,20 @@ pub struct Report {
     pub documentation_sources: Vec<crate::knowledge::Source>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub context_optimization: Vec<crate::context_optimizer::ContextStats>,
+    /// Результаты проверок предложений во временной копии (schema v4).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub checks: Vec<crate::verify::CheckRun>,
 }
+
+/// Optional verification loop: checks run on a scratch copy with the proposals applied.
+#[derive(Clone, Debug, Default)]
+pub struct VerifyOptions {
+    pub commands: Vec<Vec<String>>,
+    pub timeout: std::time::Duration,
+    pub repair_rounds: u32,
+}
+
+const REPAIR_CALLS: u32 = 4;
 
 pub trait Model {
     fn respond(&mut self, prompt: &str) -> io::Result<String>;
@@ -243,6 +266,29 @@ pub fn execute_with_context(
     docs: &crate::knowledge::Pack,
     dedup_tool_context: bool,
 ) -> Report {
+    execute_verified(
+        model,
+        workspace,
+        task,
+        subagents,
+        max_calls,
+        docs,
+        dedup_tool_context,
+        &VerifyOptions::default(),
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+pub fn execute_verified(
+    model: &mut impl Model,
+    workspace: &mut Workspace,
+    task: &str,
+    subagents: bool,
+    max_calls: u32,
+    docs: &crate::knowledge::Pack,
+    dedup_tool_context: bool,
+    verify: &VerifyOptions,
+) -> Report {
     use crate::agent_runtime::AgentRole;
     let context = crate::project::inspect(workspace).unwrap_or_default();
     let mut report = Report {
@@ -258,6 +304,7 @@ pub fn execute_with_context(
         model_review_is_verified_test: false,
         documentation_sources: Vec::new(),
         context_optimization: Vec::new(),
+        checks: Vec::new(),
     };
     if task.trim().is_empty()
         || task.len() > 16384
@@ -292,22 +339,29 @@ pub fn execute_with_context(
     } else {
         String::new()
     };
-    let roles: Vec<(AgentRole, u32)> = if subagents {
-        let child = (max_calls / 4).max(1);
-        vec![
-            (AgentRole::Researcher, child),
-            (AgentRole::Coder, max_calls - 2 * child),
-            (AgentRole::Reviewer, child),
-        ]
-    } else {
-        vec![(AgentRole::Coder, max_calls)]
-    };
-    for (role_spec, budget) in roles {
+    let mut roles: std::collections::VecDeque<(AgentRole, u32, Option<serde_json::Value>)> =
+        if subagents {
+            let child = (max_calls / 4).max(1);
+            vec![
+                (AgentRole::Researcher, child, None),
+                (AgentRole::Coder, max_calls - 2 * child, None),
+                (AgentRole::Reviewer, child, None),
+            ]
+            .into()
+        } else {
+            vec![(AgentRole::Coder, max_calls, None)].into()
+        };
+    let verifying = !verify.commands.is_empty();
+    let mut repairs_left = if verifying { verify.repair_rounds } else { 0 };
+    // Repair rounds get their own call budget so they do not starve later roles.
+    let call_cap = max_calls + repairs_left * REPAIR_CALLS;
+    let mut superseded = Vec::<serde_json::Value>::new();
+    while let Some((role_spec, budget, repair_feedback)) = roles.pop_front() {
         let role = role_spec.name();
         let mut history = Vec::<serde_json::Value>::new();
         let mut finished = false;
         for step in 0..budget {
-            if report.calls >= max_calls {
+            if report.calls >= call_cap {
                 break;
             }
             let example_path = workspace
@@ -332,7 +386,7 @@ pub fn execute_with_context(
             let envelope = serde_json::json!({
                 "protocol_version":2,"role":role,"read_only":role_spec.read_only(),"role_contract":role_spec.contract(),
                 "workflow":{"phase":if report.proposals.is_empty(){"inspect_and_propose"}else{"review_pending_and_finish"},
-                    "remaining_calls":(budget-step).min(max_calls-report.calls),
+                    "remaining_calls":(budget-step).min(call_cap-report.calls),
                     "pending_paths":report.proposals.iter().map(|p| &p.path).collect::<Vec<_>>(),"writes_applied":false,
                     "completion_rule":"If pending proposals cover the task, finish. Otherwise inspect remaining files. Never repeat a proposal for a pending path."},
                 "task":task,"project_instructions":instructions,
@@ -340,6 +394,7 @@ pub fn execute_with_context(
                 "documentation_catalog":docs.catalog(),"documentation_context_untrusted":initial_docs,
                 "files":workspace.files,"index_incomplete":workspace.truncated,
                 "prior_role_summaries":report.summaries,
+                "verification":report.checks.last(),"repair_feedback":repair_feedback,"superseded_proposals":superseded,
                 "proposals":report.proposals.iter().enumerate().map(|(i,p)|serde_json::json!({"index":i,"path":p.path,"create":p.create,"replacement":p.replacement})).collect::<Vec<_>>(),
                 "tools":tools,
                 "history":history
@@ -356,13 +411,13 @@ pub fn execute_with_context(
             let _ = writeln!(
                 io::stderr().lock(),
                 "LYRA_PROGRESS:activity={}",
-                serde_json::json!({"label":format!("{role} · model · {}/{}",report.calls,max_calls)})
+                serde_json::json!({"label":format!("{role} · model · {}/{}",report.calls,call_cap)})
             );
             let _ = writeln!(
                 io::stderr().lock(),
                 "Lyra: {role}, вызов {}/{}",
                 report.calls,
-                max_calls
+                call_cap
             );
             let response = match model.respond(&prompt) {
                 Ok(text) => text,
@@ -542,6 +597,68 @@ pub fn execute_with_context(
             report.status = format!("step_limit: {role}");
             return report;
         }
+        if verifying && matches!(role_spec, AgentRole::Coder) && !report.proposals.is_empty() {
+            let round = report.checks.len() as u32 + 1;
+            let _ = writeln!(
+                io::stderr().lock(),
+                "LYRA_PROGRESS:activity={}",
+                serde_json::json!({"label":format!("tester · run_check · round {round}")})
+            );
+            match crate::verify::run_checks(
+                &workspace.root,
+                &report.proposals,
+                &verify.commands,
+                verify.timeout,
+                round,
+            ) {
+                Ok(run) => {
+                    report.schema_version = report.schema_version.max(4);
+                    report.events.push(Event {
+                        call: report.calls,
+                        role: "tester".into(),
+                        tool: "run_check".into(),
+                        outcome: if run.passed { "ok" } else { "checks_failed" }.into(),
+                        argument: Some(
+                            run.results
+                                .iter()
+                                .map(|r| r.command.as_str())
+                                .collect::<Vec<_>>()
+                                .join(" && ")
+                                .chars()
+                                .take(256)
+                                .collect(),
+                        ),
+                    });
+                    let passed = run.passed;
+                    let feedback = serde_json::json!({"round":run.round,"results":run.results});
+                    report.checks.push(run);
+                    if !passed && repairs_left > 0 {
+                        repairs_left -= 1;
+                        // Previous proposals are replaced: edits are always relative to disk content.
+                        for p in report.proposals.drain(..) {
+                            superseded.push(serde_json::json!({"path":p.path,"create":p.create,"replacement":p.replacement}));
+                        }
+                        report.summaries.push((
+                            "tester".into(),
+                            "Checks failed; proposals were returned to the coder for repair."
+                                .into(),
+                        ));
+                        roles.push_front((AgentRole::Coder, REPAIR_CALLS, Some(feedback)));
+                    }
+                }
+                Err(e) => {
+                    report.events.push(Event {
+                        call: report.calls,
+                        role: "tester".into(),
+                        tool: "run_check".into(),
+                        outcome: format!("denied_or_error: {e}"),
+                        argument: None,
+                    });
+                    report.status = format!("check_error: {e}");
+                    return report;
+                }
+            }
+        }
     }
     report.status = "completed".into();
     report
@@ -702,13 +819,22 @@ pub fn task(args: TaskArgs, output: &mut impl Write) -> io::Result<()> {
         .transpose()?;
     let skill_guidance =
         crate::agent_runtime::skill_instructions(skill_pack.as_ref(), &args.selected_skills)?;
+    let verify = VerifyOptions {
+        commands: args
+            .checks
+            .iter()
+            .map(|line| crate::verify::parse_command(line))
+            .collect::<io::Result<_>>()?,
+        timeout: std::time::Duration::from_secs(args.check_timeout_secs),
+        repair_rounds: args.repair_rounds,
+    };
     #[cfg(feature = "gateway-http")]
     if let Some(mut cloud) = cloud_task_model(&args, started)? {
         let mut model = SkilledModel {
             inner: &mut cloud,
             guidance: &skill_guidance,
         };
-        let report = execute_with_context(
+        let report = execute_verified(
             &mut model,
             &mut workspace,
             &task,
@@ -716,6 +842,7 @@ pub fn task(args: TaskArgs, output: &mut impl Write) -> io::Result<()> {
             args.max_calls,
             &docs,
             args.dedup_tool_context,
+            &verify,
         );
         serde_json::to_writer_pretty(&mut *output, &report).map_err(io::Error::other)?;
         writeln!(output)?;
@@ -749,7 +876,7 @@ pub fn task(args: TaskArgs, output: &mut impl Write) -> io::Result<()> {
             inner: &mut session,
             guidance: &skill_guidance,
         };
-        let report = execute_with_context(
+        let report = execute_verified(
             &mut model,
             &mut workspace,
             &task,
@@ -757,6 +884,7 @@ pub fn task(args: TaskArgs, output: &mut impl Write) -> io::Result<()> {
             args.max_calls,
             &docs,
             args.dedup_tool_context,
+            &verify,
         );
         serde_json::to_writer_pretty(&mut *output, &report).map_err(io::Error::other)?;
         writeln!(output)?;
@@ -788,7 +916,7 @@ pub fn apply(args: ApplyArgs, output: &mut impl Write) -> io::Result<()> {
             std::slice::from_ref(&edit.path)
         },
     )?;
-    if !matches!(report.schema_version, 1..=3)
+    if !matches!(report.schema_version, 1..=4)
         || report.schema_version == 1 && edit.create
         || report.status != "completed"
         || report.workspace != workspace.root

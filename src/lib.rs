@@ -4,6 +4,8 @@ pub mod context_optimizer;
 #[cfg(feature = "desktop")]
 pub mod desktop;
 pub mod doctor;
+#[cfg(feature = "gateway-http")]
+pub mod github;
 pub mod inference;
 pub mod knowledge;
 pub mod model_gateway;
@@ -13,6 +15,7 @@ pub mod provider_http;
 pub mod resources;
 pub mod routing;
 pub mod skills;
+pub mod verify;
 pub mod workspace;
 
 use clap::{Parser, Subcommand};
@@ -96,6 +99,9 @@ pub enum Command {
         #[arg(long)]
         id: Option<String>,
     },
+    /// Коннектор GitHub: issues, PR, файлы, комментарии и публикация предложений как PR
+    #[cfg(feature = "gateway-http")]
+    Github(github::GithubArgs),
     /// Показать характеристики компьютера, на котором запущена Lyra
     Doctor {
         /// Вывести JSON (схема v1), пригодный для подбора локальной модели
@@ -110,6 +116,8 @@ pub fn run(cli: Cli, output: &mut impl Write) -> io::Result<()> {
         Command::Docs(args) => knowledge::run(args, output),
         Command::Task(args) => agent::task(args, output),
         Command::Apply(args) => agent::apply(args, output),
+        #[cfg(feature = "gateway-http")]
+        Command::Github(args) => github::run(args, output),
         Command::Generate(args) => {
             if args.selected_skills.is_empty() && args.skills.is_none() {
                 inference::generate(&args, output)

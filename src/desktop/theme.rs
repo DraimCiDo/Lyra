@@ -440,6 +440,12 @@ impl Language {
                 "Leave empty for a bounded project index. The engine excludes secrets and service files."
             }
             "Исследователь и ревьюер" => "Researcher and reviewer",
+            "Проверки (по одной команде в строке)" => {
+                "Checks (one command per line)"
+            }
+            "Команды выполняются во временной копии с предложениями, без shell; при сбое кодер исправляет правки. Это не песочница ОС." => {
+                "Commands run in a scratch copy with the proposals, without a shell; on failure the coder repairs its edits. This is not an OS sandbox."
+            }
             "Роли работают последовательно с одной моделью. Дополнительные проверки требуют времени." => {
                 "Roles run sequentially with one model. Additional reviews take more time."
             }

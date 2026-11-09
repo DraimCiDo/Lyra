@@ -52,6 +52,8 @@ pub struct Preferences {
     pub documentation: Option<PathBuf>,
     pub files: String,
     pub subagents: bool,
+    /// One verification command per line (cargo/npm/pytest/…); run on a scratch copy.
+    pub check_commands: String,
     pub optimization: Optimization,
     pub dedup_tool_context: bool,
     pub context: u32,
@@ -83,6 +85,7 @@ impl Default for Preferences {
             documentation: None,
             files: String::new(),
             subagents: false,
+            check_commands: String::new(),
             optimization: Optimization::Balanced,
             dedup_tool_context: false,
             context: 4096,
@@ -108,6 +111,13 @@ impl Preferences {
             && self.cloud_provider.len() <= 128
             && self.cloud_model.len() <= 256
             && self.files.len() <= 32768
+            && self.check_commands.len() <= 4096
+            && self
+                .check_commands
+                .lines()
+                .filter(|l| !l.trim().is_empty())
+                .count()
+                <= 8
             && self.files.lines().filter(|l| !l.trim().is_empty()).count() <= 32
             && [
                 &self.repo,

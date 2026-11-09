@@ -571,3 +571,94 @@ fn an_empty_package_marker_can_be_proposed_and_created_without_overwriting() {
     );
     assert!(workspace.apply(&edit).is_err());
 }
+
+#[test]
+fn failing_check_returns_proposals_to_coder_for_repair_then_reviewer_sees_passing_run() {
+    let repo = Repo::new();
+    repo.write("value.txt", "1\n");
+    let mut workspace = Workspace::open(&repo.0, &[]).unwrap();
+    let check = vec![
+        "python3".to_owned(),
+        "-c".into(),
+        "import sys;sys.exit(0 if open('value.txt').read()=='3\\n' else 1)".into(),
+    ];
+    let options = agent::VerifyOptions {
+        commands: vec![check],
+        timeout: std::time::Duration::from_secs(20),
+        repair_rounds: 1,
+    };
+    struct Flow {
+        coder_calls: usize,
+        saw_feedback: bool,
+        reviewer_saw_pass: bool,
+    }
+    impl Model for Flow {
+        fn respond(&mut self, prompt: &str) -> io::Result<String> {
+            let input: serde_json::Value = serde_json::from_str(prompt).unwrap();
+            let action = match input["role"].as_str().unwrap() {
+                "researcher" => {
+                    serde_json::json!({"tool":"finish","summary":"value.txt holds a number"})
+                }
+                "coder" => {
+                    self.coder_calls += 1;
+                    match self.coder_calls {
+                        1 => {
+                            serde_json::json!({"tool":"propose_edit","path":"value.txt","old":"1\n","new":"2\n"})
+                        }
+                        2 => done("first attempt"),
+                        3 => {
+                            // Repair round: failure output and superseded proposal are visible,
+                            // and the old proposal is gone so the path can be proposed again.
+                            assert_eq!(input["verification"]["passed"], false);
+                            assert_eq!(input["repair_feedback"]["round"], 1);
+                            assert_eq!(input["superseded_proposals"][0]["replacement"], "2\n");
+                            assert_eq!(input["proposals"].as_array().unwrap().len(), 0);
+                            self.saw_feedback = true;
+                            serde_json::json!({"tool":"propose_edit","path":"value.txt","old":"1\n","new":"3\n"})
+                        }
+                        _ => done("repaired"),
+                    }
+                }
+                _ => {
+                    self.reviewer_saw_pass = input["verification"]["passed"] == true
+                        && input["proposals"][0]["replacement"] == "3\n";
+                    done("reviewed")
+                }
+            };
+            Ok(action.to_string())
+        }
+    }
+    let mut flow = Flow {
+        coder_calls: 0,
+        saw_feedback: false,
+        reviewer_saw_pass: false,
+    };
+    let report = agent::execute_verified(
+        &mut flow,
+        &mut workspace,
+        "set value to 3",
+        true,
+        8,
+        &lyra::knowledge::Pack::empty(),
+        false,
+        &options,
+    );
+    assert_eq!(report.status, "completed", "{:?}", report.events);
+    assert!(flow.saw_feedback && flow.reviewer_saw_pass);
+    assert_eq!(report.checks.len(), 2);
+    assert!(!report.checks[0].passed && report.checks[1].passed);
+    assert_eq!(report.schema_version, 4);
+    assert_eq!(report.proposals.len(), 1);
+    assert_eq!(report.proposals[0].replacement, "3\n");
+    // Nothing was written to the real project.
+    assert_eq!(
+        std::fs::read_to_string(repo.0.join("value.txt")).unwrap(),
+        "1\n"
+    );
+    assert!(
+        report
+            .events
+            .iter()
+            .any(|e| e.role == "tester" && e.outcome == "checks_failed")
+    );
+}

@@ -97,3 +97,7 @@ Gateway: [контракты](../src/model_gateway.rs), [HTTP](../src/provider_h
 Desktop conversations: [план](plans/0013-desktop-conversations-models.md), [history](../src/desktop/history.rs), [GGUF catalog/installer](../src/desktop/models.rs).
 
 Chat reliability/activity: [план](plans/0014-chat-reliability-activity.md), [capability contract](../src/desktop/chat_policy.rs), [worker/progress](../src/desktop/job.rs).
+
+GitHub и проверка подагентов: [github](../src/github.rs), [verify](../src/verify.rs),
+[тесты GitHub](../tests/github.rs), [инструкция](GITHUB.md). `lyra github …`;
+`task --check` выполняет разрешённые команды во временной копии и возвращает сбой кодеру.
