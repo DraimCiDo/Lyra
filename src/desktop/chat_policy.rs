@@ -128,7 +128,18 @@ fn provided_context(text: &str, topic: &str) -> bool {
     ]
     .iter()
     .find_map(|prefix| text.trim().strip_prefix(*prefix));
-    body.is_some_and(|body| {
+    let natural = if topic.is_empty() {
+        None
+    } else {
+        text.split_once(topic)
+            .map(|(_, tail)| tail.trim_start())
+            .filter(|tail| {
+                ["— это ", "- это ", "это ", "is ", "— мой ", "- мой "]
+                    .iter()
+                    .any(|prefix| tail.starts_with(prefix))
+            })
+    };
+    body.or(natural).is_some_and(|body| {
         body.trim().len() >= 20
             && !body.trim().starts_with("http")
             && body
@@ -136,11 +147,16 @@ fn provided_context(text: &str, topic: &str) -> bool {
                 .filter(|word| !word.contains("://") && word.chars().any(char::is_alphabetic))
                 .count()
                 >= 3
-            && (topic.is_empty() || body.contains(topic))
+            && (natural.is_some() || topic.is_empty() || body.contains(topic))
     })
 }
 
-fn project_reply(text: &str, chat: &chat::Chat, language: Language) -> Option<String> {
+fn project_reply(
+    text: &str,
+    chat: &chat::Chat,
+    language: Language,
+    optimization: preferences::Optimization,
+) -> Option<String> {
     let latest = text.to_lowercase();
     let topic = project_topic(text).or_else(|| {
         chat.messages.iter().rev().filter(|m| m.user).find_map(|m| {
@@ -154,7 +170,7 @@ fn project_reply(text: &str, chat: &chat::Chat, language: Language) -> Option<St
     })?;
     if provided_context(text, &topic)
         || chat
-            .messages
+            .selected_history(optimization)
             .iter()
             .any(|m| m.user && provided_context(&m.text, &topic))
     {
@@ -201,8 +217,14 @@ impl Desktop {
         if self.chat_mode != ChatMode::Chat {
             return None;
         }
-        direct(text, &self.chat_model_label(), self.prefs.language)
-            .or_else(|| project_reply(text, &self.chat, self.prefs.language))
+        direct(text, &self.chat_model_label(), self.prefs.language).or_else(|| {
+            project_reply(
+                text,
+                &self.chat,
+                self.prefs.language,
+                self.prefs.optimization,
+            )
+        })
     }
 }
 
@@ -274,6 +296,25 @@ mod tests {
             "Сколько будет 2+2?"
         );
     }
+    #[test]
+    fn project_evidence_must_be_in_the_selected_model_history() {
+        let mut app = Desktop::default();
+        app.chat.sent("Что ты знаешь о проекте Horizon?".into());
+        app.chat.finish("Provide context".into());
+        app.chat
+            .sent("Horizon — это мой лаунчер Minecraft с профилями запуска.".into());
+        app.chat.finish("Understood".into());
+        assert!(app.direct_chat_reply("Для чего нужен Horizon?").is_none());
+        for _ in 0..4 {
+            app.chat.sent("Сколько будет 2+2?".into());
+            app.chat.finish("4".into());
+        }
+        app.prefs.optimization = preferences::Optimization::Aggressive;
+        assert!(app.direct_chat_reply("Для чего нужен Horizon?").is_some());
+        app.prefs.optimization = preferences::Optimization::Safe;
+        assert!(app.direct_chat_reply("Для чего нужен Horizon?").is_none());
+    }
+
     #[test]
     fn unknown_project_and_followup_cannot_reuse_fabricated_assistant_facts() {
         assert!(!provided_context(

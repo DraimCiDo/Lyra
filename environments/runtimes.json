@@ -1,0 +1,48 @@
+{
+  "schema_version": 1,
+  "environments": [
+    {
+      "id": "python",
+      "description": "Python standard library; source at /source; deliverables at /output",
+      "image": "python@sha256:ae14d4ce8771606477a81446e7ef429edd6762305fc50c84507c1041fa8285d1",
+      "program": "python",
+      "args": [],
+      "script_extension": "py",
+      "capabilities": [
+        "python",
+        "csv",
+        "json"
+      ],
+      "timeout_secs": 120,
+      "memory_mib": 1024
+    },
+    {
+      "id": "golang",
+      "description": "golang runtime; source at /source; deliverables at /output",
+      "image": "golang@sha256:e482b31b5d30c31f9e495f4b8cbdf41429b2d74955dfbcd9c0a904483d738390",
+      "program": "go",
+      "args": [
+        "run"
+      ],
+      "script_extension": "go",
+      "capabilities": [
+        "golang"
+      ],
+      "timeout_secs": 180,
+      "memory_mib": 2048
+    },
+    {
+      "id": "php",
+      "description": "php runtime; source at /source; deliverables at /output",
+      "image": "php@sha256:dd0e2b902f1edfb6ca02fbcb391c28b1554c7d35a4e36e5925876b90aa804851",
+      "program": "php",
+      "args": [],
+      "script_extension": "php",
+      "capabilities": [
+        "php"
+      ],
+      "timeout_secs": 180,
+      "memory_mib": 2048
+    }
+  ]
+}

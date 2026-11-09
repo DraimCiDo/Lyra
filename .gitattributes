@@ -11,3 +11,6 @@
 .editorconfig text eol=lf
 .gitignore text eol=lf
 .gitattributes text eol=lf
+
+# Evaluation fixtures/checkers are byte-pinned, including intentional CRLF cases.
+/evals/** -text

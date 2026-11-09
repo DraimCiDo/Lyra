@@ -32,6 +32,8 @@ pub struct PlannedFile {
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Blueprint {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub work_plan: Option<crate::universal::WorkPlan>,
     pub schema_version: u32,
     pub name: String,
     pub profile: Profile,
@@ -50,6 +52,8 @@ pub struct Blueprint {
 #[derive(Serialize, Deserialize, Debug)]
 #[serde(deny_unknown_fields)]
 pub struct ProjectInfo {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub work_plan: Option<crate::universal::WorkPlan>,
     pub schema_version: u32,
     pub name: String,
     pub profile: Profile,
@@ -188,13 +192,16 @@ pub fn validate_path(path: &str, dotfiles: bool) -> io::Result<()> {
 }
 impl Blueprint {
     pub fn validate(&self) -> io::Result<()> {
-        if self.schema_version != 1
+        if !matches!(self.schema_version, 1 | 2)
             || !valid_name(&self.name)
             || self.summary.len() > 4096
             || self.files.len() > FILE_COUNT
             || self.provided_sources.len() > 16
         {
             return Err(err("Неподдерживаемый или слишком большой blueprint."));
+        }
+        if let Some(plan) = &self.work_plan {
+            plan.validate()?;
         }
         profile::version_text(&self.target_version)?;
         for items in [&self.requirements, &self.assumptions, &self.questions] {
@@ -297,7 +304,8 @@ pub fn create(plan: &Blueprint, parent: &Path) -> io::Result<ProjectInfo> {
             output.sync_all()?;
         }
         let info = ProjectInfo {
-            schema_version: 1,
+            schema_version: 2,
+            work_plan: plan.work_plan.clone(),
             name: plan.name.clone(),
             profile: plan.profile,
             target_version: plan.target_version.clone(),
@@ -339,6 +347,7 @@ pub fn run(args: ProjectArgs, out: &mut impl Write) -> io::Result<()> {
 }
 #[derive(Debug, Serialize, Deserialize, Default)]
 pub struct Context {
+    pub work_plan: Option<crate::universal::WorkPlan>,
     pub profile: Profile,
     pub target_version: String,
     pub evidence: Vec<String>,
@@ -353,9 +362,10 @@ pub fn inspect(workspace: &mut crate::workspace::Workspace) -> io::Result<Contex
             .and_then(|t| serde_json::from_str::<ProjectInfo>(&t).map_err(err))
         {
             Ok(info)
-                if info.schema_version == 1
+                if matches!(info.schema_version, 1 | 2)
                     && profile::version_text(&info.target_version).is_ok() =>
             {
+                context.work_plan = info.work_plan;
                 context.profile = info.profile;
                 context.target_version = info.target_version;
                 context

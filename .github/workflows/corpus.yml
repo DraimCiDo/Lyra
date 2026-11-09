@@ -1,0 +1,62 @@
+name: Pinned project corpus validation
+on:
+  pull_request:
+    paths: ['evals/**', 'tools/*.py', 'src/executor.rs', 'src/workspace.rs', 'src/publication.rs', 'Cargo.*', 'rust-toolchain.toml', '.github/workflows/corpus.yml']
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: corpus-${{ github.ref }}
+  cancel-in-progress: true
+jobs:
+  validate:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 35
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: Python, backend and DayZ structure
+            image: python@sha256:ae14d4ce8771606477a81446e7ef429edd6762305fc50c84507c1041fa8285d1
+            profiles: --profile python --profile backend --profile dayz
+          - name: Rust
+            image: rust@sha256:220ee93216b2acf3c04f312e24bf5d155c8eed61d707fc1ff8553ae24609da4e
+            profiles: --profile rust
+          - name: Web logic
+            image: node@sha256:a43f7fc3e52e87d12a905f46eea0275def84ca8f2981a5b53fed44d7fb398ee0
+            profiles: --profile web
+          - name: Java Minecraft core
+            image: eclipse-temurin@sha256:d378c0bb8ab3f2a09ce0a22a3876e7c64ef4fcfcefbd9b6d60638f5858ae8985
+            profiles: --profile java_minecraft
+    name: ${{ matrix.name }}
+    env:
+      CARGO_PROFILE_DEV_DEBUG: '0'
+      CARGO_INCREMENTAL: '0'
+      CARGO_BUILD_JOBS: '4'
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+      - name: Pinned Rust
+        run: rustup show active-toolchain
+      - name: Native dependencies
+        run: sudo apt-get update && sudo apt-get install -y cmake libclang-dev
+      - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9
+        with:
+          path: |
+            ~/.cargo/registry
+            target/debug/build
+          key: corpus-native-${{ runner.os }}-${{ hashFiles('rust-toolchain.toml', 'Cargo.lock', 'Cargo.toml') }}
+      - name: Build CLI executor
+        run: cargo build --locked --bin lyra
+      - name: Prepare explicit digest-pinned check image
+        run: docker pull '${{ matrix.image }}'
+      - name: Baseline, reference and per-file reversion checks in sandbox
+        run: python3 tools/validate_corpus.py --binary target/debug/lyra ${{ matrix.profiles }} --output corpus-validation.json
+      - name: Preserve validation report
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
+        with:
+          name: corpus-${{ strategy.job-index }}
+          path: corpus-validation.json
+          if-no-files-found: ignore

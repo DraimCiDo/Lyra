@@ -182,7 +182,9 @@ fn report_for(repo: &std::path::Path, checks_pass: Option<bool>) -> serde_json::
         ]
     });
     if let Some(passed) = checks_pass {
-        report["checks"] = serde_json::json!([{"round":1,"passed":passed,"results":[]}]);
+        report["verifications"] = serde_json::json!([{"proposal_sha256":"x","check_sha256":"y","result":{
+            "exit_code": if passed {0} else {1}, "timed_out":false,"cancelled":false,"stdout":"","stderr":"",
+            "output_truncated":false,"elapsed_ms":1,"cleanup_confirmed":true}}]);
     }
     report
 }

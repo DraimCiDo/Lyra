@@ -1,0 +1,1 @@
+import java.util.*;public class Policy {public static Map<String,String> load(String text){var values=Parser.parse(text);int count=Integer.parseInt(values.get("maxPlayers"));if(count<0)throw new IllegalArgumentException();return values;}}

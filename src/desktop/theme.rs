@@ -175,13 +175,119 @@ impl Language {
             return ru;
         }
         match ru {
+            "Настройки и история чатов хранятся локально. Отчёты предложений и технический журнал автоматически не сохраняются." => {
+                "Settings and chat history are stored locally. Proposal reports and technical logs are not saved automatically."
+            }
+            "Навыки ECC" => "ECC skills",
+            "Выберите GGUF и устройство для локальной модели. Для HTTP-моделей используйте раздел провайдеров." => {
+                "Choose a GGUF and device for local inference. HTTP models are configured under providers."
+            }
+            "Подключение внешних AI-сервисов. Запросы отправляются только при включении соответствующего режима." => {
+                "Connect external AI services. Requests are sent only when the corresponding mode is enabled."
+            }
+            "Выберите файлы проекта и объём истории, передаваемой модели." => {
+                "Choose project files and how much conversation history to send to the model."
+            }
+            "Дополнительные роли для задач проекта и общий лимит их обращений к модели." => {
+                "Additional roles for project tasks and their shared model-call budget."
+            }
+            "Инструкции ECC для модели: выбор, просмотр, локальная установка и откат пакетов." => {
+                "ECC guidance for the model: selection, preview, local installation and package rollback."
+            }
+            "Тема, язык и анимации интерфейса." => {
+                "Interface theme, language and animations."
+            }
+            "Проверьте доступные CPU, RAM и NVIDIA GPU перед выбором модели." => {
+                "Check available CPU, RAM and NVIDIA GPU before choosing a model."
+            }
+            "Версия приложения и обновления. CPU и CUDA поставляются отдельными пакетами." => {
+                "Application version and updates. CPU and CUDA are distributed as separate packages."
+            }
+            "Подключите справочные материалы проекта. Это источники для агента, а не веса модели." => {
+                "Connect project reference material. These are sources for the agent, not model weights."
+            }
+            "Где выполнять локальную модель" => {
+                "Where to run the local model"
+            }
+            "NVIDIA GPU · Авто (рекомендуется)" => {
+                "NVIDIA GPU · Auto (recommended)"
+            }
+            "Только CPU" => "CPU only",
+            "Это CPU-сборка. Для NVIDIA GPU скачайте отдельный пакет CUDA; веса GGUF можно использовать те же." => {
+                "This is a CPU build. Download the separate CUDA package for NVIDIA GPU; the same GGUF weights can be used."
+            }
+            "Выбран CPU. Для ускорения на NVIDIA выберите GPU Авто; существующий выбор не меняется автоматически." => {
+                "CPU is selected. Choose GPU Auto for NVIDIA acceleration; your existing selection is preserved."
+            }
+            "GPU Авто оценивает доступную VRAM и переносит подходящее число слоёв на NVIDIA GPU. Остальная часть использует CPU и RAM." => {
+                "GPU Auto estimates available VRAM and offloads a suitable number of layers to NVIDIA GPU. The remainder uses CPU and RAM."
+            }
+            "Выбрано ручное или сбалансированное распределение. Настройка слоёв находится в разделе Дополнительно." => {
+                "Manual or balanced allocation is selected. Layer controls are under Advanced."
+            }
+            "В настройках сохранён GPU-режим. Выберите Только CPU или запустите CUDA-сборку." => {
+                "A GPU mode is saved in settings. Select CPU only or run the CUDA build."
+            }
+            "Нет модели? Подобрать и установить GGUF" => {
+                "No model? Choose and install a GGUF"
+            }
+            "Дополнительно · память, длина ответа и время" => {
+                "Advanced · memory, response length and time"
+            }
+            "Начните с контекста 4096. Большое окно требует больше RAM/VRAM; длинный ответ и загрузка весов требуют времени." => {
+                "Start with a 4096 context. Larger windows need more RAM/VRAM; longer responses and loading weights take time."
+            }
+            "Таймаут включает загрузку модели и все шаги задачи." => {
+                "The timeout includes model loading and all task steps."
+            }
+            "Ручное распределение GPU / CPU" => "Manual GPU / CPU allocation",
+            "Сбалансированный режим оставляет часть слоёв на CPU и не обязательно быстрее Авто." => {
+                "Balanced mode leaves some layers on CPU and is not necessarily faster than Auto."
+            }
+            "Сбалансированный" => "Balanced",
+            "Ручная настройка" => "Manual",
+            "Слоёв на CUDA" => "Layers on CUDA",
+            "Полная история" => "Full history",
+            "Последние 12 сообщений" => "Latest 12 messages",
+            "Последние 6 сообщений" => "Latest 6 messages",
+            "Пакет навыков · установка и версии" => {
+                "Skill package · installation and versions"
+            }
+            "Локальный снимок выбранных навыков. Версия и источник указываются вами; SHA256 не является подписью автора." => {
+                "A local snapshot of selected skills. Version and origin are declared by you; SHA256 is not an author signature."
+            }
+            "ID пакета (a-z, 0-9, дефис)" => "Package ID (a-z, 0-9, hyphen)",
+            "Версия пакета" => "Package version",
+            "Источник / ревизия" => "Origin / revision",
+            "Установить выбранные навыки и использовать снимок" => {
+                "Install selected skills and use snapshot"
+            }
+            "Пакет установлен локально." => "Package installed locally.",
+            "Предыдущая версия" => "Previous version",
+            "Переключить на предыдущую версию" => {
+                "Switch to previous version"
+            }
+            "Версия пакета переключена. Проверьте выбранные навыки." => {
+                "Package version switched. Check selected skills."
+            }
+            "ECC Skills · файл или каталог" => "ECC Skills · file or directory",
+            "Загрузить каталог навыков" => "Load skill catalog",
+            "Навыки — инструкции для модели. Скрипты и hooks не исполняются. Выбранные навыки применяются в порядке выбора." => {
+                "Skills guide the model. Scripts and hooks are not executed. Selected skills are applied in selection order."
+            }
+            "Выбрано" => "Selected",
+            "Снять выбор навыков" => "Clear skill selection",
+            "Инструкции" => "Instructions",
+            "Выбранный навык отсутствует в каталоге. Снимите выбор или верните источник." => {
+                "A selected skill is missing from this catalog. Clear the selection or restore its source."
+            }
             "Сокращено контекста:" => "Context saved:",
             "байт" => "bytes",
             "Дедупликация результатов инструментов (задачи)" => {
                 "Deduplicate tool results (tasks)"
             }
-            "Повторные старые результаты передаются один раз со ссылками. Последний результат, ошибки и патчи сохраняются дословно. Экономия показывается в байтах; токены не оцениваются." => {
-                "Repeated older results are sent once with references. The latest result, errors and patches stay verbatim. Savings are shown in bytes; tokens are not estimated."
+            "Дедупликация сохраняет выбранные наблюдения дословно. При нехватке окна контекст отдельно сокращается с хешами. Локальные задачи считают токены выбранной моделью." => {
+                "Deduplication preserves selected observations verbatim. Context selection separately marks omissions with hashes. Local tasks count tokens using the selected model."
             }
             "Выбрать проект" => "Choose project",
             "Проект · необязательно" => "Project · optional",
@@ -446,12 +552,6 @@ impl Language {
             "Токен читается из переменной окружения и нигде не сохраняется. Публикация PR — кнопка рядом с отчётом." => {
                 "The token is read from an environment variable and never stored. Publish a PR with the button next to the report."
             }
-            "Проверки (по одной команде в строке)" => {
-                "Checks (one command per line)"
-            }
-            "Команды выполняются во временной копии с предложениями, без shell; при сбое кодер исправляет правки. Это не песочница ОС." => {
-                "Commands run in a scratch copy with the proposals, without a shell; on failure the coder repairs its edits. This is not an OS sandbox."
-            }
             "Роли работают последовательно с одной моделью. Дополнительные проверки требуют времени." => {
                 "Roles run sequentially with one model. Additional reviews take more time."
             }
@@ -490,6 +590,109 @@ impl Language {
             "Применимых предложений нет. Завершение протокола не доказывает решения задачи." => {
                 "No applicable proposals. Finishing the protocol does not prove the task was solved."
             }
+            "Проверка проекта в Docker" => "Project checks in Docker",
+            "Выбрать проверку JSON…" => "Choose JSON check…",
+            "Отключить проверку" => "Disable check",
+            "Модель сможет запускать только выбранную проверку в изолированной копии без сети." => {
+                "The model may run only the selected check in an isolated offline copy."
+            }
+            "Сохранять задачи для продолжения" => {
+                "Save tasks for resuming"
+            }
+            "База содержит выбранные исходники и предложения. Хранится локально, отдельно от истории чата." => {
+                "The database contains selected sources and proposals. It stays local, separate from chat history."
+            }
+            "Выбрать базу задач…" => "Choose task database…",
+            "Сохраненные задачи…" => "Saved tasks…",
+            "Сохраненные задачи" => "Saved tasks",
+            "В базе пока нет сохраненных задач." => {
+                "No saved tasks in this database yet."
+            }
+            "Чтение сохраненных задач…" => "Reading saved tasks…",
+            "Не удалось прочитать базу задач. Проверьте путь и журнал событий." => {
+                "Could not read task database. Check its path and Activity."
+            }
+            "Сохраненные задачи прочитаны." => "Saved tasks read.",
+            "Продолжение использует текущую модель и выбранную проверку. Исходный проект меняется только через применение предложений." => {
+                "Resume uses the current model and selected check. The original project changes only when proposals are applied."
+            }
+            "Продолжить задачу" => "Resume task",
+            "Для продолжения увеличьте общий лимит выше числа сохраненных вызовов." => {
+                "To resume, set the total budget above the number of saved calls."
+            }
+            "Предыдущая страница" => "Previous page",
+            "Следующая страница" => "Next page",
+            "Выбранные технологии и план" => {
+                "Selected technologies and plan"
+            }
+            "Среда выполнения" => "Execution environment",
+            "Необходимые возможности" => "Required capabilities",
+            "Сохранить копию для просмотра…" => {
+                "Save a copy for review…"
+            }
+            "Среды выполнения и документы" => {
+                "Execution environments and documents"
+            }
+            "Выбрать реестр сред…" => "Choose environment registry…",
+            "Скачать образ этой среды" => "Download this environment image",
+            "Отключить выполнение скриптов" => {
+                "Disable script execution"
+            }
+            "Выбрать входные файлы…" => "Choose input files…",
+            "Скрипты выполняются без сети в разрешенных контейнерах. Исходники меняются после применения результата." => {
+                "Scripts run offline in permitted containers. Source files change only when results are applied."
+            }
+            "Применить весь набор…" => "Apply all changes…",
+            "Применить весь набор?" => "Apply all changes?",
+            "Восстановление проекта" => "Project recovery",
+            "Применение набора правок…" => "Applying all changes…",
+            "Чтение состояния восстановления…" => {
+                "Reading recovery state…"
+            }
+            "Восстановление файлов…" => "Recovering files…",
+            "Откатить публикацию…" => "Roll back publication…",
+            "Завершить публикацию…" => "Complete publication…",
+            "Откатить публикацию?" => "Roll back publication?",
+            "Завершить публикацию?" => "Complete publication?",
+            "Обновить состояние" => "Refresh state",
+            "Применено" => "Applied",
+            "Исходное состояние" => "Original state",
+            "Есть незавершенная публикация." => {
+                "There is an unfinished publication."
+            }
+            "Незавершенных публикаций нет." => {
+                "No unfinished publications."
+            }
+            "Изменения из журнала отменены." => {
+                "Journaled changes were rolled back."
+            }
+            "Публикация из журнала завершена." => {
+                "Journaled publication was completed."
+            }
+            "Запись исходников не началась; можно очистить подготовку." => {
+                "Source writes did not start; preparation can be cleared."
+            }
+            "Подготовка очищена; исходники не менялись." => {
+                "Preparation cleared; source files were unchanged."
+            }
+            "Исходники в окне не показываются. Внешние изменения блокируют восстановление." => {
+                "Source code is not shown here. External changes block recovery."
+            }
+            "Состояние не прочитано. Подробности — в журнале событий." => {
+                "State was not read. See Activity for details."
+            }
+            "Набор правок применен. Запустите тесты проекта отдельно." => {
+                "Changes applied. Run project tests separately."
+            }
+            "Состояние восстановления прочитано." => {
+                "Recovery state read."
+            }
+            "Восстановление завершено. Проверьте файлы проекта." => {
+                "Recovery completed. Review the project files."
+            }
+            "Операция не завершена. Проверьте восстановление и журнал событий." => {
+                "Operation did not complete. Inspect recovery and Activity for details."
+            }
             "Применить…" => "Apply…",
             "Сохранить JSON-отчёт" => "Save JSON report",
             "Применено. Запусти тесты проекта отдельно." => {
@@ -513,8 +716,8 @@ impl Language {
             "3. Просмотри предложение, подтверди применение и запусти тесты проекта." => {
                 "3. Review the proposal, confirm application and run the project tests."
             }
-            "Модель не запускает shell и тесты. Ревью AI не заменяет проверку кода." => {
-                "The model cannot run a shell or tests. AI review does not replace testing."
+            "Модель выполняет только явно выбранную Docker-проверку. Ревью AI не заменяет тестирование." => {
+                "The model runs only an explicitly selected Docker check. AI review does not replace testing."
             }
             "Понятно" => "Got it",
             "Готова к локальной работе" => "Ready for local work",

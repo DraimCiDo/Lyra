@@ -1,0 +1,11 @@
+{
+  "image": "node@sha256:a43f7fc3e52e87d12a905f46eea0275def84ca8f2981a5b53fed44d7fb398ee0",
+  "program": "node",
+  "args": [
+    "--input-type=module",
+    "-e",
+    "import assert from 'node:assert/strict';\nimport * as sut from '/source/main.mjs';\nconst initial={n:1},h=new sut.History(initial);initial.n=99;assert.deepEqual(h.undo(),{n:1});const next={n:2};h.commit(next);next.n=9;assert.deepEqual(h.undo(),{n:1});assert.deepEqual(h.redo(),{n:2});h.undo();h.commit({n:3});assert.deepEqual(h.redo(),{n:3});const other=new sut.History(0);assert.equal(other.undo(),0);\n"
+  ],
+  "timeout_secs": 60,
+  "memory_mib": 512
+}

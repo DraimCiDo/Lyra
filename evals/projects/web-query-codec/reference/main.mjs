@@ -1,0 +1,1 @@
+export function decode(query){const out=Object.create(null);for(const [key,value] of new URLSearchParams(query)){if(Object.hasOwn(out,key)){if(!Array.isArray(out[key]))out[key]=[out[key]];out[key].push(value);}else out[key]=value;}return out;}

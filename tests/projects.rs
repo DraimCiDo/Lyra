@@ -349,15 +349,9 @@ fn profile_hints_do_not_confuse_trusted_with_rust_or_wallpaper_with_paper() {
 
 #[test]
 fn vue_web_context_respects_explicit_languages_and_real_manifest_dependencies() {
-    for profile in Profile::ALL {
-        let wire = serde_json::to_string(&profile).unwrap();
-        assert!(
-            project::PLAN_GRAMMAR.contains(&serde_json::to_string(&wire).unwrap()),
-            "Profile {wire} is missing from native grammar"
-        );
-    }
+    assert!(project::PLAN_GRAMMAR.contains("profile ::= string"));
     use project::profile::{infer, version_hint};
-    assert_eq!(infer("Создай сайт"), Profile::VueTypeScript);
+    assert_eq!(infer("Создай сайт"), Profile::Generic);
     assert_eq!(
         infer("Vue frontend with TypeScript"),
         Profile::VueTypeScript

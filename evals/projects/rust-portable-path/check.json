@@ -1,0 +1,10 @@
+{
+  "image": "rust@sha256:220ee93216b2acf3c04f312e24bf5d155c8eed61d707fc1ff8553ae24609da4e",
+  "program": "sh",
+  "args": [
+    "-c",
+    "cat > /tmp/check.rs <<'LYRA_TRUSTED_CHECK'\n#[path=\"/source/lib.rs\"] mod sut;\n#[test] fn paths(){assert!(sut::allowed(\"src/данные.rs\"));for p in [\"\", \"../a\", \"a/..\", \"a//b\", \"/a\", \"C:x\", \"a\\\\b\", \".env\"] {assert!(!sut::allowed(p),\"{p}\");}}\nLYRA_TRUSTED_CHECK\nrustc --edition=2024 --test /tmp/check.rs -o /tmp/check-tests && /tmp/check-tests"
+  ],
+  "timeout_secs": 60,
+  "memory_mib": 512
+}

@@ -15,22 +15,6 @@ pub enum Optimization {
     Balanced,
     Aggressive,
 }
-impl Optimization {
-    pub fn from_slider(value: u32) -> Self {
-        match value {
-            0 => Self::Safe,
-            2 => Self::Aggressive,
-            _ => Self::Balanced,
-        }
-    }
-    pub fn slider(self) -> u32 {
-        match self {
-            Self::Safe => 0,
-            Self::Balanced => 1,
-            Self::Aggressive => 2,
-        }
-    }
-}
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct Preferences {
@@ -45,15 +29,20 @@ pub struct Preferences {
     pub provider_registry: Option<PathBuf>,
     pub skill_manifest: Option<PathBuf>,
     pub active_skill: String,
+    pub active_skills: Vec<String>,
     pub cloud_chat: bool,
     pub cloud_task: bool,
     pub cloud_provider: String,
     pub cloud_model: String,
     pub documentation: Option<PathBuf>,
+    pub check_config: Option<PathBuf>,
+    pub environments: Option<PathBuf>,
+    pub environment_manifest_sha256: Option<String>,
+    pub allowed_environments: Vec<String>,
+    pub save_task_sessions: bool,
+    pub task_session_db: Option<PathBuf>,
     pub files: String,
     pub subagents: bool,
-    /// One verification command per line (cargo/npm/pytest/…); run on a scratch copy.
-    pub check_commands: String,
     /// GitHub connector: owner/name, issue number, token env var name (never the token).
     pub github_repo: String,
     pub github_issue: String,
@@ -82,52 +71,81 @@ impl Default for Preferences {
             provider_registry: None,
             skill_manifest: None,
             active_skill: String::new(),
+            active_skills: Vec::new(),
             cloud_chat: false,
             cloud_task: false,
             cloud_provider: String::new(),
             cloud_model: String::new(),
             documentation: None,
+            check_config: None,
+            environments: None,
+            environment_manifest_sha256: None,
+            allowed_environments: Vec::new(),
+            save_task_sessions: false,
+            task_session_db: None,
             files: String::new(),
             subagents: false,
-            check_commands: String::new(),
             github_repo: String::new(),
             github_issue: String::new(),
             github_token_env: "GITHUB_TOKEN".into(),
             optimization: Optimization::Balanced,
             dedup_tool_context: false,
-            context: 4096,
-            tokens: 512,
-            calls: 12,
+            context: 8192,
+            tokens: 2048,
+            calls: 48,
             threads: crate::inference::default_threads(),
-            gpu_layers: 0,
-            timeout: 600,
+            gpu_layers: if cfg!(feature = "cuda") {
+                crate::resources::GPU_AUTO
+            } else {
+                0
+            },
+            timeout: 1800,
         }
     }
 }
 impl Preferences {
+    /// Keep old settings compatible; once the catalog is edited the UI clears
+    /// active_skill and stores the explicit ordered selection in active_skills.
+    pub fn selected_skills(&self) -> Vec<String> {
+        if self.active_skills.is_empty() && !self.active_skill.is_empty() {
+            vec![self.active_skill.clone()]
+        } else {
+            self.active_skills.clone()
+        }
+    }
+
     fn valid(&self) -> bool {
         self.schema_version == 1
             && (128..=32768).contains(&self.context)
             && (1..=8192).contains(&self.tokens)
-            && (1..=24).contains(&self.calls)
+            && (1..=256).contains(&self.calls)
             && (!self.subagents || self.calls >= 3)
             && (1..=256).contains(&self.threads)
             && self.gpu_layers <= 1024
             && (1..=3600).contains(&self.timeout)
             && self.active_skill.len() <= 64
+            && self.active_skills.len() <= 32
+            && self
+                .active_skills
+                .iter()
+                .all(|id| !id.is_empty() && id.len() <= 64)
+            && self
+                .active_skills
+                .iter()
+                .collect::<std::collections::HashSet<_>>()
+                .len()
+                == self.active_skills.len()
             && self.cloud_provider.len() <= 128
             && self.cloud_model.len() <= 256
+            && self.allowed_environments.len() <= 64
+            && self
+                .allowed_environments
+                .iter()
+                .all(|s| crate::universal::environment::valid_id(s))
             && self.files.len() <= 32768
-            && self.check_commands.len() <= 4096
             && self.github_repo.len() <= 201
             && self.github_issue.len() <= 12
             && self.github_token_env.len() <= 64
-            && self
-                .check_commands
-                .lines()
-                .filter(|l| !l.trim().is_empty())
-                .count()
-                <= 8
             && self.files.lines().filter(|l| !l.trim().is_empty()).count() <= 32
             && [
                 &self.repo,
@@ -135,6 +153,9 @@ impl Preferences {
                 &self.documentation,
                 &self.provider_registry,
                 &self.skill_manifest,
+                &self.check_config,
+                &self.environments,
+                &self.task_session_db,
             ]
             .into_iter()
             .all(|p| p.as_ref().is_none_or(|p| p.as_os_str().len() <= 4096))
@@ -205,6 +226,30 @@ pub fn config_path() -> Option<PathBuf> {
 mod tests {
     use super::*;
     #[test]
+    fn multiple_skills_roundtrip_and_legacy_selection_survives() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("settings.json");
+        let mut prefs = Preferences {
+            active_skills: vec!["rust".into(), "review".into()],
+            ..Preferences::default()
+        };
+        prefs.save(&path).unwrap();
+        assert_eq!(
+            Preferences::load(&path).unwrap().selected_skills(),
+            prefs.active_skills
+        );
+        let mut legacy = serde_json::to_value(&prefs).unwrap();
+        legacy.as_object_mut().unwrap().remove("active_skills");
+        legacy["active_skill"] = "rust".into();
+        std::fs::write(&path, serde_json::to_vec(&legacy).unwrap()).unwrap();
+        assert_eq!(
+            Preferences::load(&path).unwrap().selected_skills(),
+            ["rust"]
+        );
+        prefs.active_skills.push("rust".into());
+        assert!(prefs.save(&path).is_err());
+    }
+    #[test]
     fn provider_registry_path_roundtrip_and_legacy_settings() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("settings.json");
@@ -233,11 +278,17 @@ mod tests {
         let mut legacy = serde_json::to_value(&prefs).unwrap();
         legacy.as_object_mut().unwrap().remove("gpu_layers");
         std::fs::write(&path, serde_json::to_vec(&legacy).unwrap()).unwrap();
+        assert_eq!(
+            Preferences::load(&path).unwrap().gpu_layers,
+            Preferences::default().gpu_layers
+        );
+        prefs.gpu_layers = 0;
+        prefs.save(&path).unwrap();
         assert_eq!(Preferences::load(&path).unwrap().gpu_layers, 0);
         prefs.gpu_layers = 1025;
         assert!(prefs.save(&path).is_err());
         prefs.reset_inference();
-        assert_eq!(prefs.gpu_layers, 0);
+        assert_eq!(prefs.gpu_layers, Preferences::default().gpu_layers);
     }
 
     #[test]
@@ -255,7 +306,6 @@ mod tests {
             };
             prefs.save(&path).unwrap();
             assert_eq!(Preferences::load(&path).unwrap().optimization, mode);
-            assert_eq!(Optimization::from_slider(mode.slider()), mode);
         }
         let mut legacy = serde_json::to_value(Preferences::default()).unwrap();
         legacy.as_object_mut().unwrap().remove("optimization");
@@ -309,8 +359,6 @@ mod tests {
         assert!(Preferences::load(&path).is_err());
         let json = serde_json::to_value(p).unwrap();
         assert_eq!(json["optimization"], "balanced");
-        assert_eq!(Optimization::from_slider(0), Optimization::Safe);
-        assert_eq!(Optimization::from_slider(2), Optimization::Aggressive);
         assert!(json.get("task").is_none());
         assert!(json.get("report").is_none());
         assert!(json.get("api_key").is_none());

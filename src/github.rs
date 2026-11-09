@@ -613,12 +613,17 @@ pub fn run(args: GithubArgs, output: &mut impl Write) -> io::Result<()> {
                 .map_err(|_| io::Error::new(io::ErrorKind::InvalidData, "Invalid task report"))?;
             let canonical = workdir.canonicalize()?;
             if report.status != "completed"
-                || !matches!(report.schema_version, 1..=4)
+                || !matches!(report.schema_version, 1..=5)
                 || report.workspace != canonical
             {
                 return Err(io::Error::other("Incomplete report or a different project"));
             }
-            if report.checks.last().is_some_and(|run| !run.passed) && !allow_failed_checks {
+            if report
+                .verifications
+                .last()
+                .is_some_and(|v| !v.result.passed())
+                && !allow_failed_checks
+            {
                 return Err(io::Error::new(
                     io::ErrorKind::PermissionDenied,
                     "Last verification failed; pass --allow-failed-checks to publish anyway",

@@ -1,0 +1,26 @@
+{
+  "schema_version": 1,
+  "cases": [
+    {
+      "id": "python-multifile-pricing",
+      "profile": "python",
+      "source": "source",
+      "sha256": {
+        "pricing.py": "356a9415c1d845f4f974c7d88b62f708c0f57e2ea83632c89c39f395630efc47",
+        "orders.py": "bf59f9143d6edb7d1532f76af78631b958b8db523049336f5a0c43b09f92cda5"
+      },
+      "baseline": "fail",
+      "files": [
+        "pricing.py",
+        "orders.py"
+      ],
+      "task": "Fix order pricing: subtotal must multiply each unit price by quantity, discounted must return the amount remaining after the percentage discount, and checkout must return the rounded final price. Preserve the public function names and empty-order behavior. Verify the result using the configured check.",
+      "allowed_changes": [
+        "pricing.py",
+        "orders.py"
+      ],
+      "check_config": "check.json",
+      "check_sha256": "54caae2686ca5d865805d8fa4c6732b456ce3beccdf3d7da8b553df095418157"
+    }
+  ]
+}

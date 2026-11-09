@@ -29,12 +29,19 @@ alpha добавляет task/предложения/apply и ограничен
 [lossless optimizer](../src/context_optimizer.rs).
 Это план, а не доказательство наличия подсистем.
 
+Каталог ECC: [общий загрузчик](../src/skills.rs),
+[Desktop](../src/desktop/skills.rs), [этап 2a](plans/0015-ecc-skill-catalog.md).
+Явно выбранные локальные навыки, без исполнения scripts/hooks и автоустановки.
+Установленные снимки/версии: [src/skill_package.rs](../src/skill_package.rs),
+CLI `skill-package`, [этап 2b](plans/0016-ecc-package-versions.md).
+
 ## Следующий этап
 
 Текущее состояние M1 — в [плане](plans/0002-local-cli.md).
 M2/alpha/desktop, универсальные проекты и документация реализованы в следующих
-планах ниже. Следующие улучшения предложены в roadmap; CUDA и качество 7B
-на пользовательском ПК ещё не проверены.
+планах ниже. Следующие улучшения предложены в roadmap. CPU coding fixtures
+7B/9B и отдельный CUDA smoke проверены в пределах сценариев этапа 1;
+общая приёмка качества кодинга остаётся открытой.
 Пользовательский профиль железа хранится в игнорируемой `.lyra/user-hardware.json`,
 если он есть в текущей рабочей среде. Он не входит в Git и не подменяет диагностику.
 
@@ -98,6 +105,20 @@ Desktop conversations: [план](plans/0013-desktop-conversations-models.md), [
 
 Chat reliability/activity: [план](plans/0014-chat-reliability-activity.md), [capability contract](../src/desktop/chat_policy.rs), [worker/progress](../src/desktop/job.rs).
 
-GitHub и проверка подагентов: [github](../src/github.rs), [verify](../src/verify.rs),
-[тесты GitHub](../tests/github.rs), [инструкция](GITHUB.md). `lyra github …`;
-`task --check` выполняет разрешённые команды во временной копии и возвращает сбой кодеру.
+GitHub-коннектор: [github](../src/github.rs), [тесты](../tests/github.rs), [инструкция](GITHUB.md). `lyra github …`, Desktop → Помощники.
+Проверяемые workflow: [программа](plans/0018-quality-workflows.md),
+[CLI-контракты/ограничения](WORKFLOWS.md), [публикация/recovery](../src/publication.rs), [executor](../src/executor.rs),
+[SQLite snapshots](../src/session.rs), [eval harness](../tools/evaluate.py).
+
+Большие задачи: [retrieval](../src/retrieval.rs), [token budget/provenance](../src/task_context.rs),
+[Desktop workflows](../src/desktop/workflows.rs), [корпус и метрики](EVALUATION.md),
+[validator](../tools/validate_corpus.py), [изолированный corpus CI](../.github/workflows/corpus.yml).
+
+Ограничения durable report: [task_report](../src/task_report.rs).
+Сравнение локальных моделей: [matrix runner](../tools/evaluate_models.py),
+[измерение ресурсов](../tools/eval_resources.py).
+
+Универсальные задачи: [контракты/WorkPlan](../src/universal/mod.rs),
+[реестр](../src/universal/environment.rs), [исполнение](../src/universal/execution.rs),
+[blobs/publication](../src/universal/artifacts.rs), [Office/PDF](../tools/documents/lyra_documents.py),
+[инструкция](UNIVERSAL.md), [план](plans/0019-universal-tasks.md).

@@ -1,0 +1,11 @@
+{
+  "image": "node@sha256:a43f7fc3e52e87d12a905f46eea0275def84ca8f2981a5b53fed44d7fb398ee0",
+  "program": "node",
+  "args": [
+    "--input-type=module",
+    "-e",
+    "import assert from 'node:assert/strict';\nimport * as sut from '/source/main.mjs';\nassert.equal(sut.decode('q=hello+world').q,'hello world');assert.deepEqual(sut.decode('tag=a&tag=b').tag,['a','b']);assert.equal(sut.decode('x=%D0%BA%D0%BE%D0%B4').x,'код');assert.equal(Object.keys(sut.decode('')).length,0);assert.equal(sut.decode('__proto__=safe').__proto__,'safe');\n"
+  ],
+  "timeout_secs": 60,
+  "memory_mib": 512
+}
