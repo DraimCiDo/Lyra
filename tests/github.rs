@@ -451,3 +451,77 @@ fn graph_remote_builds_from_github_tree_and_pr_overlay_marks_blast_radius() {
     ]);
     assert!(String::from_utf8_lossy(&q.stdout).contains("CoreThing"));
 }
+
+#[test]
+fn graphify_json_is_imported_queried_and_overlaid_with_a_pull_request() {
+    let (url, _log) = stub(vec![(
+        "GET",
+        "/repos/o/r/pulls/8/files",
+        200,
+        r#"[{"filename":"pkg/core.py"}]"#.into(),
+    )]);
+    let dir = tempfile::tempdir().unwrap();
+    let graphify = dir.path().join("graph.json");
+    std::fs::write(&graphify, r#"{"directed":false,"multigraph":false,"graph":{},
+        "nodes":[{"label":"app.py","source_file":"pkg/app.py","source_location":"L1","id":"a","community":0},
+                 {"label":"run()","source_file":"pkg/app.py","source_location":"L4","id":"ar","community":0},
+                 {"label":"core.py","source_file":"pkg/core.py","source_location":"L1","id":"c","community":1},
+                 {"label":"Engine","source_file":"pkg/core.py","source_location":"L2","id":"ce","community":1}],
+        "links":[{"relation":"calls","confidence":"INFERRED","source":"ar","target":"ce"}]}"#).unwrap();
+    let run = |args: &[&str]| {
+        Command::new(env!("CARGO_BIN_EXE_lyra"))
+            .args(args)
+            .env("GITHUB_TOKEN", "t")
+            .output()
+            .unwrap()
+    };
+    let imported = dir.path().join("imported");
+    let out = run(&[
+        "graph",
+        "import",
+        "--graph",
+        graphify.to_str().unwrap(),
+        "--out",
+        imported.to_str().unwrap(),
+    ]);
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert!(imported.join("graph.html").exists());
+    let q = run(&[
+        "graph",
+        "query",
+        "--graph",
+        graphify.to_str().unwrap(),
+        "--term",
+        "Engine",
+    ]);
+    assert!(String::from_utf8_lossy(&q.stdout).contains("run()"));
+    let pr_out = dir.path().join("pr");
+    let pr = run(&[
+        "graph",
+        "pr",
+        "--graph",
+        graphify.to_str().unwrap(),
+        "--github",
+        "o/r",
+        "--number",
+        "8",
+        "--api-url",
+        &url,
+        "--out",
+        pr_out.to_str().unwrap(),
+    ]);
+    assert!(
+        pr.status.success(),
+        "{}",
+        String::from_utf8_lossy(&pr.stderr)
+    );
+    let text = String::from_utf8_lossy(&pr.stdout);
+    assert!(
+        text.contains("changed  pkg/core.py") && text.contains("impacted pkg/app.py"),
+        "{text}"
+    );
+}

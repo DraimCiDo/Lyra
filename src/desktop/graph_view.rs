@@ -107,6 +107,18 @@ impl GraphView {
         });
     }
 
+    /// Open a prebuilt graph.json (Lyra or Graphify format).
+    pub fn open_file(&mut self, path: PathBuf) {
+        let (tx, rx) = channel();
+        self.rx = Some(rx);
+        self.status = "…".into();
+        std::thread::spawn(move || {
+            let result = codegraph::load_graph(&path)
+                .map(|graph| (graph, BTreeMap::new(), path.display().to_string()));
+            let _ = tx.send(result);
+        });
+    }
+
     #[cfg(feature = "gateway-http")]
     pub fn build_pr(&mut self, repo: PathBuf, github: String, number: u64, token_env: String) {
         let (tx, rx) = channel();
@@ -219,6 +231,18 @@ impl GraphView {
                 && let Some(repo) = repo
             {
                 self.build_local(repo.clone());
+            }
+            if ui
+                .add_enabled(
+                    !self.busy(),
+                    egui::Button::new(l.text("Открыть graph.json (Graphify/Lyra)")),
+                )
+                .clicked()
+                && let Some(path) = rfd::FileDialog::new()
+                    .add_filter("JSON", &["json"])
+                    .pick_file()
+            {
+                self.open_file(path);
             }
             #[cfg(feature = "gateway-http")]
             {

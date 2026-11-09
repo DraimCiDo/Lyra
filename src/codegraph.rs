@@ -66,6 +66,16 @@ pub struct Edge {
     pub from: usize,
     pub to: usize,
     pub kind: EdgeKind,
+    /// Original relation name for imported graphs (e.g. `calls`, `inherits`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub relation: Option<String>,
+    /// True when the producer marked the edge as inferred rather than read from source.
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub inferred: bool,
+}
+
+fn is_false(v: &bool) -> bool {
+    !*v
 }
 
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
@@ -453,6 +463,8 @@ pub fn build(files: &[SourceFile], truncated: bool) -> Graph {
                 from: fi,
                 to: id,
                 kind: EdgeKind::Defines,
+                relation: None,
+                inferred: false,
             });
         }
     }
@@ -466,6 +478,8 @@ pub fn build(files: &[SourceFile], truncated: bool) -> Graph {
                         from: fi,
                         to: target,
                         kind: EdgeKind::Imports,
+                        relation: None,
+                        inferred: false,
                     });
                 }
             }
@@ -498,6 +512,8 @@ pub fn build(files: &[SourceFile], truncated: bool) -> Graph {
                     from: fi,
                     to: sym,
                     kind: EdgeKind::References,
+                    relation: None,
+                    inferred: false,
                 });
                 if graph.edges.len() >= MAX_EDGES {
                     graph.truncated = true;
@@ -865,6 +881,26 @@ pub enum GraphCommand {
         #[arg(long, default_value_t = 300)]
         max_files: usize,
     },
+    /// Import a Graphify graph.json (or a Lyra graph.json) and write Lyra's report and graph.html
+    Import {
+        #[arg(long)]
+        graph: PathBuf,
+        #[arg(long)]
+        out: PathBuf,
+    },
+    /// Run an installed Graphify CLI offline (code only, no LLM) and import its result.
+    /// Writes graphify-out/ inside the repo, as Graphify itself does.
+    Graphify {
+        #[arg(long)]
+        repo: PathBuf,
+        #[arg(long)]
+        out: PathBuf,
+        /// Path or name of the graphify executable
+        #[arg(long, default_value = "graphify")]
+        exe: String,
+        #[arg(long, default_value_t = 600)]
+        timeout_secs: u64,
+    },
     /// Show a node and its neighbours
     Query {
         #[arg(long)]
@@ -884,8 +920,12 @@ pub enum GraphCommand {
     /// Blast radius of a GitHub pull request on a local checkout; writes a highlighted graph.html
     #[cfg(feature = "gateway-http")]
     Pr {
+        /// Local checkout to analyse (ignored when --graph is given)
+        #[arg(long, required_unless_present = "graph")]
+        repo: Option<PathBuf>,
+        /// Prebuilt graph.json (Lyra or Graphify) instead of analysing --repo
         #[arg(long)]
-        repo: PathBuf,
+        graph: Option<PathBuf>,
         #[arg(long)]
         github: String,
         #[arg(long)]
@@ -924,7 +964,13 @@ pub fn load_graph(path: &Path) -> io::Result<Graph> {
             "graph.json is too large",
         ));
     }
-    serde_json::from_slice(&std::fs::read(path)?)
+    let bytes = std::fs::read(path)?;
+    let is_graphify = serde_json::from_slice::<serde_json::Value>(&bytes)
+        .is_ok_and(|v| v.get("links").is_some() || v.get("directed").is_some());
+    if is_graphify {
+        return crate::graphify::import(&bytes);
+    }
+    serde_json::from_slice(&bytes)
         .map_err(|_| io::Error::new(io::ErrorKind::InvalidData, "Invalid graph.json"))
 }
 
@@ -989,6 +1035,45 @@ pub fn run(args: GraphArgs, output: &mut impl Write) -> io::Result<()> {
                 out.display()
             )
         }
+        GraphCommand::Import { graph, out } => {
+            let loaded = load_graph(&graph)?;
+            write_outputs(
+                &loaded,
+                &graph.display().to_string(),
+                &out,
+                &BTreeMap::new(),
+            )?;
+            writeln!(
+                output,
+                "{} nodes, {} edges, {} communities → {}",
+                loaded.nodes.len(),
+                loaded.edges.len(),
+                loaded.communities,
+                out.display()
+            )
+        }
+        GraphCommand::Graphify {
+            repo,
+            out,
+            exe,
+            timeout_secs,
+        } => {
+            let repo = repo.canonicalize()?;
+            crate::graphify::run_extract(
+                &exe,
+                &repo,
+                std::time::Duration::from_secs(timeout_secs),
+            )?;
+            let loaded = load_graph(&repo.join("graphify-out").join("graph.json"))?;
+            write_outputs(&loaded, "graphify", &out, &BTreeMap::new())?;
+            writeln!(
+                output,
+                "{} nodes, {} edges → {}",
+                loaded.nodes.len(),
+                loaded.edges.len(),
+                out.display()
+            )
+        }
         GraphCommand::Query { graph, term } => {
             let graph = load_graph(&graph)?;
             let hits = graph.find(&term);
@@ -1034,6 +1119,7 @@ pub fn run(args: GraphArgs, output: &mut impl Write) -> io::Result<()> {
         #[cfg(feature = "gateway-http")]
         GraphCommand::Pr {
             repo,
+            graph: prebuilt,
             github,
             number,
             out,
@@ -1043,8 +1129,14 @@ pub fn run(args: GraphArgs, output: &mut impl Write) -> io::Result<()> {
         } => {
             let client = crate::github::GithubClient::new(&api_url, &token_env)?;
             let changed = client.pull_filenames(&github, number)?;
-            let (files, truncated) = load_dir(&repo.canonicalize()?)?;
-            let graph = build(&files, truncated);
+            let graph = match (prebuilt, repo) {
+                (Some(path), _) => load_graph(&path)?,
+                (None, Some(repo)) => {
+                    let (files, truncated) = load_dir(&repo.canonicalize()?)?;
+                    build(&files, truncated)
+                }
+                (None, None) => return Err(io::Error::other("--repo or --graph is required")),
+            };
             let radius = graph.impact(&changed, depth.min(5));
             write_outputs(&graph, &format!("{github}#{number}"), &out, &radius)?;
             writeln!(

@@ -552,6 +552,7 @@ impl Language {
             "Добавляет ~3 КБ структуры (имена файлов, без кода) в запросы; для малых контекстов GGUF увеличьте контекст." => {
                 "Adds ~3 KB of structure (file names, no code) to requests; raise the GGUF context for small windows."
             }
+            "Открыть graph.json (Graphify/Lyra)" => "Open graph.json (Graphify/Lyra)",
             "Граф кода" => "Code graph",
             "Построить граф проекта" => "Build project graph",
             "Влияние PR из GitHub" => "GitHub PR impact",

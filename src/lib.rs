@@ -8,6 +8,7 @@ pub mod doctor;
 pub mod executor;
 #[cfg(feature = "gateway-http")]
 pub mod github;
+pub mod graphify;
 pub mod inference;
 pub mod knowledge;
 pub mod model_gateway;
