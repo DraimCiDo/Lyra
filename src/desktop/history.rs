@@ -147,35 +147,6 @@ impl Desktop {
         self.conversations.active = self.conversations.sessions.len() - 1;
         self.capture_session();
     }
-    pub(super) fn history_sidebar(&mut self, ui: &mut egui::Ui) {
-        let l = self.prefs.language;
-        if ui
-            .add_enabled(self.job.is_none(), egui::Button::new(l.text("Новый чат")))
-            .clicked()
-        {
-            self.new_session();
-        }
-        ui.separator();
-        let mut open = None;
-        egui::ScrollArea::vertical().show(ui, |ui| {
-            for (index, session) in self.conversations.sessions.iter().enumerate().rev() {
-                if ui
-                    .add_enabled(
-                        self.job.is_none(),
-                        egui::Button::new(session.title())
-                            .selected(index == self.conversations.active)
-                            .wrap_mode(egui::TextWrapMode::Truncate),
-                    )
-                    .clicked()
-                {
-                    open = Some(index);
-                }
-            }
-        });
-        if let Some(index) = open {
-            self.open_session(index);
-        }
-    }
     pub(super) fn save_history(&mut self, ctx: &egui::Context, force: bool) {
         if !self.history_available {
             return;

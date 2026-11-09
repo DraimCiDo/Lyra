@@ -16,21 +16,37 @@ pub enum Language {
     En,
 }
 
+/// Semantic colour tokens. Layers go background → surface → card → input → hover.
 #[derive(Clone, Copy)]
 pub struct Colors {
+    /// Main canvas.
     pub background: Color32,
+    /// Navigation rail, side panels and status bar.
+    pub surface: Color32,
+    /// Raised cards and popups.
     pub card: Color32,
     pub input: Color32,
+    pub hover: Color32,
     pub border: Color32,
     pub text: Color32,
     pub muted: Color32,
     pub accent: Color32,
     pub on_accent: Color32,
     pub success: Color32,
+    pub warning: Color32,
     pub error: Color32,
 }
 const fn rgb(r: u8, g: u8, b: u8) -> Color32 {
     Color32::from_rgb(r, g, b)
+}
+impl Colors {
+    /// Accent blended into a surface: selected rows, chips, soft highlights.
+    pub fn accent_soft(&self) -> Color32 {
+        self.mix(self.card, self.accent, 0.16)
+    }
+    pub fn mix(&self, from: Color32, to: Color32, t: f32) -> Color32 {
+        Color32::from(egui::lerp(egui::Rgba::from(from)..=egui::Rgba::from(to), t))
+    }
 }
 impl Palette {
     pub const ALL: [Self; 4] = [Self::Mint, Self::Ocean, Self::Violet, Self::Light];
@@ -45,56 +61,72 @@ impl Palette {
     pub fn colors(self) -> Colors {
         match self {
             Self::Mint => Colors {
-                background: rgb(18, 26, 27),
-                card: rgb(27, 38, 39),
-                input: rgb(37, 50, 51),
-                border: rgb(58, 77, 75),
-                text: rgb(231, 239, 235),
-                muted: rgb(167, 185, 179),
-                accent: rgb(139, 204, 180),
-                on_accent: rgb(20, 33, 29),
-                success: rgb(150, 215, 178),
-                error: rgb(240, 163, 169),
+                background: rgb(13, 17, 18),
+                surface: rgb(17, 23, 24),
+                card: rgb(22, 30, 31),
+                input: rgb(28, 38, 39),
+                hover: rgb(36, 49, 50),
+                border: rgb(40, 54, 55),
+                text: rgb(232, 240, 237),
+                muted: rgb(140, 160, 156),
+                accent: rgb(61, 214, 168),
+                on_accent: rgb(6, 30, 24),
+                success: rgb(96, 214, 140),
+                warning: rgb(232, 176, 75),
+                error: rgb(242, 114, 127),
             },
             Self::Ocean => Colors {
-                background: rgb(18, 26, 35),
-                card: rgb(28, 39, 51),
-                input: rgb(39, 53, 69),
-                border: rgb(58, 77, 96),
-                text: rgb(230, 237, 245),
-                muted: rgb(166, 182, 201),
-                accent: rgb(143, 188, 219),
-                on_accent: rgb(19, 32, 44),
-                success: rgb(154, 215, 190),
-                error: rgb(240, 163, 169),
+                background: rgb(12, 16, 23),
+                surface: rgb(16, 21, 30),
+                card: rgb(21, 28, 40),
+                input: rgb(27, 36, 51),
+                hover: rgb(35, 47, 66),
+                border: rgb(38, 50, 69),
+                text: rgb(230, 237, 247),
+                muted: rgb(139, 154, 177),
+                accent: rgb(76, 163, 255),
+                on_accent: rgb(5, 22, 45),
+                success: rgb(96, 214, 140),
+                warning: rgb(232, 176, 75),
+                error: rgb(242, 114, 127),
             },
             Self::Violet => Colors {
-                background: rgb(25, 23, 34),
-                card: rgb(36, 33, 47),
-                input: rgb(49, 44, 62),
-                border: rgb(74, 65, 91),
-                text: rgb(239, 234, 245),
-                muted: rgb(187, 176, 202),
-                accent: rgb(191, 171, 221),
-                on_accent: rgb(35, 25, 48),
-                success: rgb(158, 218, 187),
-                error: rgb(240, 163, 169),
+                background: rgb(15, 15, 20),
+                surface: rgb(20, 20, 27),
+                card: rgb(26, 26, 35),
+                input: rgb(33, 33, 45),
+                hover: rgb(42, 42, 58),
+                border: rgb(44, 44, 60),
+                text: rgb(236, 236, 244),
+                muted: rgb(150, 150, 172),
+                accent: rgb(112, 96, 236),
+                on_accent: rgb(255, 255, 255),
+                success: rgb(96, 214, 140),
+                warning: rgb(232, 176, 75),
+                error: rgb(242, 114, 127),
             },
             Self::Light => Colors {
-                background: rgb(238, 239, 234),
-                card: rgb(250, 250, 245),
-                input: rgb(227, 232, 222),
-                border: rgb(190, 202, 188),
-                text: rgb(35, 48, 40),
-                muted: rgb(82, 100, 87),
-                accent: rgb(54, 111, 86),
-                on_accent: rgb(250, 250, 245),
-                success: rgb(27, 103, 66),
-                error: rgb(161, 57, 68),
+                background: rgb(246, 246, 249),
+                surface: rgb(238, 238, 244),
+                card: rgb(255, 255, 255),
+                input: rgb(240, 240, 246),
+                hover: rgb(228, 228, 238),
+                border: rgb(220, 220, 232),
+                text: rgb(27, 27, 36),
+                muted: rgb(86, 86, 106),
+                accent: rgb(91, 75, 219),
+                on_accent: rgb(255, 255, 255),
+                success: rgb(22, 128, 75),
+                warning: rgb(150, 92, 0),
+                error: rgb(196, 48, 64),
             },
         }
     }
 }
+
+pub const RADIUS: u8 = 10;
+pub const RADIUS_SMALL: u8 = 7;
+
 pub fn configure(ctx: &egui::Context, palette: Palette, animations: bool) {
     let c = palette.colors();
     let light = palette == Palette::Light;
@@ -106,47 +138,67 @@ pub fn configure(ctx: &egui::Context, palette: Palette, animations: bool) {
         },
         ..Default::default()
     };
-    style.visuals.panel_fill = c.background;
-    style.visuals.window_fill = c.card;
-    style.visuals.extreme_bg_color = c.input;
-    style.visuals.faint_bg_color = c.input;
-    style.visuals.override_text_color = Some(c.text);
-    style.visuals.weak_text_color = Some(c.muted);
-    style.visuals.selection.bg_fill = Color32::from(egui::lerp(
-        egui::Rgba::from(c.input)..=egui::Rgba::from(c.accent),
-        0.25,
-    ));
-    style.visuals.selection.stroke = Stroke::new(1.0, c.text);
-    style.visuals.hyperlink_color = c.accent;
-    for v in [
-        &mut style.visuals.widgets.inactive,
-        &mut style.visuals.widgets.noninteractive,
+    let v = &mut style.visuals;
+    v.panel_fill = c.background;
+    v.window_fill = c.card;
+    v.window_stroke = Stroke::new(1.0, c.border);
+    v.window_corner_radius = egui::CornerRadius::same(14);
+    v.menu_corner_radius = egui::CornerRadius::same(RADIUS);
+    v.extreme_bg_color = c.input;
+    v.faint_bg_color = c.surface;
+    v.code_bg_color = c.input;
+    v.override_text_color = Some(c.text);
+    v.weak_text_color = Some(c.muted);
+    v.selection.bg_fill = c.accent_soft();
+    v.selection.stroke = Stroke::new(1.0, c.accent);
+    v.hyperlink_color = c.accent;
+    v.window_shadow = egui::Shadow {
+        offset: [0, 8],
+        blur: 24,
+        spread: 0,
+        color: Color32::from_black_alpha(if light { 40 } else { 140 }),
+    };
+    v.popup_shadow = v.window_shadow;
+    v.widgets.noninteractive.bg_fill = c.card;
+    v.widgets.noninteractive.weak_bg_fill = c.card;
+    v.widgets.noninteractive.bg_stroke = Stroke::new(1.0, c.border);
+    v.widgets.noninteractive.fg_stroke = Stroke::new(1.0, c.text);
+    v.widgets.inactive.bg_fill = c.input;
+    v.widgets.inactive.weak_bg_fill = c.input;
+    v.widgets.inactive.bg_stroke = Stroke::new(1.0, c.border);
+    v.widgets.inactive.fg_stroke = Stroke::new(1.0, c.text);
+    v.widgets.hovered.bg_fill = c.hover;
+    v.widgets.hovered.weak_bg_fill = c.hover;
+    v.widgets.hovered.bg_stroke = Stroke::new(1.0, c.accent.gamma_multiply(0.7));
+    v.widgets.hovered.fg_stroke = Stroke::new(1.0, c.text);
+    v.widgets.active.bg_fill = c.accent_soft();
+    v.widgets.active.weak_bg_fill = c.accent_soft();
+    v.widgets.active.bg_stroke = Stroke::new(1.0, c.accent);
+    v.widgets.active.fg_stroke = Stroke::new(1.0, c.text);
+    v.widgets.open.bg_fill = c.hover;
+    v.widgets.open.weak_bg_fill = c.hover;
+    for w in [
+        &mut v.widgets.noninteractive,
+        &mut v.widgets.inactive,
+        &mut v.widgets.hovered,
+        &mut v.widgets.active,
+        &mut v.widgets.open,
     ] {
-        v.bg_fill = c.input;
-        v.weak_bg_fill = c.card;
-        v.bg_stroke = Stroke::new(1.0, c.border);
-        v.fg_stroke = Stroke::new(1.0, c.text);
-        v.corner_radius = egui::CornerRadius::same(8);
+        w.corner_radius = egui::CornerRadius::same(RADIUS_SMALL);
     }
-    for v in [
-        &mut style.visuals.widgets.hovered,
-        &mut style.visuals.widgets.active,
-    ] {
-        v.bg_fill = c.input;
-        v.weak_bg_fill = c.input;
-        v.bg_stroke = Stroke::new(1.0, c.accent);
-        v.fg_stroke = Stroke::new(1.0, c.accent);
-        v.corner_radius = egui::CornerRadius::same(8);
-    }
-    style.animation_time = if animations { 0.14 } else { 0.0 };
-    style.spacing.item_spacing = egui::vec2(8.0, 7.0);
-    style.spacing.button_padding = egui::vec2(10.0, 6.0);
-    style.spacing.slider_width = 220.0;
+    style.animation_time = if animations { 0.12 } else { 0.0 };
+    style.spacing.item_spacing = egui::vec2(8.0, 8.0);
+    style.spacing.button_padding = egui::vec2(12.0, 6.0);
+    style.spacing.interact_size.y = 28.0;
+    style.spacing.slider_width = 240.0;
+    style.spacing.scroll.bar_width = 8.0;
+    style.spacing.scroll.floating = true;
+    style.spacing.combo_width = 180.0;
     for (kind, size) in [
         (egui::TextStyle::Body, 14.0),
         (egui::TextStyle::Button, 14.0),
-        (egui::TextStyle::Small, 11.5),
-        (egui::TextStyle::Heading, 18.0),
+        (egui::TextStyle::Small, 12.0),
+        (egui::TextStyle::Heading, 22.0),
     ] {
         style
             .text_styles
@@ -154,7 +206,7 @@ pub fn configure(ctx: &egui::Context, palette: Palette, animations: bool) {
     }
     style
         .text_styles
-        .insert(egui::TextStyle::Monospace, egui::FontId::monospace(13.0));
+        .insert(egui::TextStyle::Monospace, egui::FontId::monospace(12.5));
     let theme = if light {
         egui::Theme::Light
     } else {
@@ -771,6 +823,179 @@ impl Language {
             }
             "вызовов" => "calls",
             "предложений" => "proposals",
+            "GitHub-коннектор недоступен в этой сборке." => {
+                "The GitHub connector is not available in this build."
+            }
+            "Issue из GitHub" => "GitHub issue",
+            "Issue как задача" => "Issue as a task",
+            "Issues как задачи, публикация предложений в виде черновика PR." => {
+                "Issues as tasks, proposals published as a draft PR."
+            }
+            "Быстрая настройка" => "Quick setup",
+            "Бюджет общий для всех ролей." => {
+                "The budget is shared by all roles."
+            }
+            "Введите команду…" => "Type a command…",
+            "Весь набор" => "Apply all",
+            "Выберите GGUF и устройство для локальной модели. Для облачных моделей используйте HTTP-провайдеры." => {
+                "Choose a GGUF and device for the local model. Use HTTP providers for cloud models."
+            }
+            "Выбрать папку" => "Choose folder",
+            "Выбрать папку проекта…" => "Choose project folder…",
+            "Выполняется задача: часть настроек недоступна" => {
+                "A task is running: some settings are unavailable"
+            }
+            "Выполняется…" => "Working…",
+            "Где разрешены облачные запросы" => {
+                "Where cloud requests are allowed"
+            }
+            "Данные" => "Data",
+            "Дедупликация результатов инструментов" => {
+                "Deduplicate tool results"
+            }
+            "Добавить тесты" => "Add tests",
+            "Добавь тесты для: " => "Add tests for: ",
+            "Загрузить как задачу" => "Load as task",
+            "Загрузка модели" => "Loading model",
+            "Запуск" => "Starting",
+            "Знания" => "Knowledge",
+            "Изменения" => "Changes",
+            "Изолированные Docker-проверки, среды выполнения скриптов и сохранение сессий." => {
+                "Isolated Docker checks, script environments and saved sessions."
+            }
+            "История чата" => "Chat history",
+            "Команды" => "Commands",
+            "Контекст агентов" => "Agent context",
+            "Копировать / Copy" => "Copy",
+            "Локальная модель" => "Local model",
+            "Модели" => "Models",
+            "Модель" => "Model",
+            "Модель не выбрана" => "No model selected",
+            "Найди причину ошибки и предложи минимальное исправление: " => {
+                "Find the cause of the bug and propose a minimal fix: "
+            }
+            "Найти и исправить ошибку" => "Find and fix a bug",
+            "Не удалось загрузить реестр провайдеров." => {
+                "Could not load the provider registry."
+            }
+            "Ничего не найдено" => "Nothing found",
+            "Новый" => "New",
+            "Номер issue" => "Issue number",
+            "Облачная модель для задач проекта" => {
+                "Cloud model for project tasks"
+            }
+            "Объясни структуру проекта: основные модули, точки входа и как они связаны." => {
+                "Explain the project structure: main modules, entry points and how they connect."
+            }
+            "Объяснить проект" => "Explain the project",
+            "Объём контекста" => "Context size",
+            "Опишите задачу по проекту…" => {
+                "Describe a task for the project…"
+            }
+            "Открыть граф кода" => "Open code graph",
+            "Папка проекта" => "Project folder",
+            "Папка проекта, файлы контекста и объём истории, передаваемой модели." => {
+                "Project folder, context files and how much history is sent to the model."
+            }
+            "Перейти к чату" => "Go to chat",
+            "План и итоги" => "Plan and summaries",
+            "Повторные старые наблюдения передаются один раз со ссылками; последние, ошибки и патчи дословно." => {
+                "Repeated old observations are sent once with references; the latest ones, errors and patches stay verbatim."
+            }
+            "Подготовка контекста" => "Preparing context",
+            "Поиск по настройкам" => "Search settings",
+            "Показать или скрыть панель изменений" => {
+                "Show or hide the results panel"
+            }
+            "Показать или скрыть список чатов" => {
+                "Show or hide the chat list"
+            }
+            "Показать результат задачи" => "Show task result",
+            "Покрыть поведение проверяемыми тестами" => {
+                "Cover behaviour with verifiable tests"
+            }
+            "При запуске задачи фрагменты исходного кода и задание отправляются выбранному провайдеру." => {
+                "When a task runs, source fragments and the task are sent to the selected provider."
+            }
+            "Приложение" => "Application",
+            "Причина и минимальная правка" => "Cause and minimal fix",
+            "Проверить" => "Validate",
+            "Проверка" => "Check",
+            "Проверка не запускалась" => "Not verified",
+            "Проверка не пройдена" => "Check failed",
+            "Проверка пройдена" => "Check passed",
+            "Проверки" => "Checks",
+            "Проверки и среды" => "Checks and environments",
+            "Проверки не запускались. Настройте Docker-проверку в «Проверки и среды»." => {
+                "No checks were run. Configure a Docker check in “Checks and environments”."
+            }
+            "Проект (для режима «Работа»)" => "Project (for Work mode)",
+            "Проект и контекст" => "Project and context",
+            "Публикация PR — в панели результата: вкладка «Изменения» → «Черновик PR»." => {
+                "Publish a PR from the results panel: Changes → Draft PR."
+            }
+            "Разрешить HTTP-запросы из чата" => {
+                "Allow HTTP requests from chat"
+            }
+            "Реестр провайдеров" => "Provider registry",
+            "Результат" => "Result",
+            "Репозиторий" => "Repository",
+            "Роли" => "Roles",
+            "Роли работают последовательно с одной моделью. Исследователь и ревьюер не изменяют файлы; дополнительные проверки требуют времени." => {
+                "Roles run sequentially with one model. The researcher and reviewer never change files; extra reviews take time."
+            }
+            "Сбросить" => "Reset",
+            "Содержимое и внешний вид требуют просмотра перед применением." => {
+                "Review the content and appearance before applying."
+            }
+            "Создай проект: " => "Create a project: ",
+            "Создать новый проект" => "Create a new project",
+            "Сокращается только история чата; исходники и ошибки не переписываются." => {
+                "Only the chat history is shortened; sources and errors are not rewritten."
+            }
+            "Сохраняется только путь. API-ключи должны находиться в переменных окружения." => {
+                "Only the path is stored. API keys must live in environment variables."
+            }
+            "Спланировать и создать с нуля" => {
+                "Plan and create from scratch"
+            }
+            "Спросите что угодно…" => "Ask anything…",
+            "Спросите, поставьте задачу по проекту или создайте новый." => {
+                "Ask a question, give a task for your project or start a new one."
+            }
+            "Структура, модули и точки входа" => {
+                "Structure, modules and entry points"
+            }
+            "Токен читается из переменной окружения и нигде не сохраняется." => {
+                "The token is read from an environment variable and never stored."
+            }
+            "Файлы контекста" => "Context files",
+            "Чат" => "Chat",
+            "Чат и задачи" => "Chat and tasks",
+            "Чаты" => "Chats",
+            "Черновик PR" => "Draft PR",
+            "Язык и движение" => "Language and motion",
+            "двоичный файл" => "binary file",
+            "не выбран" => "not selected",
+            "не пройдена" => "failed",
+            "новый" => "new",
+            "применено" => "applied",
+            "пройдена" => "passed",
+            "файлов" => "files",
+            "не выбрана" => "not selected",
+            "Файл GGUF" => "GGUF file",
+            "Устройство" => "Device",
+            "Файл проверки (JSON)" => "Check file (JSON)",
+            "Реестр сред" => "Environment registry",
+            "Входные файлы" => "Input files",
+            "До 32 файлов внутри рабочей папки; попадают в контекст задачи." => {
+                "Up to 32 files inside the project folder; added to the task context."
+            }
+            "Сохранённые задачи" => "Saved tasks",
+            "База задач" => "Task database",
+            "Структура проекта одним взглядом" => {
+                "Project structure at a glance"
+            }
             _ => ru,
         }
     }
@@ -803,6 +1028,11 @@ mod tests {
                 (c.on_accent, c.accent),
                 (c.error, c.card),
                 (c.success, c.card),
+                (c.warning, c.card),
+                (c.text, c.surface),
+                (c.muted, c.surface),
+                (c.muted, c.background),
+                (c.text, c.hover),
             ] {
                 let a = luminance(text);
                 let b = luminance(background);

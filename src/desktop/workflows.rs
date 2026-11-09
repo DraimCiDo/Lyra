@@ -295,131 +295,172 @@ impl Desktop {
         Ok(())
     }
     pub(super) fn workflow_settings(&mut self, ui: &mut egui::Ui) {
+        use super::kit::{self, section, setting_row};
         let l = self.prefs.language;
-        ui.separator();
-        ui.label(l.text("Среды выполнения и документы"));
-        if ui.button(l.text("Выбрать реестр сред…")).clicked()
-            && let Some(path) = rfd::FileDialog::new()
-                .add_filter("JSON", &["json"])
-                .pick_file()
-        {
-            match crate::universal::environment::Registry::load(&path) {
-                Ok(_) => {
-                    self.prefs.environments = Some(path);
-                    self.prefs.allowed_environments.clear();
-                }
-                Err(e) => self.fail(e),
-            }
-        }
-        if let Some(path) = &self.prefs.environments {
-            ui.label(path.display().to_string());
-            match crate::universal::environment::Registry::load(path) {
-                Ok(registry) => {
-                    for env in registry.environments {
-                        let mut granted = self.prefs.allowed_environments.contains(&env.id);
-                        if ui
-                            .checkbox(&mut granted, format!("{} — {}", env.id, env.description))
-                            .changed()
+        let c = self.prefs.palette.colors();
+        section(
+            ui,
+            c,
+            l.text("Проверка проекта в Docker"),
+            l.text(
+                "Модель сможет запускать только выбранную проверку в изолированной копии без сети.",
+            ),
+            |ui| {
+                let current = self
+                    .prefs
+                    .check_config
+                    .as_ref()
+                    .map(|p| p.display().to_string())
+                    .unwrap_or_else(|| l.text("не выбрана").to_owned());
+                setting_row(
+                    ui,
+                    c,
+                    l.text("Файл проверки (JSON)"),
+                    &current,
+                    |ui| {
+                        if self.prefs.check_config.is_some()
+                            && kit::ghost_button(ui, c, None, l.text("Отключить проверку"), true)
+                                .clicked()
                         {
-                            self.prefs.allowed_environments.retain(|s| s != &env.id);
-                            if granted {
-                                self.prefs.allowed_environments.push(env.id.clone());
+                            self.prefs.check_config = None;
+                        }
+                        if kit::primary_button(ui, c, None, l.text("Выбрать проверку JSON…"), true)
+                            .clicked()
+                            && let Some(path) = rfd::FileDialog::new()
+                                .add_filter("JSON", &["json"])
+                                .pick_file()
+                        {
+                            match crate::executor::load_config(&path) {
+                                Ok(_) => self.prefs.check_config = Some(path),
+                                Err(e) => self.fail(e),
                             }
                         }
-                        ui.small(&env.image);
-                        if ui
-                            .add_enabled(
-                                self.job.is_none(),
-                                egui::Button::new(l.text("Скачать образ этой среды")),
-                            )
-                            .clicked()
-                        {
-                            self.environment_prepare_id = env.id;
-                            if let Err(e) = self.start(Operation::EnvironmentPrepare, ui.ctx()) {
-                                self.fail(e);
+                    },
+                );
+            },
+        );
+        ui.add_space(10.0);
+        section(
+            ui,
+            c,
+            l.text("Среды выполнения и документы"),
+            l.text("Скрипты выполняются без сети в разрешенных контейнерах. Исходники меняются после применения результата."),
+            |ui| {
+                let path_text = self
+                    .prefs
+                    .environments
+                    .as_ref()
+                    .map(|p| p.display().to_string())
+                    .unwrap_or_else(|| l.text("не выбран").to_owned());
+                setting_row(ui, c, l.text("Реестр сред"), &path_text, |ui| {
+                    if self.prefs.environments.is_some()
+                        && kit::ghost_button(ui, c, None, l.text("Отключить выполнение скриптов"), true).clicked()
+                    {
+                        self.prefs.environments = None;
+                        self.prefs.allowed_environments.clear();
+                    }
+                    if kit::primary_button(ui, c, None, l.text("Выбрать реестр сред…"), true).clicked()
+                        && let Some(path) = rfd::FileDialog::new().add_filter("JSON", &["json"]).pick_file()
+                    {
+                        match crate::universal::environment::Registry::load(&path) {
+                            Ok(_) => {
+                                self.prefs.environments = Some(path);
+                                self.prefs.allowed_environments.clear();
                             }
+                            Err(e) => self.fail(e),
+                        }
+                    }
+                });
+                if let Some(path) = self.prefs.environments.clone() {
+                    match crate::universal::environment::Registry::load(&path) {
+                        Ok(registry) => {
+                            for env in registry.environments {
+                                kit::divider(ui, c);
+                                let mut granted = self.prefs.allowed_environments.contains(&env.id);
+                                setting_row(ui, c, &format!("{} — {}", env.id, env.description), &env.image, |ui| {
+                                    if ui
+                                        .add_enabled(
+                                            self.job.is_none(),
+                                            egui::Button::new(l.text("Скачать образ этой среды")),
+                                        )
+                                        .clicked()
+                                    {
+                                        self.environment_prepare_id = env.id.clone();
+                                        if let Err(e) = self.start(Operation::EnvironmentPrepare, ui.ctx()) {
+                                            self.fail(e);
+                                        }
+                                    }
+                                    if icons::toggle(ui, &mut granted, "", self.prefs.animations, c.accent, c.on_accent).changed() {
+                                        self.prefs.allowed_environments.retain(|s| s != &env.id);
+                                        if granted {
+                                            self.prefs.allowed_environments.push(env.id.clone());
+                                        }
+                                    }
+                                });
+                            }
+                        }
+                        Err(e) => {
+                            ui.label(RichText::new(e.to_string()).color(c.error));
                         }
                     }
                 }
-                Err(e) => {
-                    ui.label(e.to_string());
-                }
-            }
-            if ui.button(l.text("Отключить выполнение скриптов")).clicked()
-            {
-                self.prefs.environments = None;
-                self.prefs.allowed_environments.clear();
-            }
-        }
-        if ui.button(l.text("Выбрать входные файлы…")).clicked()
-            && let Some(paths) = rfd::FileDialog::new().pick_files()
-        {
-            if let Some(root) = &self.prefs.repo {
-                let selected = paths
-                    .iter()
-                    .map(|p| {
-                        p.strip_prefix(root)
-                            .map(|p| p.to_string_lossy().replace('\\', "/"))
-                    })
-                    .collect::<Result<Vec<_>, _>>();
-                match selected {
-                    Ok(paths) if paths.len() <= 32 => self.prefs.files = paths.join("\n"),
-                    _ => self.fail("Выберите до 32 файлов внутри рабочей папки"),
-                }
-            } else {
-                self.fail("Сначала выберите рабочую папку")
-            }
-        }
-        ui.label(l.text("Скрипты выполняются без сети в разрешенных контейнерах. Исходники меняются после применения результата."));
-        ui.separator();
-        ui.label(l.text("Проверка проекта в Docker"));
-        if let Some(path) = &self.prefs.check_config {
-            ui.label(path.display().to_string());
-        }
-        ui.horizontal(|ui| {
-            if ui.button(l.text("Выбрать проверку JSON…")).clicked()
-                && let Some(path) = rfd::FileDialog::new()
-                    .add_filter("JSON", &["json"])
-                    .pick_file()
-            {
-                match crate::executor::load_config(&path) {
-                    Ok(_) => self.prefs.check_config = Some(path),
-                    Err(e) => self.fail(e),
-                }
-            }
-            if self.prefs.check_config.is_some()
-                && ui.button(l.text("Отключить проверку")).clicked()
-            {
-                self.prefs.check_config = None;
-            }
-        });
-        ui.label(l.text(
-            "Модель сможет запускать только выбранную проверку в изолированной копии без сети.",
-        ));
-        ui.separator();
-        ui.checkbox(
-            &mut self.prefs.save_task_sessions,
-            l.text("Сохранять задачи для продолжения"),
+                kit::divider(ui, c);
+                setting_row(
+                    ui,
+                    c,
+                    l.text("Входные файлы"),
+                    l.text("До 32 файлов внутри рабочей папки; попадают в контекст задачи."),
+                    |ui| {
+                        if kit::ghost_button(ui, c, None, l.text("Выбрать входные файлы…"), true).clicked()
+                            && let Some(paths) = rfd::FileDialog::new().pick_files()
+                        {
+                            if let Some(root) = &self.prefs.repo {
+                                let selected = paths
+                                    .iter()
+                                    .map(|p| p.strip_prefix(root).map(|p| p.to_string_lossy().replace('\\', "/")))
+                                    .collect::<Result<Vec<_>, _>>();
+                                match selected {
+                                    Ok(paths) if paths.len() <= 32 => self.prefs.files = paths.join("\n"),
+                                    _ => self.fail("Выберите до 32 файлов внутри рабочей папки"),
+                                }
+                            } else {
+                                self.fail("Сначала выберите рабочую папку")
+                            }
+                        }
+                    },
+                );
+            },
         );
-        ui.label(l.text("База содержит выбранные исходники и предложения. Хранится локально, отдельно от истории чата."));
-        if let Ok(path) = self.configured_session_db() {
-            ui.label(path.display().to_string());
-        }
-        ui.horizontal(|ui| {
-            if ui.button(l.text("Выбрать базу задач…")).clicked()
-                && let Some(path) = rfd::FileDialog::new()
-                    .set_file_name("coding-sessions.db")
-                    .save_file()
-            {
-                self.prefs.task_session_db = Some(path);
-            }
-            if ui.button(l.text("Сохраненные задачи…")).clicked() {
-                self.saved_tasks_offset = 0;
-                if let Err(e) = self.start(Operation::SessionList, ui.ctx()) {
-                    self.fail(e);
-                }
-            }
-        });
+        ui.add_space(10.0);
+        section(
+            ui,
+            c,
+            l.text("Сохранённые задачи"),
+            l.text("База содержит выбранные исходники и предложения. Хранится локально, отдельно от истории чата."),
+            |ui| {
+                setting_row(ui, c, l.text("Сохранять задачи для продолжения"), "", |ui| {
+                    icons::toggle(ui, &mut self.prefs.save_task_sessions, "", self.prefs.animations, c.accent, c.on_accent);
+                });
+                kit::divider(ui, c);
+                let db = self
+                    .configured_session_db()
+                    .map(|p| p.display().to_string())
+                    .unwrap_or_default();
+                setting_row(ui, c, l.text("База задач"), &db, |ui| {
+                    if kit::ghost_button(ui, c, None, l.text("Сохраненные задачи…"), true).clicked() {
+                        self.saved_tasks_offset = 0;
+                        if let Err(e) = self.start(Operation::SessionList, ui.ctx()) {
+                            self.fail(e);
+                        }
+                    }
+                    if kit::ghost_button(ui, c, None, l.text("Выбрать базу задач…"), true).clicked()
+                        && let Some(path) = rfd::FileDialog::new().set_file_name("coding-sessions.db").save_file()
+                    {
+                        self.prefs.task_session_db = Some(path);
+                    }
+                });
+            },
+        );
     }
     pub(super) fn prepare_saved_tasks_job(
         &mut self,

@@ -1,18 +1,24 @@
 //! Native shell around the same CLI contracts. No inference or filesystem policy in widgets.
 mod chat;
 mod chat_policy;
+mod diff;
+mod dock;
 mod graph_view;
 mod history;
 mod icons;
 mod job;
+mod kit;
 mod models;
 mod preferences;
 mod projects;
 mod settings;
+mod settings_ui;
+mod shell;
 mod skills;
 mod theme;
 pub mod updater;
 mod workflows;
+mod workspace;
 use crate::agent::Report;
 #[cfg(feature = "gateway-http")]
 use crate::github;
@@ -111,39 +117,57 @@ fn configure(ctx: &egui::Context) {
     theme::configure(ctx, Palette::Violet, true);
 }
 
-#[derive(Clone, Copy, PartialEq)]
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
 enum SettingsPage {
     Model,
     #[cfg(feature = "gateway-http")]
     Providers,
     Context,
     Workers,
+    Checks,
+    Github,
     Skills,
+    Knowledge,
     Appearance,
     Hardware,
     Updates,
-    Knowledge,
 }
 impl SettingsPage {
-    const ALL: [Self; 8 + cfg!(feature = "gateway-http") as usize] = [
+    const ALL: [Self; 10 + cfg!(feature = "gateway-http") as usize] = [
         Self::Model,
         #[cfg(feature = "gateway-http")]
         Self::Providers,
         Self::Context,
         Self::Workers,
+        Self::Checks,
+        Self::Github,
         Self::Skills,
+        Self::Knowledge,
         Self::Appearance,
         Self::Hardware,
         Self::Updates,
-        Self::Knowledge,
     ];
+    /// Navigation groups in display order.
+    const GROUPS: [&'static str; 4] = ["Работа", "Модели", "Знания", "Приложение"];
+    fn group(self) -> &'static str {
+        match self {
+            Self::Context | Self::Workers | Self::Checks | Self::Github => "Работа",
+            Self::Model => "Модели",
+            #[cfg(feature = "gateway-http")]
+            Self::Providers => "Модели",
+            Self::Skills | Self::Knowledge => "Знания",
+            Self::Appearance | Self::Hardware | Self::Updates => "Приложение",
+        }
+    }
     fn title(self) -> &'static str {
         match self {
-            Self::Model => "Модель и ресурсы",
+            Self::Model => "Локальная модель",
             #[cfg(feature = "gateway-http")]
             Self::Providers => "HTTP-провайдеры",
-            Self::Context => "Контекст проекта",
+            Self::Context => "Проект и контекст",
             Self::Workers => "Агенты",
+            Self::Checks => "Проверки и среды",
+            Self::Github => "GitHub",
             Self::Skills => "Навыки ECC",
             Self::Appearance => "Оформление",
             Self::Hardware => "Мой компьютер",
@@ -158,26 +182,49 @@ impl SettingsPage {
             Self::Providers => Icon::Model,
             Self::Context => Icon::Folder,
             Self::Workers => Icon::Workers,
-            Self::Skills => Icon::BookOpen,
+            Self::Checks => Icon::Check,
+            Self::Github => Icon::Graph,
+            Self::Skills => Icon::Sparkles,
             Self::Appearance => Icon::Palette,
             Self::Hardware => Icon::Monitor,
             Self::Updates => Icon::Download,
             Self::Knowledge => Icon::BookOpen,
         }
     }
+    /// Extra words matched by the settings search.
+    fn keywords(self) -> &'static str {
+        match self {
+            Self::Model => "gguf cuda gpu cpu память модель загрузка скачать",
+            #[cfg(feature = "gateway-http")]
+            Self::Providers => "api openai http ключ провайдер облако",
+            Self::Context => "файлы история токены дедупликация оптимизация проект папка",
+            Self::Workers => "подагенты ревьюер исследователь лимит вызовов граф",
+            Self::Checks => "docker тесты проверка среды скрипты документы сессии восстановление",
+            Self::Github => "github issue pull request pr токен",
+            Self::Skills => "ecc навыки skills пакет откат",
+            Self::Appearance => "тема язык анимации цвет",
+            Self::Hardware => "диагностика ram vram nvidia",
+            Self::Updates => "версия релиз обновить",
+            Self::Knowledge => "документы справка источники docs",
+        }
+    }
     fn description(self) -> &'static str {
         match self {
             Self::Model => {
-                "Выберите GGUF и устройство для локальной модели. Для HTTP-моделей используйте раздел провайдеров."
+                "Выберите GGUF и устройство для локальной модели. Для облачных моделей используйте HTTP-провайдеры."
             }
             #[cfg(feature = "gateway-http")]
             Self::Providers => {
                 "Подключение внешних AI-сервисов. Запросы отправляются только при включении соответствующего режима."
             }
-            Self::Context => "Выберите файлы проекта и объём истории, передаваемой модели.",
+            Self::Context => "Папка проекта, файлы контекста и объём истории, передаваемой модели.",
             Self::Workers => {
                 "Дополнительные роли для задач проекта и общий лимит их обращений к модели."
             }
+            Self::Checks => {
+                "Изолированные Docker-проверки, среды выполнения скриптов и сохранение сессий."
+            }
+            Self::Github => "Issues как задачи, публикация предложений в виде черновика PR.",
             Self::Skills => {
                 "Инструкции ECC для модели: выбор, просмотр, локальная установка и откат пакетов."
             }
@@ -191,6 +238,15 @@ impl SettingsPage {
             }
         }
     }
+}
+
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
+enum DockTab {
+    #[default]
+    Changes,
+    Checks,
+    Plan,
+    Log,
 }
 
 #[derive(Clone, Copy, Default, PartialEq, Eq, Debug, serde::Serialize, serde::Deserialize)]
@@ -238,6 +294,13 @@ struct Desktop {
     request_task: String,
     #[cfg_attr(not(feature = "gateway-http"), allow(dead_code))]
     graph_open: bool,
+    sessions_open: bool,
+    dock_open: bool,
+    dock_tab: DockTab,
+    palette_open: bool,
+    focus_composer: bool,
+    palette_query: String,
+    settings_query: String,
     graph: graph_view::GraphView,
     #[cfg_attr(not(feature = "gateway-http"), allow(dead_code))]
     publish_flag: std::cell::Cell<bool>,
@@ -298,6 +361,13 @@ impl Default for Desktop {
             draft: projects::ProjectDraft::default(),
             request_task: String::new(),
             graph_open: false,
+            sessions_open: true,
+            dock_open: true,
+            dock_tab: DockTab::Changes,
+            palette_open: false,
+            focus_composer: false,
+            palette_query: String::new(),
+            settings_query: String::new(),
             graph: graph_view::GraphView::default(),
             publish_flag: std::cell::Cell::new(false),
             github_rx: None,
@@ -915,117 +985,6 @@ impl Desktop {
         self.finish_chat();
     }
 
-    fn header(&mut self, ui: &mut egui::Ui) {
-        let c = self.prefs.palette.colors();
-        let l = self.prefs.language;
-        ui.horizontal(|ui| {
-            if self.settings_open {
-                if icons::button(ui, Icon::Back, l.text("Вернуться к задаче"), false, c.text)
-                    .clicked()
-                {
-                    self.settings_open = false;
-                    self.transition = Some(Instant::now());
-                }
-                ui.heading(l.text("Настройки"));
-            } else {
-                ui.add(
-                    Icon::Sparkles
-                        .image(c.accent)
-                        .fit_to_exact_size(egui::vec2(24.0, 24.0)),
-                );
-                ui.label(RichText::new("Lyra").size(26.0).strong());
-                ui.label(RichText::new(env!("CARGO_PKG_VERSION")).small().weak());
-            }
-            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                if !self.settings_open
-                    && icons::button(
-                        ui,
-                        Icon::Graph,
-                        l.text("Граф кода"),
-                        self.graph_open,
-                        c.accent,
-                    )
-                    .clicked()
-                {
-                    self.graph_open = !self.graph_open;
-                    self.transition = Some(Instant::now());
-                }
-                if !self.settings_open
-                    && icons::button(ui, Icon::Settings, l.text("Настройки"), false, c.text)
-                        .clicked()
-                {
-                    self.settings_open = true;
-                    self.transition = Some(Instant::now());
-                }
-                if self.job.is_none()
-                    && (self.prefs.repo.is_some() || self.report.is_some())
-                    && icons::button(
-                        ui,
-                        Icon::Folder,
-                        l.text("Восстановление проекта"),
-                        false,
-                        c.muted,
-                    )
-                    .clicked()
-                    && let Err(e) = self.start(Operation::RecoveryStatus, ui.ctx())
-                {
-                    self.fail(e);
-                }
-                let response = icons::button(
-                    ui,
-                    Icon::Download,
-                    l.text("Обновления"),
-                    self.settings_open && self.settings_page == SettingsPage::Updates,
-                    c.accent,
-                );
-                if self.updates.available.is_some() {
-                    let elapsed = self
-                        .updates
-                        .attention
-                        .map(|t| t.elapsed())
-                        .unwrap_or(Duration::from_secs(1));
-                    let blink = self.prefs.animations && elapsed < Duration::from_millis(900);
-                    if !blink || (elapsed.as_millis() / 150).is_multiple_of(2) {
-                        ui.painter().circle_filled(
-                            response.rect.right_top() + egui::vec2(-4.0, 4.0),
-                            3.0,
-                            c.accent,
-                        );
-                    }
-                    if blink {
-                        ui.ctx().request_repaint_after(Duration::from_millis(150));
-                    }
-                }
-                if response.clicked() {
-                    self.settings_open = true;
-                    self.settings_page = SettingsPage::Updates;
-                    self.transition = Some(Instant::now());
-                }
-                if icons::button(ui, Icon::Help, l.text("Как пользоваться"), false, c.muted)
-                    .clicked()
-                {
-                    self.help_open = true;
-                }
-                let cloud = cfg!(feature = "gateway-http")
-                    && match self.chat_mode {
-                        ChatMode::Chat => self.prefs.cloud_chat,
-                        ChatMode::Task => self.prefs.repo.is_some() && self.prefs.cloud_task,
-                    };
-                let device = if cloud {
-                    format!(
-                        "HTTP · {} / {}",
-                        self.prefs.cloud_provider, self.prefs.cloud_model
-                    )
-                } else if cfg!(feature = "cuda") && self.prefs.gpu_layers > 0 {
-                    l.text("Локально · CUDA + CPU/RAM").to_owned()
-                } else {
-                    l.text("Локально · CPU").to_owned()
-                };
-                ui.label(RichText::new(device).small().color(c.accent));
-            });
-        });
-    }
-
     fn choose_path(&mut self, model: bool) {
         let l = self.prefs.language;
         if model {
@@ -1048,189 +1007,6 @@ impl Desktop {
             self.prefs.repo = Some(p);
             self.capture_session();
         }
-    }
-
-    fn settings(&mut self, ui: &mut egui::Ui) {
-        let c = self.prefs.palette.colors();
-        let l = self.prefs.language;
-        ui.horizontal_wrapped(|ui| {
-            for page in SettingsPage::ALL {
-                if ui
-                    .add(
-                        egui::Button::image_and_text(
-                            page.icon().image(c.accent),
-                            l.text(page.title()),
-                        )
-                        .selected(self.settings_page == page),
-                    )
-                    .clicked()
-                    && self.settings_page != page
-                {
-                    self.settings_page = page;
-                    self.transition = Some(Instant::now());
-                }
-            }
-        });
-        ui.add_space(6.0);
-        ui.label(RichText::new(l.text(self.settings_page.title())).strong());
-        ui.label(
-            RichText::new(l.text(self.settings_page.description()))
-                .small()
-                .weak(),
-        );
-        ui.add_space(4.0);
-        egui::ScrollArea::vertical().id_salt(("settings",self.settings_page as u8)).auto_shrink([false,false]).show(ui,|ui|{
-            card(c).show(ui,|ui|{
-                ui.set_min_width((ui.available_width()-2.0).max(0.0));
-                match self.settings_page{
-                    SettingsPage::Knowledge=>ui.vertical(|ui|self.knowledge_settings(ui)).response,
-                    SettingsPage::Updates=>ui.vertical(|ui| self.update_settings(ui)).response,
-                    #[cfg(feature = "gateway-http")]
-                    SettingsPage::Providers=>ui.add_enabled_ui(self.job.is_none(),|ui|{
-                        ui.label(l.text("Файл реестра HTTP-провайдеров (JSON)"));
-                        ui.label(RichText::new(l.text("Сохраняется только путь. API-ключи должны находиться в переменных окружения.")).small().weak());
-                        let mut path = self.prefs.provider_registry.as_ref()
-                            .map(|p|p.display().to_string()).unwrap_or_default();
-                        if ui.add(egui::TextEdit::singleline(&mut path)
-                            .desired_width(f32::INFINITY).hint_text("C:\\providers.json")).changed(){
-                            self.prefs.provider_registry=if path.trim().is_empty(){None}else{Some(PathBuf::from(path.trim()))};
-                        }
-                        if ui.button(l.text("Проверить реестр")).clicked(){
-                            let result=(||->io::Result<usize>{
-                                use std::io::Read;
-                                let path=self.prefs.provider_registry.as_ref()
-                                    .ok_or_else(||io::Error::other("Укажите путь к JSON."))?;
-                                let mut bytes=Vec::new();
-                                std::fs::File::open(path)?.take(64*1024+1).read_to_end(&mut bytes)?;
-                                let configs=crate::provider_http::parse_registry(&bytes)?;
-                                for config in &configs{
-                                    crate::provider_http::OpenAiCompatibleBackend::new(config.clone())?;
-                                }
-                                Ok(configs.len())
-                            })();
-                            match result{
-                                Ok(count)=>{self.message=format!("Реестр проверен: {count} провайдеров.");self.error=false;}
-                                Err(error)=>self.fail(error),
-                            }
-                        }
-                        ui.separator();
-                        ui.checkbox(&mut self.prefs.cloud_chat, "Разрешить HTTP-запросы из чата");
-                        ui.checkbox(&mut self.prefs.cloud_task, "Разрешить облачную модель для задач проекта (Desktop Task)");
-                        if self.prefs.cloud_task {
-                            ui.label(RichText::new("При запуске задачи фрагменты исходного кода и задание отправляются выбранному провайдеру.").small().weak());
-                        }
-                        if let Some(path) = &self.prefs.provider_registry {
-                            let available = (|| -> io::Result<Vec<crate::provider_http::ProviderConfig>> {
-                                use std::io::Read;
-                                let mut bytes = Vec::new();
-                                std::fs::File::open(path)?.take(64 * 1024 + 1).read_to_end(&mut bytes)?;
-                                crate::provider_http::parse_registry(&bytes)
-                            })();
-                            if let Ok(configs) = available {
-                                let selected = format!("{} / {}", self.prefs.cloud_provider, self.prefs.cloud_model);
-                                egui::ComboBox::from_id_salt("cloud-model")
-                                    .selected_text(selected)
-                                    .show_ui(ui, |ui| {
-                                        for config in &configs {
-                                            let provider = &config.descriptor.provider;
-                                            let model = &config.descriptor.model;
-                                            if ui.selectable_label(
-                                                self.prefs.cloud_provider == *provider && self.prefs.cloud_model == *model,
-                                                format!("{provider} / {model}"),
-                                            ).clicked() {
-                                                self.prefs.cloud_provider = provider.clone();
-                                                self.prefs.cloud_model = model.clone();
-                                            }
-                                        }
-                                    });
-                            } else {
-                                ui.label("Не удалось загрузить реестр провайдеров.");
-                            }
-                        }
-                    }).response,
-                    SettingsPage::Model=>ui.add_enabled_ui(self.job.is_none(),|ui|self.model_settings(ui)).response,
-                    SettingsPage::Skills=>ui.add_enabled_ui(self.job.is_none(),|ui|self.skill_settings(ui)).response,
-                    SettingsPage::Context=>ui.add_enabled_ui(self.job.is_none(),|ui|{
-                        ui.label(l.text("Файлы контекста · до 32 путей, по одному на строке"));
-                        ui.label(RichText::new(l.text("Пусто — ограниченный индекс проекта. Секретные и служебные файлы исключаются движком.")).small().weak());
-                        ui.add(egui::TextEdit::multiline(&mut self.prefs.files).desired_rows(6).desired_width(f32::INFINITY).char_limit(32768).hint_text("src/lib.rs\nCargo.toml"));
-                        ui.label(format!("{} / 32",self.prefs.files.lines().filter(|s|!s.trim().is_empty()).count()));
-                        ui.separator();
-                        ui.label(RichText::new(l.text("Оптимизация контекста")).strong());
-                        egui::ComboBox::from_id_salt("history-window")
-                            .selected_text(l.text(match self.prefs.optimization {
-                                preferences::Optimization::Safe => "Полная история",
-                                preferences::Optimization::Balanced => "Последние 12 сообщений",
-                                preferences::Optimization::Aggressive => "Последние 6 сообщений",
-                            })).show_ui(ui, |ui| {
-                                ui.selectable_value(&mut self.prefs.optimization, preferences::Optimization::Safe, l.text("Полная история"));
-                                ui.selectable_value(&mut self.prefs.optimization, preferences::Optimization::Balanced, l.text("Последние 12 сообщений"));
-                                ui.selectable_value(&mut self.prefs.optimization, preferences::Optimization::Aggressive, l.text("Последние 6 сообщений"));
-                            });
-                        let description = match self.prefs.optimization {
-                            preferences::Optimization::Safe => "Полная история переписки, без сокращения.",
-                            preferences::Optimization::Balanced => "До 12 последних сообщений в запросе.",
-                            preferences::Optimization::Aggressive => "До 6 последних сообщений в запросе.",
-                        };
-                        ui.label(RichText::new(l.text(description)).small().weak());
-                        ui.label(RichText::new(l.text("Сокращается только история чата; исходники и ошибки не переписываются.")).small().weak());
-                        ui.separator();
-                        ui.checkbox(&mut self.prefs.dedup_tool_context, l.text("Дедупликация результатов инструментов (задачи)"));
-                        ui.label(RichText::new(l.text("Дедупликация сохраняет выбранные наблюдения дословно. При нехватке окна контекст отдельно сокращается с хешами. Локальные задачи считают токены выбранной моделью.")).small().weak());
-                    }).response,
-                    SettingsPage::Workers=>ui.add_enabled_ui(self.job.is_none(),|ui|{
-                        icons::toggle(ui,&mut self.prefs.subagents,l.text("Исследователь и ревьюер"),self.prefs.animations,c.accent,c.on_accent);
-                        if self.prefs.subagents{self.prefs.calls=self.prefs.calls.max(3);}
-                        ui.label(RichText::new(l.text("Роли работают последовательно с одной моделью. Дополнительные проверки требуют времени.")).small().weak());
-                        let min=if self.prefs.subagents{3}else{1};
-                        #[cfg(feature = "gateway-http")]
-                        {
-                            ui.separator();
-                            ui.checkbox(&mut self.prefs.code_graph, l.text("Граф проекта в контексте агентов"));
-                            ui.label(RichText::new(l.text("Добавляет ~3 КБ структуры (имена файлов, без кода) в запросы; для малых контекстов GGUF увеличьте контекст.")).small().weak());
-                            ui.separator();
-                            ui.label("GitHub");
-                            ui.horizontal(|ui| {
-                                ui.add(egui::TextEdit::singleline(&mut self.prefs.github_repo).hint_text("owner/name").desired_width(180.0));
-                                ui.add(egui::TextEdit::singleline(&mut self.prefs.github_issue).hint_text("issue #").desired_width(70.0));
-                            });
-                            ui.horizontal(|ui| {
-                                ui.label(l.text("Переменная токена"));
-                                ui.add(egui::TextEdit::singleline(&mut self.prefs.github_token_env).desired_width(140.0));
-                            });
-                            if ui.add_enabled(self.github_rx.is_none(), egui::Button::new(l.text("Загрузить issue как задачу"))).clicked() {
-                                self.github_fetch_issue();
-                            }
-                            ui.label(RichText::new(l.text("Токен читается из переменной окружения и нигде не сохраняется. Публикация PR — кнопка рядом с отчётом.")).small().weak());
-                            ui.separator();
-                        }
-                        setting_slider(ui,l.text("Общий лимит вызовов"),&mut self.prefs.calls,min..=256,false,l.text("Бюджет общий для всех ролей. Исследователь и ревьюер не изменяют файлы."),c.muted);
-                        self.workflow_settings(ui);
-                    }).response,
-                    SettingsPage::Appearance=>ui.vertical(|ui|{
-                        ui.label(l.text("Тема"));
-                        ui.horizontal_wrapped(|ui|{for palette in Palette::ALL{
-                            if ui.add(egui::Button::image_and_text(if palette==Palette::Light{Icon::Sun}else{Icon::Moon}.image(palette.colors().accent),l.text(palette.name())).selected(self.prefs.palette==palette)).clicked(){self.prefs.palette=palette;}
-                        }});
-                        ui.horizontal(|ui|{
-                            ui.label(l.text("Язык"));
-                            egui::ComboBox::from_id_salt("language").selected_text(if l==Language::Ru{"Русский"}else{"English"}).show_ui(ui,|ui|{ui.selectable_value(&mut self.prefs.language,Language::Ru,"Русский");ui.selectable_value(&mut self.prefs.language,Language::En,"English");});
-                        });
-                        let animate=self.prefs.animations;
-                        icons::toggle(ui,&mut self.prefs.animations,l.text("Мягкие анимации"),animate,c.accent,c.on_accent);
-                        ui.label(RichText::new(l.text("Короткие переходы и отклик переключателей. В покое нет постоянных анимаций.")).small().weak());
-                        ui.separator();
-                        ui.label(RichText::new(l.text("Настройки и история чатов хранятся локально. Отчёты предложений и технический журнал автоматически не сохраняются.")).small().weak());
-                        if let Some(path)=&self.storage{ui.add(egui::Label::new(RichText::new(path.display().to_string()).small().weak()).truncate()).on_hover_text(path.display().to_string());}
-                    }).response,
-                    SettingsPage::Hardware=>ui.vertical(|ui|{
-                        if ui.add_enabled(self.job.is_none(),egui::Button::image_and_text(Icon::Monitor.image(c.accent),l.text("Обновить диагностику"))).clicked()&&let Err(e)=self.start(Operation::Doctor,ui.ctx()){self.fail(e);}
-                        self.hardware_view(ui);
-                    }).response,
-                };
-            });
-            if let Some(error)=&self.preference_error{ui.label(RichText::new(format!("{}: {error}",l.text("Настройки не сохранены"))).small().color(c.error));}
-        });
     }
 
     fn update_settings(&mut self, ui: &mut egui::Ui) {
@@ -1406,449 +1182,6 @@ impl Desktop {
         );
     }
 
-    fn changes(&mut self, ui: &mut egui::Ui) {
-        let c = self.prefs.palette.colors();
-        let l = self.prefs.language;
-        let Some(report) = &self.report else {
-            ui.add_space(8.0);
-            ui.horizontal(|ui| {
-                ui.add(Icon::Sparkles.image(c.accent));
-                ui.label(l.text("Выбери проект и модель, затем задай задачу."));
-            });
-            ui.label(
-                RichText::new(l.text(
-                    "Предложения появятся здесь. Файлы меняются только после твоего подтверждения.",
-                ))
-                .small()
-                .weak(),
-            );
-            return;
-        };
-        ui.add(
-            egui::Label::new(
-                RichText::new(format!(
-                    "{}: {}",
-                    l.text("Проект отчёта"),
-                    report.workspace.display()
-                ))
-                .small()
-                .weak(),
-            )
-            .truncate(),
-        )
-        .on_hover_text(report.workspace.display().to_string());
-        if let Some(run) = report.executions.last() {
-            ui.label(format!(
-                "{} · {} · exit {:?}",
-                l.text("Среда выполнения"),
-                run.environment,
-                run.exit_code
-            ))
-            .on_hover_text(&run.image);
-        }
-        if let Some(plan) = &report.work_plan {
-            ui.collapsing(
-                l.text("Выбранные технологии и план"),
-                |ui| {
-                    ui.label(&plan.goal);
-                    for technology in &plan.technologies {
-                        ui.label(format!("{} · {}", technology.name, technology.purpose));
-                        ui.small(&technology.rationale);
-                    }
-                    for step in &plan.steps {
-                        ui.label(step);
-                    }
-                    if !plan.required_capabilities.is_empty() {
-                        ui.label(format!(
-                            "{}: {}",
-                            l.text("Необходимые возможности"),
-                            plan.required_capabilities.join(", ")
-                        ));
-                    }
-                },
-            );
-        }
-        if report.proposals.is_empty() && report.file_proposals.is_empty() {
-            ui.label(l.text(
-                "Применимых предложений нет. Завершение протокола не доказывает решения задачи.",
-            ));
-        } else {
-            ui.horizontal_wrapped(|ui| {
-                egui::ComboBox::from_id_salt("proposal")
-                    .selected_text(
-                        report
-                            .proposals
-                            .get(self.selected)
-                            .map(|e| e.path.as_str())
-                            .or_else(|| {
-                                self.selected
-                                    .checked_sub(report.proposals.len())
-                                    .and_then(|i| report.file_proposals.get(i))
-                                    .map(|f| f.path.as_str())
-                            })
-                            .unwrap_or("—"),
-                    )
-                    .show_ui(ui, |ui| {
-                        for (index, edit) in report.proposals.iter().enumerate() {
-                            ui.selectable_value(&mut self.selected, index, &edit.path);
-                        }
-                        for (index, file) in report.file_proposals.iter().enumerate() {
-                            ui.selectable_value(
-                                &mut self.selected,
-                                report.proposals.len() + index,
-                                &file.path,
-                            );
-                        }
-                    });
-                let allowed = self.job.is_none() && can_apply(report, self.selected, &self.applied);
-                if ui
-                    .add_enabled(
-                        allowed,
-                        egui::Button::image_and_text(
-                            Icon::Check.image(c.accent),
-                            l.text("Применить…"),
-                        ),
-                    )
-                    .clicked()
-                {
-                    self.confirm = Some(Operation::Apply(self.selected));
-                }
-                if ui
-                    .add_enabled(
-                        self.job.is_none() && workflows::can_apply_all(report, &self.applied),
-                        egui::Button::new(l.text("Применить весь набор…")),
-                    )
-                    .clicked()
-                {
-                    self.confirm = Some(Operation::ApplyAll);
-                }
-                #[cfg(feature = "gateway-http")]
-                if ui
-                    .add_enabled(
-                        self.github_rx.is_none()
-                            && !self.prefs.github_repo.trim().is_empty()
-                            && report.status == "completed"
-                            && !report.proposals.is_empty(),
-                        egui::Button::new(l.text("Черновик PR в GitHub")),
-                    )
-                    .clicked()
-                {
-                    self.publish_flag.set(true);
-                }
-                if icons::button(
-                    ui,
-                    Icon::Save,
-                    l.text("Сохранить JSON-отчёт"),
-                    false,
-                    c.muted,
-                )
-                .clicked()
-                    && let Some(path) = rfd::FileDialog::new()
-                        .set_file_name("lyra-report.json")
-                        .add_filter("JSON", &["json"])
-                        .save_file()
-                    && let Err(e) = std::fs::write(path, &self.report_json)
-                {
-                    self.message = e.to_string();
-                    self.error = true;
-                }
-            });
-            if self.applied.contains(&self.selected) {
-                ui.label(
-                    RichText::new(l.text("Применено. Запусти тесты проекта отдельно."))
-                        .color(c.success),
-                );
-            }
-            if let Some(file) = self
-                .selected
-                .checked_sub(report.proposals.len())
-                .and_then(|i| report.file_proposals.get(i))
-            {
-                ui.label(format!(
-                    "{} · {} bytes · SHA256 {}",
-                    file.path, file.replacement.bytes, file.replacement.sha256
-                ));
-                ui.label("Содержимое и внешний вид требуют просмотра перед применением.");
-                if let Some(root) = &report.artifact_store {
-                    if ui
-                        .button(l.text("Сохранить копию для просмотра…"))
-                        .clicked()
-                        && let Some(destination) = rfd::FileDialog::new()
-                            .set_file_name(
-                                std::path::Path::new(&file.path)
-                                    .file_name()
-                                    .unwrap_or_default()
-                                    .to_string_lossy(),
-                            )
-                            .save_file()
-                    {
-                        match crate::universal::artifacts::Store::open(root)
-                            .and_then(|s| s.get(&file.replacement))
-                            .and_then(|b| std::fs::write(destination, b))
-                        {
-                            Ok(()) => {}
-                            Err(e) => {
-                                ui.label(e.to_string());
-                            }
-                        }
-                    }
-                    if self.failed_artifact_preview.as_ref() != Some(&file.replacement.sha256)
-                        && file.path.to_lowercase().ends_with(".png")
-                        && self
-                            .artifact_preview
-                            .as_ref()
-                            .is_none_or(|(sha, _)| sha != &file.replacement.sha256)
-                    {
-                        let decoded = (|| -> io::Result<egui::ColorImage> {
-                            let bytes = crate::universal::artifacts::Store::open(root)?
-                                .get(&file.replacement)?;
-                            let mut reader = image::ImageReader::with_format(
-                                std::io::Cursor::new(bytes),
-                                image::ImageFormat::Png,
-                            );
-                            let mut limits = image::Limits::default();
-                            limits.max_image_width = Some(2048);
-                            limits.max_image_height = Some(2048);
-                            limits.max_alloc = Some(32 * 1024 * 1024);
-                            reader.limits(limits);
-                            let image = reader.decode().map_err(io::Error::other)?.into_rgba8();
-                            Ok(egui::ColorImage::from_rgba_unmultiplied(
-                                [image.width() as usize, image.height() as usize],
-                                image.as_raw(),
-                            ))
-                        })();
-                        if decoded.is_err() {
-                            self.failed_artifact_preview = Some(file.replacement.sha256.clone());
-                        }
-                        if let Ok(image) = decoded {
-                            self.artifact_preview = Some((
-                                file.replacement.sha256.clone(),
-                                ui.ctx().load_texture(
-                                    "document-preview",
-                                    image,
-                                    egui::TextureOptions::LINEAR,
-                                ),
-                            ));
-                        }
-                    }
-                    if let Some((sha, texture)) = &self.artifact_preview
-                        && sha == &file.replacement.sha256
-                    {
-                        ui.add(
-                            egui::Image::new(texture)
-                                .max_width(ui.available_width())
-                                .max_height(500.),
-                        );
-                    }
-                }
-            }
-            if let Some(edit) = report.proposals.get(self.selected) {
-                ui.columns(2, |columns| {
-                    columns[0].label(
-                        RichText::new(l.text(if edit.create {
-                            "Новый файл"
-                        } else {
-                            "Исходный код"
-                        }))
-                        .small()
-                        .color(c.error),
-                    );
-                    selectable_code(&mut columns[0], &edit.original, c.text);
-                    columns[1].label(
-                        RichText::new(l.text("Предложенный код"))
-                            .small()
-                            .color(c.success),
-                    );
-                    selectable_code(&mut columns[1], &edit.replacement, c.text);
-                });
-            }
-        }
-        if !report.documentation_sources.is_empty() {
-            egui::CollapsingHeader::new(l.text("Документация в контексте")).show(ui, |ui| {
-                for s in &report.documentation_sources {
-                    ui.label(RichText::new(format!("{} · {}", s.title, s.version_scope)).small())
-                        .on_hover_text(&s.origin);
-                }
-            });
-        }
-        for (role, summary) in &report.summaries {
-            egui::CollapsingHeader::new(format!("{}: {role}", l.text("Итог"))).show(ui, |ui| {
-                ui.label(summary);
-            });
-        }
-    }
-
-    fn draw(&mut self, ui: &mut egui::Ui) {
-        let key = (
-            self.prefs.palette,
-            self.prefs.animations,
-            self.prefs.language,
-        );
-        if self.style_key != Some(key) {
-            theme::configure(ui.ctx(), key.0, key.1);
-            self.style_key = Some(key);
-        }
-        let c = self.prefs.palette.colors();
-        let l = self.prefs.language;
-        egui::Panel::top("header")
-            .frame(
-                egui::Frame::new()
-                    .fill(c.background)
-                    .inner_margin(egui::Margin::symmetric(16, 8)),
-            )
-            .show(ui, |ui| self.header(ui));
-        if !self.settings_open && !self.graph_open {
-            egui::Panel::left("conversation-history")
-                .default_size(210.0)
-                .show(ui, |ui| self.history_sidebar(ui));
-        }
-        egui::CentralPanel::default()
-            .frame(
-                egui::Frame::new()
-                    .fill(c.background)
-                    .inner_margin(egui::Margin::symmetric(16, 8)),
-            )
-            .show(ui, |ui| {
-                if let Some(start) = self.transition {
-                    let t = start.elapsed().as_secs_f32() / 0.14;
-                    if self.prefs.animations && t < 1.0 {
-                        ui.set_opacity(0.45 + 0.55 * t);
-                        ui.ctx().request_repaint_after(Duration::from_millis(16));
-                    } else {
-                        self.transition = None;
-                    }
-                }
-                if self.settings_open {
-                    self.settings(ui);
-                } else if self.graph_open {
-                    let repo = self.prefs.repo.clone();
-                    self.graph.ui(
-                        ui,
-                        c,
-                        l,
-                        repo.as_ref(),
-                        &self.prefs.github_repo,
-                        &self.prefs.github_token_env,
-                    );
-                } else {
-                    self.chat_home(ui);
-                }
-            });
-        if let Some(operation) = self.confirm {
-            let path = match operation {
-                Operation::Apply(index) => self
-                    .report
-                    .as_ref()
-                    .and_then(|r| {
-                        r.proposals.get(index).map(|e| e.path.clone()).or_else(|| {
-                            index
-                                .checked_sub(r.proposals.len())
-                                .and_then(|i| r.file_proposals.get(i))
-                                .map(|p| p.path.clone())
-                        })
-                    })
-                    .unwrap_or_default(),
-                Operation::ApplyAll => self
-                    .report
-                    .as_ref()
-                    .map(|r| {
-                        r.proposals
-                            .iter()
-                            .map(|e| e.path.as_str())
-                            .chain(r.file_proposals.iter().map(|p| p.path.as_str()))
-                            .collect::<Vec<_>>()
-                            .join("\n")
-                    })
-                    .unwrap_or_default(),
-                _ => self
-                    .recovery_root
-                    .as_ref()
-                    .map(|p| p.display().to_string())
-                    .unwrap_or_default(),
-            };
-            egui::Modal::new(egui::Id::unique("confirm-apply")).show(ui.ctx(), |ui| {
-                ui.heading(l.text(match operation {
-                    Operation::ApplyAll => "Применить весь набор?",
-                    Operation::RecoveryRollback => "Откатить публикацию?",
-                    Operation::RecoveryComplete => "Завершить публикацию?",
-                    _ => "Применить изменение?",
-                }));
-                egui::ScrollArea::vertical()
-                    .max_height(220.0)
-                    .show(ui, |ui| {
-                        ui.label(path);
-                    });
-                ui.label(l.text(
-                    "Исходное содержимое будет проверено ещё раз. При конфликте запись отменится.",
-                ));
-                ui.horizontal(|ui| {
-                    if icons::action(ui, Icon::Check, l.text("Применить"), c.accent).clicked()
-                    {
-                        self.confirm = None;
-                        if let Err(e) = self.start(operation, ui.ctx()) {
-                            self.fail(e);
-                        }
-                    }
-                    if icons::action(ui, Icon::Close, l.text("Отмена"), c.muted).clicked() {
-                        self.confirm = None;
-                    }
-                });
-            });
-        }
-        self.recovery_window(ui.ctx());
-        self.saved_tasks_window(ui.ctx());
-        if self.update_confirm {
-            egui::Modal::new(egui::Id::unique("confirm-update")).show(ui.ctx(), |ui| {
-                ui.set_max_width(430.0);
-                ui.heading(l.text("Установить и перезапустить?"));
-                ui.label(l.text("Текущая задача и отчёт в памяти не переносятся. Сохрани нужный отчёт перед продолжением."));
-                ui.label(l.text("Проекты, модели и локальные настройки сохраняются."));
-                ui.horizontal(|ui| {
-                    if ui.add_enabled(self.job.is_none(), egui::Button::new(l.text("Установить и перезапустить"))).clicked() {
-                        self.update_confirm = false;
-                        let saved = self.storage.as_ref().ok_or_else(|| io::Error::other("Settings directory unavailable")).and_then(|p| self.prefs.save(p));
-                        match saved {
-                            Ok(()) => {self.last_attempted = self.prefs.clone(); self.updates.prepare(ui.ctx());}
-                            Err(e) => self.preference_error = Some(e.to_string()),
-                        }
-                    }
-                    if ui.button(l.text("Отмена")).clicked() {self.update_confirm = false;}
-                });
-            });
-        }
-        if self.help_open {
-            egui::Modal::new(egui::Id::unique("help")).show(ui.ctx(), |ui| {
-                ui.heading(l.text("Как пользоваться"));
-                ui.label(l.text("1. Выбери локальную GGUF. Папка проекта — по необходимости."));
-                ui.label(l.text("2. Напиши задачу в чате. Без папки Lyra подготовит новый проект."));
-                ui.label(l.text(
-                    "3. Ответь на вопросы, просмотри файлы и явно создай проект или примени правку.",
-                ));
-                ui.label(
-                    RichText::new(l.text(
-                        "Модель выполняет только явно выбранную Docker-проверку. Ревью AI не заменяет тестирование.",
-                    ))
-                    .small()
-                    .weak(),
-                );
-                if ui.button(l.text("Понятно")).clicked() {
-                    self.help_open = false;
-                }
-            });
-        }
-        if self.style_key
-            != Some((
-                self.prefs.palette,
-                self.prefs.animations,
-                self.prefs.language,
-            ))
-        {
-            ui.ctx().request_repaint();
-        }
-        self.save_preferences(ui.ctx());
-        self.save_history(ui.ctx(), false);
-    }
-
     fn load() -> Self {
         let mut app = Self::default();
         app.storage = preferences::config_path();
@@ -1992,36 +1325,6 @@ impl eframe::App for Desktop {
     }
 }
 
-fn card(c: theme::Colors) -> egui::Frame {
-    egui::Frame::new()
-        .fill(c.card)
-        .stroke(egui::Stroke::new(1.0, c.border))
-        .corner_radius(12)
-        .inner_margin(12)
-}
-fn help(ui: &mut egui::Ui, text: &str, color: Color32) {
-    ui.add(
-        Icon::Help
-            .image(color)
-            .fit_to_exact_size(egui::vec2(14.0, 14.0)),
-    )
-    .on_hover_text(text);
-}
-fn setting_slider(
-    ui: &mut egui::Ui,
-    label: &str,
-    value: &mut u32,
-    range: std::ops::RangeInclusive<u32>,
-    log: bool,
-    tip: &str,
-    color: Color32,
-) {
-    ui.horizontal(|ui| {
-        ui.label(label);
-        help(ui, tip, color);
-    });
-    ui.add(egui::Slider::new(value, range).logarithmic(log));
-}
 fn selectable_code(ui: &mut egui::Ui, text: &str, color: Color32) {
     ui.add(
         egui::Label::new(RichText::new(text).monospace().color(color))
@@ -2162,6 +1465,70 @@ mod tests {
         }
         assert!(app.storage.is_none());
         assert!(app.report.is_none());
+    }
+    #[test]
+    fn settings_search_command_palette_and_dock_work_without_a_display() {
+        let ctx = egui::Context::default();
+        configure(&ctx);
+        let mut app = Desktop::default();
+        app.settings_query = "github".into();
+        assert_eq!(app.matching_pages(), vec![SettingsPage::Github]);
+        app.settings_query = "nothing-matches-this".into();
+        assert!(app.matching_pages().is_empty());
+        app.settings_query.clear();
+        assert_eq!(app.matching_pages().len(), SettingsPage::ALL.len());
+        // Palette actions switch views and apply preferences without starting work.
+        app.run_palette_action(shell::PaletteAction::Settings(SettingsPage::Checks), &ctx);
+        assert!(app.settings_open && app.settings_page == SettingsPage::Checks);
+        app.run_palette_action(shell::PaletteAction::Theme(Palette::Light), &ctx);
+        assert_eq!(app.prefs.palette, Palette::Light);
+        app.run_palette_action(shell::PaletteAction::Graph, &ctx);
+        assert!(app.graph_open && !app.settings_open);
+        app.run_palette_action(shell::PaletteAction::Work, &ctx);
+        assert!(!app.graph_open && !app.settings_open);
+        assert!(app.job.is_none());
+        let labels: Vec<_> = app.palette_items().into_iter().map(|(_, l, _)| l).collect();
+        assert!(labels.iter().any(|l| l.contains("Новый чат")));
+        // Every dock tab renders for a report with a text and a created file.
+        let report: Report = serde_json::from_value(serde_json::json!({
+            "schema_version":4,"workspace":"project","status":"completed","outcome":"changes_proposed",
+            "summaries":[["coder","done"]],
+            "proposals":[{"path":"a.txt","original":"x\r\ny\r\n","replacement":"x\r\nz\r\n"},
+                         {"path":"b.txt","original":"","replacement":"new\n","create":true}],
+            "events":[{"call":1,"role":"coder","tool":"propose_edit","outcome":"ok","argument":"a.txt"}],
+            "calls":1,"subagents":false,"truncated_index":false,"model_review_is_verified_test":false
+        })).unwrap();
+        app.report = Some(report);
+        for palette in Palette::ALL {
+            for tab in [
+                DockTab::Changes,
+                DockTab::Checks,
+                DockTab::Plan,
+                DockTab::Log,
+            ] {
+                for selected in [0, 1] {
+                    app.prefs.palette = palette;
+                    app.dock_tab = tab;
+                    app.selected = selected;
+                    let mut output = ctx.run_ui(
+                        egui::RawInput {
+                            screen_rect: Some(egui::Rect::from_min_size(
+                                egui::Pos2::ZERO,
+                                egui::vec2(1160.0, 760.0),
+                            )),
+                            ..Default::default()
+                        },
+                        |ui| app.draw(ui),
+                    );
+                    output.textures_delta.clear();
+                    assert!(!output.shapes.is_empty());
+                }
+            }
+        }
+        assert!(
+            app.applied.is_empty(),
+            "rendering must never apply a proposal"
+        );
     }
     #[test]
     fn empty_window_renders_without_display() {

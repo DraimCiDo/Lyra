@@ -1,5 +1,9 @@
 //! Interactive code graph screen: force layout, pan/zoom, search, GitHub pull-request overlay.
-use super::theme::{Colors, Language};
+use super::{
+    icons::Icon,
+    kit,
+    theme::{Colors, Language},
+};
 use crate::codegraph::{self, Graph, NodeKind};
 use eframe::egui::{self, Color32, Pos2, RichText, Sense, Stroke, Vec2};
 use std::{
@@ -237,24 +241,37 @@ impl GraphView {
         token_env: &str,
     ) {
         self.poll(ui.ctx());
-        ui.horizontal_wrapped(|ui| {
+        ui.horizontal(|ui| {
             ui.heading(l.text("Граф кода"));
-            if ui
-                .add_enabled(
-                    repo.is_some() && !self.busy(),
-                    egui::Button::new(l.text("Построить граф проекта")),
-                )
-                .clicked()
+            if self.busy() {
+                ui.add(egui::Spinner::new().size(16.0));
+            }
+            if !self.status.is_empty() {
+                ui.label(RichText::new(&self.status).small().color(c.muted));
+            }
+        });
+        ui.add_space(4.0);
+        ui.horizontal_wrapped(|ui| {
+            if kit::primary_button(
+                ui,
+                c,
+                Some(Icon::Graph),
+                l.text("Построить граф проекта"),
+                repo.is_some() && !self.busy(),
+            )
+            .clicked()
                 && let Some(repo) = repo
             {
                 self.build_local(repo.clone());
             }
-            if ui
-                .add_enabled(
-                    !self.busy(),
-                    egui::Button::new(l.text("Открыть graph.json (Graphify/Lyra)")),
-                )
-                .clicked()
+            if kit::ghost_button(
+                ui,
+                c,
+                Some(Icon::Folder),
+                l.text("Открыть graph.json (Graphify/Lyra)"),
+                !self.busy(),
+            )
+            .clicked()
                 && let Some(path) = rfd::FileDialog::new()
                     .add_filter("JSON", &["json"])
                     .pick_file()
@@ -266,18 +283,17 @@ impl GraphView {
                 ui.add(
                     egui::TextEdit::singleline(&mut self.pr_number)
                         .hint_text("PR #")
-                        .desired_width(60.0),
+                        .desired_width(64.0),
                 );
                 let number = self.pr_number.trim().parse::<u64>().ok();
-                if ui
-                    .add_enabled(
-                        repo.is_some()
-                            && number.is_some()
-                            && !github.trim().is_empty()
-                            && !self.busy(),
-                        egui::Button::new(l.text("Влияние PR из GitHub")),
-                    )
-                    .clicked()
+                if kit::ghost_button(
+                    ui,
+                    c,
+                    None,
+                    l.text("Влияние PR из GitHub"),
+                    repo.is_some() && number.is_some() && !github.trim().is_empty() && !self.busy(),
+                )
+                .clicked()
                     && let (Some(repo), Some(number)) = (repo, number)
                 {
                     self.build_pr(
@@ -290,24 +306,42 @@ impl GraphView {
             }
             #[cfg(not(feature = "gateway-http"))]
             let _ = (github, token_env);
-            ui.add(
-                egui::TextEdit::singleline(&mut self.query)
-                    .hint_text(l.text("Поиск"))
-                    .desired_width(140.0),
-            );
-            let before = (self.show_symbols, self.show_isolated);
-            ui.checkbox(&mut self.show_symbols, l.text("Символы"));
-            ui.checkbox(&mut self.show_isolated, l.text("Без связей"));
-            if before != (self.show_symbols, self.show_isolated) {
-                self.steps = 0;
-            }
-            if !self.status.is_empty() {
-                ui.label(RichText::new(&self.status).small().weak());
-            }
         });
+        if self.graph.is_some() {
+            ui.horizontal_wrapped(|ui| {
+                ui.add(
+                    egui::TextEdit::singleline(&mut self.query)
+                        .hint_text(l.text("Поиск"))
+                        .desired_width(180.0),
+                );
+                let before = (self.show_symbols, self.show_isolated);
+                if kit::chip(ui, c, None, l.text("Символы"), self.show_symbols, None).clicked()
+                {
+                    self.show_symbols = !self.show_symbols;
+                }
+                if kit::chip(ui, c, None, l.text("Без связей"), self.show_isolated, None).clicked()
+                {
+                    self.show_isolated = !self.show_isolated;
+                }
+                if before != (self.show_symbols, self.show_isolated) {
+                    self.steps = 0;
+                }
+                if !self.highlight.is_empty() {
+                    kit::badge(ui, l.text("изменён в PR"), c.error);
+                    kit::badge(ui, l.text("затронут, глубина"), c.warning);
+                }
+            });
+        }
         if self.graph.is_none() {
-            ui.add_space(12.0);
-            ui.label(l.text("Выберите папку проекта и постройте граф: файлы, символы, импорты и сообщества. Содержимое файлов не сохраняется."));
+            ui.add_space(20.0);
+            kit::card(c).show(ui, |ui| {
+                ui.set_min_width(ui.available_width());
+                ui.label(RichText::new(l.text("Структура проекта одним взглядом")).strong().size(16.0));
+                ui.label(
+                    RichText::new(l.text("Выберите папку проекта и постройте граф: файлы, символы, импорты и сообщества. Содержимое файлов не сохраняется."))
+                        .color(c.muted),
+                );
+            });
             return;
         }
         let canvas = ui.available_size_before_wrap();

@@ -14,6 +14,7 @@ pub enum Icon {
     Cpu,
     Workers,
     Graph,
+    Search,
     Palette,
     Monitor,
     Play,
@@ -28,7 +29,7 @@ pub enum Icon {
     Moon,
 }
 impl Icon {
-    pub const ALL: [Self; 24] = [
+    pub const ALL: [Self; 25] = [
         Self::ArrowUp,
         Self::NewChat,
         Self::FolderPlus,
@@ -41,6 +42,7 @@ impl Icon {
         Self::Cpu,
         Self::Workers,
         Self::Graph,
+        Self::Search,
         Self::Palette,
         Self::Monitor,
         Self::Play,
@@ -76,6 +78,7 @@ impl Icon {
             Self::Cpu => svg!("cpu"),
             Self::Workers => svg!("users"),
             Self::Graph => svg!("waypoints"),
+            Self::Search => svg!("search"),
             Self::Palette => svg!("palette"),
             Self::Monitor => svg!("monitor"),
             Self::Play => svg!("play"),
@@ -119,24 +122,6 @@ fn white_svg(icon: Icon) -> &'static [u8] {
         .get(icon.asset().0)
         .map(Vec::as_slice)
         .unwrap_or(icon.asset().1)
-}
-pub fn button(
-    ui: &mut egui::Ui,
-    icon: Icon,
-    label: &str,
-    selected: bool,
-    color: Color32,
-) -> egui::Response {
-    let response = ui
-        .add(
-            egui::Button::image(icon.image(color))
-                .selected(selected)
-                .min_size(egui::vec2(34.0, 30.0)),
-        )
-        .on_hover_text(label)
-        .on_hover_cursor(egui::CursorIcon::PointingHand);
-    response.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Button, ui.is_enabled(), label));
-    response
 }
 pub fn action(ui: &mut egui::Ui, icon: Icon, text: &str, color: Color32) -> egui::Response {
     ui.add(egui::Button::image_and_text(icon.image(color), text))
