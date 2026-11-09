@@ -2,7 +2,7 @@
 
 Source: https://lucide.dev/icons/
 Upstream: https://github.com/lucide-icons/lucide/tree/be09619c1c1124ad09c19fc3e87ee3b939409bbd/icons
-SVGs in assets/lucide are unmodified. The renderer replaces currentColor with white
+SVGs in assets/lucide are unmodified (waypoints.svg added for the code-graph button). The renderer replaces currentColor with white
 for theme tinting in memory. ISC/Feather MIT notices: LICENSE.
 Same pinned icon source as ReplayLite 6a7dc0c. No network loading at runtime.
 

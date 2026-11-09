@@ -940,7 +940,7 @@ impl Desktop {
                 if !self.settings_open
                     && icons::button(
                         ui,
-                        Icon::Workers,
+                        Icon::Graph,
                         l.text("Граф кода"),
                         self.graph_open,
                         c.accent,

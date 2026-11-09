@@ -167,6 +167,23 @@ impl GraphView {
         }
     }
 
+    /// Scale and centre the visible nodes inside the canvas.
+    fn fit(&mut self, area: Vec2) {
+        let Some(graph) = &self.graph else { return };
+        let (mut lo, mut hi) = (Vec2::splat(f32::MAX), Vec2::splat(f32::MIN));
+        let mut any = false;
+        for i in (0..graph.nodes.len()).filter(|&i| self.visible(graph, i)) {
+            lo = lo.min(self.pos[i]);
+            hi = hi.max(self.pos[i]);
+            any = true;
+        }
+        if any {
+            let size = (hi - lo) + Vec2::splat(80.0);
+            self.zoom = (area.x / size.x).min(area.y / size.y).clamp(0.1, 3.0);
+            self.pan = -(lo + hi) / 2.0 * self.zoom;
+        }
+    }
+
     fn step(&mut self) {
         let Some(graph) = &self.graph else { return };
         let ids: Vec<usize> = (0..graph.nodes.len())
@@ -278,8 +295,12 @@ impl GraphView {
                     .hint_text(l.text("Поиск"))
                     .desired_width(140.0),
             );
+            let before = (self.show_symbols, self.show_isolated);
             ui.checkbox(&mut self.show_symbols, l.text("Символы"));
             ui.checkbox(&mut self.show_isolated, l.text("Без связей"));
+            if before != (self.show_symbols, self.show_isolated) {
+                self.steps = 0;
+            }
             if !self.status.is_empty() {
                 ui.label(RichText::new(&self.status).small().weak());
             }
@@ -289,8 +310,12 @@ impl GraphView {
             ui.label(l.text("Выберите папку проекта и постройте граф: файлы, символы, импорты и сообщества. Содержимое файлов не сохраняется."));
             return;
         }
+        let canvas = ui.available_size_before_wrap();
         if self.steps < 500 {
             self.step();
+            if matches!(self.steps, 120 | 500) {
+                self.fit(Vec2::new(canvas.x, (canvas.y - 30.0).max(200.0)));
+            }
             ui.ctx().request_repaint();
         }
         let size = ui.available_size_before_wrap();

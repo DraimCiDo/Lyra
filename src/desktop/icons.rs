@@ -13,6 +13,7 @@ pub enum Icon {
     Model,
     Cpu,
     Workers,
+    Graph,
     Palette,
     Monitor,
     Play,
@@ -27,7 +28,7 @@ pub enum Icon {
     Moon,
 }
 impl Icon {
-    pub const ALL: [Self; 23] = [
+    pub const ALL: [Self; 24] = [
         Self::ArrowUp,
         Self::NewChat,
         Self::FolderPlus,
@@ -39,6 +40,7 @@ impl Icon {
         Self::Model,
         Self::Cpu,
         Self::Workers,
+        Self::Graph,
         Self::Palette,
         Self::Monitor,
         Self::Play,
@@ -73,6 +75,7 @@ impl Icon {
             Self::Model => svg!("file-code"),
             Self::Cpu => svg!("cpu"),
             Self::Workers => svg!("users"),
+            Self::Graph => svg!("waypoints"),
             Self::Palette => svg!("palette"),
             Self::Monitor => svg!("monitor"),
             Self::Play => svg!("play"),
