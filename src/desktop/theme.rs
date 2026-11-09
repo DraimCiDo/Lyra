@@ -440,6 +440,12 @@ impl Language {
                 "Leave empty for a bounded project index. The engine excludes secrets and service files."
             }
             "Исследователь и ревьюер" => "Researcher and reviewer",
+            "Загрузить issue как задачу" => "Load issue as task",
+            "Переменная токена" => "Token variable",
+            "Черновик PR в GitHub" => "Draft PR on GitHub",
+            "Токен читается из переменной окружения и нигде не сохраняется. Публикация PR — кнопка рядом с отчётом." => {
+                "The token is read from an environment variable and never stored. Publish a PR with the button next to the report."
+            }
             "Проверки (по одной команде в строке)" => {
                 "Checks (one command per line)"
             }

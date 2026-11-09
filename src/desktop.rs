@@ -10,6 +10,8 @@ mod projects;
 mod theme;
 pub mod updater;
 use crate::agent::Report;
+#[cfg(feature = "gateway-http")]
+use crate::github;
 use eframe::egui::{self, Color32, RichText};
 use icons::Icon;
 use job::{Job, ResultData};
@@ -187,6 +189,9 @@ struct Desktop {
     activity_elapsed: Duration,
     draft: projects::ProjectDraft,
     request_task: String,
+    #[cfg_attr(not(feature = "gateway-http"), allow(dead_code))]
+    publish_flag: std::cell::Cell<bool>,
+    github_rx: Option<std::sync::mpsc::Receiver<io::Result<GithubOut>>>,
     knowledge_ui: projects::KnowledgeUi,
     updates: updater::Controller,
     update_confirm: bool,
@@ -228,6 +233,8 @@ impl Default for Desktop {
             activity_elapsed: Duration::ZERO,
             draft: projects::ProjectDraft::default(),
             request_task: String::new(),
+            publish_flag: std::cell::Cell::new(false),
+            github_rx: None,
             knowledge_ui: projects::KnowledgeUi::default(),
             updates: updater::Controller::default(),
             update_confirm: false,
@@ -259,7 +266,118 @@ impl Default for Desktop {
     }
 }
 
+#[allow(dead_code)]
+enum GithubOut {
+    Task(String),
+    Pull(String),
+}
+
 impl Desktop {
+    /// GitHub work runs on a short-lived thread; the token is read from the environment only.
+    #[cfg(feature = "gateway-http")]
+    fn github_fetch_issue(&mut self) {
+        let (repo, issue, env) = (
+            self.prefs.github_repo.trim().to_owned(),
+            self.prefs.github_issue.trim().to_owned(),
+            self.prefs.github_token_env.clone(),
+        );
+        let (tx, rx) = std::sync::mpsc::channel();
+        self.github_rx = Some(rx);
+        self.message = "GitHub: загрузка issue…".into();
+        self.error = false;
+        std::thread::spawn(move || {
+            let result = (|| {
+                let number: u64 = issue
+                    .parse()
+                    .map_err(|_| io::Error::other("Номер issue должен быть числом."))?;
+                let client = github::GithubClient::new(github::DEFAULT_API, &env)?;
+                let bundle = client.issue(&repo, number)?;
+                Ok(GithubOut::Task(github::issue_task(&repo, &bundle)))
+            })();
+            let _ = tx.send(result);
+        });
+    }
+
+    #[cfg(feature = "gateway-http")]
+    fn github_publish(&mut self) {
+        let Some(report) = &self.report else { return };
+        let proposals: Vec<_> = report
+            .proposals
+            .get(self.selected)
+            .cloned()
+            .into_iter()
+            .collect();
+        let failed_checks = report.checks.last().is_some_and(|run| !run.passed);
+        let (repo, env) = (
+            self.prefs.github_repo.trim().to_owned(),
+            self.prefs.github_token_env.clone(),
+        );
+        let title = self
+            .request_task
+            .lines()
+            .next()
+            .unwrap_or("Lyra changes")
+            .chars()
+            .take(120)
+            .collect::<String>();
+        let branch = format!(
+            "lyra/{}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map_or(0, |d| d.as_secs())
+        );
+        let (tx, rx) = std::sync::mpsc::channel();
+        self.github_rx = Some(rx);
+        self.message = "GitHub: публикация черновика PR…".into();
+        self.error = false;
+        std::thread::spawn(move || {
+            let result = (|| {
+                if failed_checks {
+                    return Err(io::Error::other(
+                        "Последняя проверка не прошла; публикация отменена.",
+                    ));
+                }
+                let client = github::GithubClient::new(github::DEFAULT_API, &env)?;
+                let url = client.publish(
+                    &repo,
+                    &branch,
+                    "main",
+                    &title,
+                    "Prepared by Lyra; review before merging.",
+                    &proposals,
+                    true,
+                )?;
+                Ok(GithubOut::Pull(url))
+            })();
+            let _ = tx.send(result);
+        });
+    }
+
+    #[cfg_attr(not(feature = "gateway-http"), allow(dead_code))]
+    fn poll_github(&mut self, ctx: &egui::Context) {
+        #[cfg(feature = "gateway-http")]
+        if self.publish_flag.take() && self.github_rx.is_none() {
+            self.github_publish();
+        }
+        let Some(rx) = &self.github_rx else { return };
+        match rx.try_recv() {
+            Ok(Ok(GithubOut::Task(text))) => {
+                self.request_task = text;
+                self.message = "GitHub: issue загружен в поле задачи".into();
+            }
+            Ok(Ok(GithubOut::Pull(url))) => self.message = format!("GitHub: {url}"),
+            Ok(Err(e)) => {
+                self.message = format!("GitHub: {e}");
+                self.error = true;
+            }
+            Err(std::sync::mpsc::TryRecvError::Empty) => {
+                ctx.request_repaint_after(Duration::from_millis(200));
+                return;
+            }
+            Err(_) => {}
+        }
+        self.github_rx = None;
+    }
     fn fail(&mut self, error: impl std::fmt::Display) {
         self.message = error.to_string();
         self.error = true;
@@ -1071,6 +1189,24 @@ impl Desktop {
                         if self.prefs.subagents{self.prefs.calls=self.prefs.calls.max(3);}
                         ui.label(RichText::new(l.text("Роли работают последовательно с одной моделью. Дополнительные проверки требуют времени.")).small().weak());
                         let min=if self.prefs.subagents{3}else{1};
+                        #[cfg(feature = "gateway-http")]
+                        {
+                            ui.separator();
+                            ui.label("GitHub");
+                            ui.horizontal(|ui| {
+                                ui.add(egui::TextEdit::singleline(&mut self.prefs.github_repo).hint_text("owner/name").desired_width(180.0));
+                                ui.add(egui::TextEdit::singleline(&mut self.prefs.github_issue).hint_text("issue #").desired_width(70.0));
+                            });
+                            ui.horizontal(|ui| {
+                                ui.label(l.text("Переменная токена"));
+                                ui.add(egui::TextEdit::singleline(&mut self.prefs.github_token_env).desired_width(140.0));
+                            });
+                            if ui.add_enabled(self.github_rx.is_none(), egui::Button::new(l.text("Загрузить issue как задачу"))).clicked() {
+                                self.github_fetch_issue();
+                            }
+                            ui.label(RichText::new(l.text("Токен читается из переменной окружения и нигде не сохраняется. Публикация PR — кнопка рядом с отчётом.")).small().weak());
+                            ui.separator();
+                        }
                         ui.label(l.text("Проверки (по одной команде в строке)"));
                         ui.add(egui::TextEdit::multiline(&mut self.prefs.check_commands).desired_rows(3).desired_width(f32::INFINITY).char_limit(4096).hint_text("cargo test\nnpm test"));
                         ui.label(RichText::new(l.text("Команды выполняются во временной копии с предложениями, без shell; при сбое кодер исправляет правки. Это не песочница ОС.")).small().weak());
@@ -1331,6 +1467,19 @@ impl Desktop {
                     .clicked()
                 {
                     self.confirm = Some(self.selected);
+                }
+                #[cfg(feature = "gateway-http")]
+                if ui
+                    .add_enabled(
+                        self.github_rx.is_none()
+                            && !self.prefs.github_repo.trim().is_empty()
+                            && report.status == "completed"
+                            && !report.proposals.is_empty(),
+                        egui::Button::new(l.text("Черновик PR в GitHub")),
+                    )
+                    .clicked()
+                {
+                    self.publish_flag.set(true);
                 }
                 if icons::button(
                     ui,
@@ -1642,6 +1791,7 @@ impl eframe::App for Desktop {
             self.smoke_conversation(step % 9 == 8);
             self.settings_page = SettingsPage::ALL[(step % 9).saturating_sub(1).min(6)];
         }
+        self.poll_github(ui.ctx());
         self.draw(ui);
         if self.real_app {
             self.updates.acknowledge_startup();

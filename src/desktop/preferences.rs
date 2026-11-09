@@ -54,6 +54,10 @@ pub struct Preferences {
     pub subagents: bool,
     /// One verification command per line (cargo/npm/pytest/…); run on a scratch copy.
     pub check_commands: String,
+    /// GitHub connector: owner/name, issue number, token env var name (never the token).
+    pub github_repo: String,
+    pub github_issue: String,
+    pub github_token_env: String,
     pub optimization: Optimization,
     pub dedup_tool_context: bool,
     pub context: u32,
@@ -86,6 +90,9 @@ impl Default for Preferences {
             files: String::new(),
             subagents: false,
             check_commands: String::new(),
+            github_repo: String::new(),
+            github_issue: String::new(),
+            github_token_env: "GITHUB_TOKEN".into(),
             optimization: Optimization::Balanced,
             dedup_tool_context: false,
             context: 4096,
@@ -112,6 +119,9 @@ impl Preferences {
             && self.cloud_model.len() <= 256
             && self.files.len() <= 32768
             && self.check_commands.len() <= 4096
+            && self.github_repo.len() <= 201
+            && self.github_issue.len() <= 12
+            && self.github_token_env.len() <= 64
             && self
                 .check_commands
                 .lines()
