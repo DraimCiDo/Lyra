@@ -303,3 +303,151 @@ fn publish_creates_branch_commits_and_draft_pr_but_refuses_conflicts_and_failed_
     let after = log.lock().unwrap();
     assert!(after[before..].iter().all(|(r, ..)| r.starts_with("GET")));
 }
+
+#[test]
+fn graph_remote_builds_from_github_tree_and_pr_overlay_marks_blast_radius() {
+    let b64 = |s: &str| lyra::github::base64_encode(s.as_bytes());
+    let file = |s: &str| {
+        format!(
+            r#"{{"type":"file","encoding":"base64","sha":"s","content":"{}"}}"#,
+            b64(s)
+        )
+    };
+    let (url, _log) = stub(vec![
+        (
+            "GET",
+            "/repos/o/r/git/trees/main",
+            200,
+            r#"{"truncated":false,"tree":[
+            {"path":"src/lib.rs","type":"blob","size":40},
+            {"path":"src/core.rs","type":"blob","size":40},
+            {"path":"secrets.py","type":"blob","size":10},
+            {"path":"big.rs","type":"blob","size":9999999},
+            {"path":"src","type":"tree"}]}"#
+                .into(),
+        ),
+        (
+            "GET",
+            "/repos/o/r/contents/src/lib.rs",
+            200,
+            file("pub mod core;\npub fn entry_point() {}\n"),
+        ),
+        (
+            "GET",
+            "/repos/o/r/contents/src/core.rs",
+            200,
+            file("pub struct CoreThing;\n"),
+        ),
+        (
+            "GET",
+            "/repos/o/r/pulls/3/files",
+            200,
+            r#"[{"filename":"src/core.rs"}]"#.into(),
+        ),
+    ]);
+    let dir = tempfile::tempdir().unwrap();
+    let out = dir.path().join("remote");
+    let run = |args: &[&str]| {
+        Command::new(env!("CARGO_BIN_EXE_lyra"))
+            .args(args)
+            .env("GITHUB_TOKEN", "t")
+            .output()
+            .unwrap()
+    };
+    let remote = run(&[
+        "graph",
+        "remote",
+        "--github",
+        "o/r",
+        "--api-url",
+        &url,
+        "--out",
+        out.to_str().unwrap(),
+    ]);
+    assert!(
+        remote.status.success(),
+        "{}",
+        String::from_utf8_lossy(&remote.stderr)
+    );
+    let loaded = lyra::codegraph::load_graph(&out.join("graph.json")).unwrap();
+    assert!(
+        loaded
+            .edges
+            .iter()
+            .any(|e| e.kind == lyra::codegraph::EdgeKind::Imports)
+    );
+    assert!(
+        !loaded
+            .nodes
+            .iter()
+            .any(|n| n.file == "secrets.py" || n.file == "big.rs")
+    );
+    let local = dir.path().join("pr-repo");
+    std::fs::create_dir_all(local.join("src")).unwrap();
+    std::fs::write(
+        local.join("src/lib.rs"),
+        "pub mod core;\npub fn entry_point() {}\n",
+    )
+    .unwrap();
+    std::fs::write(local.join("src/core.rs"), "pub struct CoreThing;\n").unwrap();
+    let pr_out = dir.path().join("pr");
+    let pr = run(&[
+        "graph",
+        "pr",
+        "--repo",
+        local.to_str().unwrap(),
+        "--github",
+        "o/r",
+        "--number",
+        "3",
+        "--api-url",
+        &url,
+        "--out",
+        pr_out.to_str().unwrap(),
+    ]);
+    assert!(
+        pr.status.success(),
+        "{}",
+        String::from_utf8_lossy(&pr.stderr)
+    );
+    let text = String::from_utf8_lossy(&pr.stdout);
+    assert!(
+        text.contains("changed  src/core.rs") && text.contains("impacted src/lib.rs"),
+        "{text}"
+    );
+    assert!(
+        std::fs::read_to_string(pr_out.join("graph.html"))
+            .unwrap()
+            .contains("src/core.rs")
+    );
+    // CLI: build locally and query it.
+    let repo = dir.path().join("repo");
+    std::fs::create_dir_all(repo.join("src")).unwrap();
+    std::fs::write(repo.join("src/lib.rs"), "pub mod core;\n").unwrap();
+    std::fs::write(repo.join("src/core.rs"), "pub struct CoreThing;\n").unwrap();
+    let built = run(&[
+        "graph",
+        "build",
+        "--repo",
+        repo.to_str().unwrap(),
+        "--out",
+        out.to_str().unwrap(),
+    ]);
+    assert!(
+        built.status.success(),
+        "{}",
+        String::from_utf8_lossy(&built.stderr)
+    );
+    for name in ["graph.json", "GRAPH_REPORT.md", "graph.html"] {
+        assert!(out.join(name).exists());
+    }
+    let q = run(&[
+        "graph",
+        "query",
+        "--graph",
+        out.join("graph.json").to_str().unwrap(),
+        "--term",
+        "core.rs",
+    ]);
+    assert!(String::from_utf8_lossy(&q.stdout).contains("CoreThing"));
+}

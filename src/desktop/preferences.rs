@@ -44,6 +44,7 @@ pub struct Preferences {
     pub files: String,
     pub subagents: bool,
     /// GitHub connector: owner/name, issue number, token env var name (never the token).
+    pub code_graph: bool,
     pub github_repo: String,
     pub github_issue: String,
     pub github_token_env: String,
@@ -85,6 +86,7 @@ impl Default for Preferences {
             task_session_db: None,
             files: String::new(),
             subagents: false,
+            code_graph: false,
             github_repo: String::new(),
             github_issue: String::new(),
             github_token_env: "GITHUB_TOKEN".into(),

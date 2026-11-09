@@ -109,6 +109,9 @@ pub struct TaskArgs {
     /// Request-local, lossless pooling of repeated older tool results
     #[arg(long)]
     pub dedup_tool_context: bool,
+    /// Add a bounded structural summary of the project (names only) to every role's context
+    #[arg(long)]
+    pub code_graph: bool,
     /// Explicit trusted Docker check configuration; model cannot change image or argv
     #[arg(long)]
     pub check_config: Option<PathBuf>,
@@ -1475,8 +1478,16 @@ pub fn task(args: TaskArgs, output: &mut impl Write) -> io::Result<()> {
         .as_ref()
         .map(|path| crate::skills::SkillPack::load_source(path))
         .transpose()?;
-    let skill_guidance =
+    let mut skill_guidance =
         crate::agent_runtime::skill_instructions(skill_pack.as_ref(), &args.selected_skills)?;
+    if args.code_graph {
+        let (files, truncated) = crate::codegraph::load_dir(&workspace.root)?;
+        let graph = crate::codegraph::build(&files, truncated);
+        if !skill_guidance.is_empty() {
+            skill_guidance.push_str("\n\n");
+        }
+        skill_guidance.push_str(&graph.agent_summary(3072));
+    }
     #[cfg(feature = "gateway-http")]
     if let Some(mut cloud) = cloud_task_model(&args, started)? {
         let mut model = SkilledModel {

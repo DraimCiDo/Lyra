@@ -122,3 +122,5 @@ GitHub-коннектор: [github](../src/github.rs), [тесты](../tests/git
 [реестр](../src/universal/environment.rs), [исполнение](../src/universal/execution.rs),
 [blobs/publication](../src/universal/artifacts.rs), [Office/PDF](../tools/documents/lyra_documents.py),
 [инструкция](UNIVERSAL.md), [план](plans/0019-universal-tasks.md).
+
+Граф кода: [codegraph](../src/codegraph.rs), [экран Desktop](../src/desktop/graph_view.rs), [инструкция](GRAPH.md). `lyra graph …`, `task --code-graph`.

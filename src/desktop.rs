@@ -1,6 +1,7 @@
 //! Native shell around the same CLI contracts. No inference or filesystem policy in widgets.
 mod chat;
 mod chat_policy;
+mod graph_view;
 mod history;
 mod icons;
 mod job;
@@ -236,6 +237,9 @@ struct Desktop {
     draft: projects::ProjectDraft,
     request_task: String,
     #[cfg_attr(not(feature = "gateway-http"), allow(dead_code))]
+    graph_open: bool,
+    graph: graph_view::GraphView,
+    #[cfg_attr(not(feature = "gateway-http"), allow(dead_code))]
     publish_flag: std::cell::Cell<bool>,
     github_rx: Option<std::sync::mpsc::Receiver<io::Result<GithubOut>>>,
     knowledge_ui: projects::KnowledgeUi,
@@ -293,6 +297,8 @@ impl Default for Desktop {
             activity_elapsed: Duration::ZERO,
             draft: projects::ProjectDraft::default(),
             request_task: String::new(),
+            graph_open: false,
+            graph: graph_view::GraphView::default(),
             publish_flag: std::cell::Cell::new(false),
             github_rx: None,
             knowledge_ui: projects::KnowledgeUi::default(),
@@ -640,6 +646,9 @@ impl Desktop {
                     args.push("--dedup-tool-context".into());
                 }
                 self.append_task_workflow_args(&mut args)?;
+                if self.prefs.code_graph {
+                    args.push("--code-graph".into());
+                }
                 if let Some(registry) = &self.prefs.environments {
                     let current = crate::retrieval::sha256(
                         crate::knowledge::read_text(registry, 256 * 1024)?.as_bytes(),
@@ -929,6 +938,19 @@ impl Desktop {
             }
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                 if !self.settings_open
+                    && icons::button(
+                        ui,
+                        Icon::Workers,
+                        l.text("Граф кода"),
+                        self.graph_open,
+                        c.accent,
+                    )
+                    .clicked()
+                {
+                    self.graph_open = !self.graph_open;
+                    self.transition = Some(Instant::now());
+                }
+                if !self.settings_open
                     && icons::button(ui, Icon::Settings, l.text("Настройки"), false, c.text)
                         .clicked()
                 {
@@ -1163,6 +1185,9 @@ impl Desktop {
                         let min=if self.prefs.subagents{3}else{1};
                         #[cfg(feature = "gateway-http")]
                         {
+                            ui.separator();
+                            ui.checkbox(&mut self.prefs.code_graph, l.text("Граф проекта в контексте агентов"));
+                            ui.label(RichText::new(l.text("Добавляет ~3 КБ структуры (имена файлов, без кода) в запросы; для малых контекстов GGUF увеличьте контекст.")).small().weak());
                             ui.separator();
                             ui.label("GitHub");
                             ui.horizontal(|ui| {
@@ -1672,7 +1697,7 @@ impl Desktop {
                     .inner_margin(egui::Margin::symmetric(16, 8)),
             )
             .show(ui, |ui| self.header(ui));
-        if !self.settings_open {
+        if !self.settings_open && !self.graph_open {
             egui::Panel::left("conversation-history")
                 .default_size(210.0)
                 .show(ui, |ui| self.history_sidebar(ui));
@@ -1695,6 +1720,16 @@ impl Desktop {
                 }
                 if self.settings_open {
                     self.settings(ui);
+                } else if self.graph_open {
+                    let repo = self.prefs.repo.clone();
+                    self.graph.ui(
+                        ui,
+                        c,
+                        l,
+                        repo.as_ref(),
+                        &self.prefs.github_repo,
+                        &self.prefs.github_token_env,
+                    );
                 } else {
                     self.chat_home(ui);
                 }

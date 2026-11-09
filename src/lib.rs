@@ -1,5 +1,6 @@
 pub mod agent;
 pub mod agent_runtime;
+pub mod codegraph;
 pub mod context_optimizer;
 #[cfg(feature = "desktop")]
 pub mod desktop;
@@ -110,6 +111,8 @@ pub enum Command {
         #[arg(long)]
         id: Option<String>,
     },
+    /// Граф кода: файлы, символы, импорты, сообщества, HTML-визуализация, влияние PR
+    Graph(codegraph::GraphArgs),
     /// Коннектор GitHub: issues, PR, файлы, комментарии и публикация предложений как PR
     #[cfg(feature = "gateway-http")]
     Github(github::GithubArgs),
@@ -141,6 +144,7 @@ pub fn run(cli: Cli, output: &mut impl Write) -> io::Result<()> {
         Command::Docs(args) => knowledge::run(args, output),
         Command::Task(args) => agent::task(*args, output),
         Command::Apply(args) => agent::apply(args, output),
+        Command::Graph(args) => codegraph::run(args, output),
         #[cfg(feature = "gateway-http")]
         Command::Github(args) => github::run(args, output),
         Command::Recover(args) => publication::recover(args, output),

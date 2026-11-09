@@ -546,6 +546,28 @@ impl Language {
                 "Leave empty for a bounded project index. The engine excludes secrets and service files."
             }
             "Исследователь и ревьюер" => "Researcher and reviewer",
+            "Граф проекта в контексте агентов" => {
+                "Project graph in agent context"
+            }
+            "Добавляет ~3 КБ структуры (имена файлов, без кода) в запросы; для малых контекстов GGUF увеличьте контекст." => {
+                "Adds ~3 KB of structure (file names, no code) to requests; raise the GGUF context for small windows."
+            }
+            "Граф кода" => "Code graph",
+            "Построить граф проекта" => "Build project graph",
+            "Влияние PR из GitHub" => "GitHub PR impact",
+            "Символы" => "Symbols",
+            "Без связей" => "Isolated",
+            "изменён в PR" => "changed in PR",
+            "затронут, глубина" => "impacted, depth",
+            "файл" => "file",
+            "символ" => "symbol",
+            "связей" => "links",
+            "колесо — масштаб, перетаскивание — сдвиг, клик — узел" => {
+                "wheel zoom, drag pan, click a node"
+            }
+            "Выберите папку проекта и постройте граф: файлы, символы, импорты и сообщества. Содержимое файлов не сохраняется." => {
+                "Choose a project folder and build the graph: files, symbols, imports and communities. File contents are not stored."
+            }
             "Загрузить issue как задачу" => "Load issue as task",
             "Переменная токена" => "Token variable",
             "Черновик PR в GitHub" => "Draft PR on GitHub",

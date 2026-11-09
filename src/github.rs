@@ -375,6 +375,57 @@ impl GithubClient {
         Ok((text, value["sha"].as_str().unwrap_or_default().to_owned()))
     }
 
+    /// Source files of a remote tree for the code graph (read-only, bounded).
+    pub fn source_files(
+        &self,
+        repo: &str,
+        git_ref: &str,
+        max_files: usize,
+    ) -> io::Result<(Vec<crate::codegraph::SourceFile>, bool)> {
+        validate_slug(repo)?;
+        validate_branch(git_ref)?;
+        let tree = self.get(&format!("/repos/{repo}/git/trees/{git_ref}?recursive=1"))?;
+        let mut files = Vec::new();
+        let mut truncated = tree["truncated"].as_bool().unwrap_or(false);
+        for entry in tree["tree"].as_array().into_iter().flatten() {
+            let path = field(entry, "path");
+            if entry["type"] != "blob"
+                || entry["size"].as_u64().unwrap_or(u64::MAX) > 256 * 1024
+                || !crate::codegraph::path_allowed(path)
+            {
+                continue;
+            }
+            if files.len() >= max_files {
+                truncated = true;
+                break;
+            }
+            if let Ok((content, _)) = self.file(repo, path, Some(git_ref)) {
+                files.push(crate::codegraph::SourceFile {
+                    path: path.to_owned(),
+                    content,
+                });
+            }
+        }
+        Ok((files, truncated))
+    }
+
+    /// Paths changed by a pull request (up to 300).
+    pub fn pull_filenames(&self, repo: &str, number: u64) -> io::Result<Vec<String>> {
+        validate_slug(repo)?;
+        let mut names = Vec::new();
+        for page in 1..=3 {
+            let files = self.get(&format!(
+                "/repos/{repo}/pulls/{number}/files?per_page=100&page={page}"
+            ))?;
+            let items = files.as_array().cloned().unwrap_or_default();
+            names.extend(items.iter().map(|f| field(f, "filename").to_owned()));
+            if items.len() < 100 {
+                break;
+            }
+        }
+        Ok(names)
+    }
+
     pub fn comment(&self, repo: &str, number: u64, body: &str) -> io::Result<String> {
         validate_slug(repo)?;
         if body.trim().is_empty() || body.len() > 60_000 {
