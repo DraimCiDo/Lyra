@@ -8,6 +8,8 @@ use std::path::Path;
 
 const MAX_MANIFEST_BYTES: u64 = 64 * 1024;
 const MAX_SKILLS: usize = 256;
+const MAX_CATALOG_BYTES: usize = 4 * 1024 * 1024;
+const MAX_CATALOG_ENTRIES: usize = 512;
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -27,6 +29,78 @@ pub struct SkillPack {
 }
 
 impl SkillPack {
+    /// A JSON pack, one SKILL.md, or an explicitly selected directory containing
+    /// SKILL.md and/or immediate child directories with SKILL.md. No recursion,
+    /// resource execution, network access, or implicit skill activation.
+    pub fn load_source(path: &Path) -> io::Result<Self> {
+        if !path.is_dir() {
+            if crate::skill_package::is_store(path) {
+                return Ok(crate::skill_package::Store::load(path)?.current.pack);
+            }
+            return if path.file_name().is_some_and(|name| name == "SKILL.md") {
+                Self::load_markdown(path)
+            } else {
+                Self::load(path)
+            };
+        }
+        let root = path.canonicalize()?;
+        let mut files = Vec::new();
+        let root_skill = root.join("SKILL.md");
+        if root_skill.try_exists()? {
+            files.push(root_skill);
+        }
+        for (index, entry) in std::fs::read_dir(&root)?.enumerate() {
+            if index >= MAX_CATALOG_ENTRIES {
+                return Err(io::Error::other("Skill catalog exceeds 512 entries"));
+            }
+            let entry = entry?;
+            let kind = entry.file_type()?;
+            // Junctions and symlink directories are never discovery roots.
+            if kind.is_dir() && !kind.is_symlink() {
+                let child = entry.path().canonicalize()?;
+                if !child.starts_with(&root) {
+                    return Err(io::Error::other("Skill directory escapes catalog"));
+                }
+                let candidate = child.join("SKILL.md");
+                if candidate.try_exists()? {
+                    files.push(candidate);
+                }
+            }
+        }
+        files.sort();
+        let mut pack = Self {
+            schema_version: 1,
+            skills: Vec::new(),
+        };
+        let mut total = 0usize;
+        for file in files {
+            let resolved = file.canonicalize()?;
+            if !resolved.starts_with(&root) || !resolved.is_file() {
+                return Err(io::Error::other(
+                    "SKILL.md escapes catalog or is not a file",
+                ));
+            }
+            let imported = Self::load_markdown(&resolved)?;
+            // Account for the actual bounded content, not potentially stale metadata.
+            for skill in imported.skills {
+                total = total
+                    .saturating_add(skill.instructions.len())
+                    .saturating_add(skill.description.len())
+                    .saturating_add(skill.id.len());
+                if total > MAX_CATALOG_BYTES {
+                    return Err(io::Error::other("Skill catalog exceeds 4 MiB"));
+                }
+                pack.skills.push(skill);
+                pack.validate()?;
+            }
+        }
+        if pack.skills.is_empty() {
+            return Err(io::Error::other("No SKILL.md files found in catalog"));
+        }
+        pack.skills.sort_by(|a, b| a.id.cmp(&b.id));
+        Ok(pack)
+    }
+
     pub fn load(path: &Path) -> io::Result<Self> {
         use std::io::Read;
         let mut bytes = Vec::new();
@@ -76,11 +150,17 @@ impl SkillPack {
         let mut id = None;
         let mut description = None;
         for line in frontmatter.lines() {
+            if line.starts_with(char::is_whitespace) {
+                continue;
+            }
             if let Some((key, value)) = line.split_once(':') {
                 let value = value.trim().trim_matches('"').trim_matches('\'');
                 match key.trim() {
-                    "name" => id = Some(value.to_owned()),
-                    "description" => description = Some(value.to_owned()),
+                    "name" if id.is_none() => id = Some(value.to_owned()),
+                    "description" if description.is_none() => description = Some(value.to_owned()),
+                    "name" | "description" => {
+                        return Err(io::Error::other("Duplicate SKILL.md field"));
+                    }
                     _ => {}
                 }
             }
@@ -196,5 +276,83 @@ mod tests {
         let path = dir.path().join("skills.json");
         std::fs::write(&path, r#"{"schema_version":1,"skills":[],"execute":true}"#).unwrap();
         assert!(SkillPack::load(&path).is_err());
+    }
+
+    fn write_skill(root: &Path, directory: &str, id: &str, body: &str) {
+        let path = root.join(directory);
+        std::fs::create_dir_all(&path).unwrap();
+        std::fs::write(
+            path.join("SKILL.md"),
+            format!(
+                "---\nname: {id}\ndescription: Review code\nmetadata:\n  name: ignored\n---\n{body}"
+            ),
+        )
+        .unwrap();
+    }
+
+    #[test]
+    fn catalog_is_sorted_bounded_and_never_executes_resources() {
+        let dir = tempfile::tempdir().unwrap();
+        write_skill(dir.path(), "z", "rust", "Check ownership.");
+        write_skill(
+            dir.path(),
+            "a",
+            "review",
+            "Run scripts/hook.cmd only if authorized.",
+        );
+        // Non-skill resources and nested directories are not loaded or executed.
+        std::fs::write(dir.path().join("a/hook.cmd"), "exit 99").unwrap();
+        write_skill(dir.path(), "a/nested", "nested", "Not discovered");
+        let pack = SkillPack::load_source(dir.path()).unwrap();
+        assert_eq!(
+            pack.skills
+                .iter()
+                .map(|s| s.id.as_str())
+                .collect::<Vec<_>>(),
+            ["review", "rust"]
+        );
+        assert_eq!(
+            SkillPack::load_source(&dir.path().join("z"))
+                .unwrap()
+                .skills
+                .len(),
+            1
+        );
+        write_skill(dir.path(), "duplicate", "rust", "Conflicting duplicate");
+        assert!(SkillPack::load_source(dir.path()).is_err());
+        let empty = tempfile::tempdir().unwrap();
+        assert!(SkillPack::load_source(empty.path()).is_err());
+        for index in 0..=MAX_CATALOG_ENTRIES {
+            std::fs::write(empty.path().join(index.to_string()), "").unwrap();
+        }
+        assert!(
+            SkillPack::load_source(empty.path())
+                .unwrap_err()
+                .to_string()
+                .contains("512")
+        );
+    }
+
+    #[test]
+    fn invalid_catalog_member_rejects_entire_selection() {
+        let dir = tempfile::tempdir().unwrap();
+        write_skill(dir.path(), "good", "good", "Review");
+        write_skill(dir.path(), "bad", "bad", &"x".repeat(16385));
+        assert!(SkillPack::load_source(dir.path()).is_err());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn catalog_rejects_skill_link_outside_root_and_ignores_directory_links() {
+        let dir = tempfile::tempdir().unwrap();
+        let outside = tempfile::tempdir().unwrap();
+        write_skill(outside.path(), "", "external", "Do not read");
+        std::os::unix::fs::symlink(outside.path(), dir.path().join("linked")).unwrap();
+        assert!(SkillPack::load_source(dir.path()).is_err()); // no discovered skills
+        write_skill(dir.path(), "local", "local", "Local instructions");
+        assert_eq!(SkillPack::load_source(dir.path()).unwrap().skills.len(), 1);
+        std::os::unix::fs::symlink(outside.path().join("SKILL.md"), dir.path().join("SKILL.md"))
+            .unwrap();
+        assert!(SkillPack::load_source(dir.path()).is_err());
     }
 }

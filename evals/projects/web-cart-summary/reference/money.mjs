@@ -1,0 +1,1 @@
+export function subtotal(lines){return lines.reduce((sum,{cents,qty})=>{if(!Number.isSafeInteger(cents)||!Number.isSafeInteger(qty)||cents<0||qty<0)throw new RangeError('line');return sum+cents*qty;},0);}

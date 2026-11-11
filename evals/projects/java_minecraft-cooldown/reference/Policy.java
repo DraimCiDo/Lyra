@@ -1,0 +1,1 @@
+public class Policy {public static long remaining(long now,long last,long duration){if(now<0||last<0||duration<0)throw new IllegalArgumentException();long elapsed=now>=last?now-last:0;return elapsed>=duration?0:duration-elapsed;}}

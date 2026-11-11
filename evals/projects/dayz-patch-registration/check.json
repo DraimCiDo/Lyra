@@ -1,0 +1,10 @@
+{
+  "image": "python@sha256:ae14d4ce8771606477a81446e7ef429edd6762305fc50c84507c1041fa8285d1",
+  "program": "python",
+  "args": [
+    "-c",
+    "from pathlib import Path\nimport re\nroot=Path('/source')\ntext=(root/'config.cpp').read_text();assert 'class CfgMods' in text;match=re.search(r'class\\s+CfgPatches\\s*\\{\\s*class\\s+LyraFixture\\s*\\{(.*?)\\};',text,re.S);assert match\nbody=match[1];assert '\"DZ_Data\"' in body;assert re.search(r'units\\s*\\[\\]\\s*=\\s*\\{\\s*\\}',text);assert re.search(r'weapons\\s*\\[\\]\\s*=\\s*\\{\\s*\\}',text)\n"
+  ],
+  "timeout_secs": 60,
+  "memory_mib": 512
+}

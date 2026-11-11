@@ -1,0 +1,10 @@
+{
+  "image": "rust@sha256:220ee93216b2acf3c04f312e24bf5d155c8eed61d707fc1ff8553ae24609da4e",
+  "program": "sh",
+  "args": [
+    "-c",
+    "cat > /tmp/check.rs <<'LYRA_TRUSTED_CHECK'\n#[path=\"/source/lib.rs\"] mod sut;\n#[test]fn config(){let p=sut::parse(\" # comment\\r\\n имя = значение \\r\\nx=a=b\\r\\n\").unwrap();assert_eq!(p[\"имя\"],\"значение\");assert_eq!(p[\"x\"],\"a=b\");for bad in [\"a=1\\na=2\",\"=x\",\"no-equals\"]{assert!(sut::parse(bad).is_err());}assert!(sut::parse(\"\").unwrap().is_empty());}\nLYRA_TRUSTED_CHECK\nrustc --edition=2024 --test /tmp/check.rs -o /tmp/check-tests && /tmp/check-tests"
+  ],
+  "timeout_secs": 60,
+  "memory_mib": 512
+}

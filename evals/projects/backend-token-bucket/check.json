@@ -1,0 +1,10 @@
+{
+  "image": "python@sha256:ae14d4ce8771606477a81446e7ef429edd6762305fc50c84507c1041fa8285d1",
+  "program": "python",
+  "args": [
+    "-c",
+    "import sys\nsys.path.insert(0,\"/source\")\nfrom main import *\nnow=[0];b=Bucket(3,1,lambda:now[0]);assert b.take(3) and not b.take()\nnow[0]=2;assert not b.take(3) and b.take(2)\nnow[0]=1;assert not b.take()\nnow[0]=20;assert b.take(3) and not b.take()\ntry: b.take(0)\nexcept ValueError: pass\nelse: raise AssertionError('invalid amount')\n"
+  ],
+  "timeout_secs": 60,
+  "memory_mib": 512
+}

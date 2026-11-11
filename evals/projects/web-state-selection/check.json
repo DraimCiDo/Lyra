@@ -1,0 +1,11 @@
+{
+  "image": "node@sha256:a43f7fc3e52e87d12a905f46eea0275def84ca8f2981a5b53fed44d7fb398ee0",
+  "program": "node",
+  "args": [
+    "--input-type=module",
+    "-e",
+    "import assert from 'node:assert/strict';\nimport * as sut from '/source/main.mjs';\nconst rows=[{name:'Alpha',active:true,score:2},{name:'beta',active:false,score:1},{name:'ALPS',active:true,score:2}];const old=JSON.stringify(rows);assert.deepEqual(sut.select(rows,'al',true).map(r=>r.name),['Alpha','ALPS']);assert.deepEqual(sut.select(rows,'',false).map(r=>r.name),['beta','Alpha','ALPS']);assert.equal(JSON.stringify(rows),old);\n"
+  ],
+  "timeout_secs": 60,
+  "memory_mib": 512
+}

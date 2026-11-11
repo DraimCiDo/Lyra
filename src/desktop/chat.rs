@@ -26,7 +26,7 @@ impl Chat {
             && self.messages.iter().all(|m| m.text.len() <= MESSAGE_BYTES)
             && self.messages.iter().map(|m| m.text.len()).sum::<usize>() <= HISTORY_BYTES
     }
-    fn selected_history(&self, optimization: preferences::Optimization) -> &[Message] {
+    pub(super) fn selected_history(&self, optimization: preferences::Optimization) -> &[Message] {
         let keep = match optimization {
             preferences::Optimization::Safe => self.messages.len(),
             preferences::Optimization::Balanced => 12,
@@ -120,14 +120,50 @@ impl Chat {
     }
 }
 
+/// Controller facts stay separate from unverified model summaries.
+fn task_facts(report: &crate::agent::Report, language: Language) -> String {
+    let count = report.proposals.len() + report.file_proposals.len();
+    let verified = report.file_proposals.is_empty()
+        && report.outcome == crate::agent::TaskOutcome::ChangesVerified
+        && report
+            .verifications
+            .last()
+            .is_some_and(|evidence| evidence.result.passed());
+    let changes = if count == 0 {
+        if language == Language::Ru {
+            "Изменения не подготовлены.".into()
+        } else {
+            "No changes were prepared.".into()
+        }
+    } else if language == Language::Ru {
+        format!("Подготовлено предложений: {count}. Применение требует отдельного действия.")
+    } else {
+        format!("Prepared proposals: {count}. Applying them is a separate action.")
+    };
+    let checks = match (language, verified) {
+        (Language::Ru, true) => "Настроенная проверка текущих предложений прошла.",
+        (Language::Ru, false) => "Успешная проверка текущих предложений не подтверждена.",
+        (_, true) => "The configured check passed for the current proposals.",
+        (_, false) => "A successful check of the current proposals is not confirmed.",
+    };
+    format!(
+        "{} {changes} {checks}",
+        if language == Language::Ru {
+            "Результат приложения:"
+        } else {
+            "Application result:"
+        }
+    )
+}
+
 /// Keep conversation content readable on wide displays instead of stretching every line.
-fn conversation_width(available: f32) -> f32 {
+pub(super) fn conversation_width(available: f32) -> f32 {
     available.clamp(1.0, 820.0)
 }
 
 /// User bubbles grow with the message but never occupy the entire conversation width.
 /// UTF-8 character counts are only a visual estimate; egui wraps the actual text.
-fn user_bubble_width(text: &str, available: f32) -> f32 {
+pub(super) fn user_bubble_width(text: &str, available: f32) -> f32 {
     let cap = (available * 0.76).clamp(1.0, 560.0);
     let longest_line = text
         .lines()
@@ -136,150 +172,6 @@ fn user_bubble_width(text: &str, available: f32) -> f32 {
         .unwrap_or(0)
         .min(256);
     (longest_line as f32 * 7.8 + 32.0).clamp(100.0_f32.min(cap), cap)
-}
-
-/// Display only observable runtime activity; this is not model chain-of-thought.
-fn show_runtime_progress(
-    ui: &mut egui::Ui,
-    snapshot: &job::ProgressSnapshot,
-    elapsed: Duration,
-    colors: theme::Colors,
-    column_width: f32,
-    language: Language,
-) {
-    use job::ProgressStage;
-    let stage = snapshot.stage;
-    ui.horizontal(|ui| {
-        ui.add(
-            Icon::Sparkles
-                .image(colors.accent)
-                .fit_to_exact_size(egui::vec2(19.0, 19.0)),
-        );
-        ui.vertical(|ui| {
-            ui.set_width((column_width - 36.0).max(1.0));
-            ui.label(RichText::new("Lyra").strong().color(colors.accent));
-            egui::Frame::new()
-                .fill(colors.card)
-                .corner_radius(10)
-                .inner_margin(10)
-                .show(ui, |ui| {
-                    ui.horizontal(|ui| {
-                        ui.add(egui::Spinner::new().size(15.0));
-                        let label = match stage {
-                            ProgressStage::Starting => "Запускаю выполнение…",
-                            ProgressStage::Loading => "Загружаю модель GGUF…",
-                            ProgressStage::Context => "Подготавливаю контекст запроса…",
-                            ProgressStage::Generating => "Генерирую ответ…",
-                        };
-                        ui.label(RichText::new(language.text(label)).strong());
-                    });
-                    if matches!(stage, ProgressStage::Context | ProgressStage::Generating) {
-                        ui.label(
-                            RichText::new("✓ Модель загружена")
-                                .small()
-                                .color(colors.muted),
-                        );
-                    }
-                    if stage == ProgressStage::Generating {
-                        ui.label(
-                            RichText::new("✓ Контекст обработан")
-                                .small()
-                                .color(colors.muted),
-                        );
-                    }
-                    ui.label(
-                        RichText::new(format!(
-                            "{} с · {} токенов",
-                            elapsed.as_secs(),
-                            snapshot.generated_tokens
-                        ))
-                        .small()
-                        .color(colors.muted),
-                    );
-                });
-            show_activity(ui, snapshot, true, language);
-            if !snapshot.preview.is_empty() {
-                ui.add_space(8.0);
-                ui.add(
-                    egui::Label::new(RichText::new(&snapshot.preview).color(colors.text))
-                        .selectable(true)
-                        .wrap(),
-                );
-            }
-        });
-    });
-}
-
-fn show_activity(
-    ui: &mut egui::Ui,
-    snapshot: &job::ProgressSnapshot,
-    running: bool,
-    language: Language,
-) {
-    egui::CollapsingHeader::new(language.text("Ход работы"))
-        .default_open(running)
-        .show(ui, |ui| {
-            if snapshot.activity.is_empty() {
-                ui.label(language.text("Подготовка запроса…"));
-            }
-            for event in &snapshot.activity {
-                ui.label(format!("› {}", language.text(event)));
-            }
-        });
-}
-
-fn show_conversation_message(
-    ui: &mut egui::Ui,
-    message: &Message,
-    colors: theme::Colors,
-    column_width: f32,
-) {
-    if message.user {
-        let bubble_width = user_bubble_width(&message.text, column_width);
-        ui.horizontal(|ui| {
-            let offset = (column_width - bubble_width - ui.spacing().item_spacing.x).max(0.0);
-            if offset > 0.0 {
-                ui.add_space(offset);
-            }
-            ui.allocate_ui_with_layout(
-                egui::vec2(bubble_width, 0.0),
-                egui::Layout::top_down(egui::Align::Min),
-                |ui| {
-                    ui.set_min_width(bubble_width);
-                    egui::Frame::new()
-                        .fill(colors.input)
-                        .corner_radius(16)
-                        .inner_margin(egui::Margin::symmetric(14, 10))
-                        .show(ui, |ui| {
-                            ui.set_min_width((bubble_width - 28.0).max(1.0));
-                            ui.set_max_width((bubble_width - 28.0).max(1.0));
-                            ui.add(
-                                egui::Label::new(RichText::new(&message.text).color(colors.text))
-                                    .selectable(true)
-                                    .wrap(),
-                            );
-                        });
-                },
-            );
-        });
-    } else {
-        ui.horizontal(|ui| {
-            ui.add(
-                Icon::Sparkles
-                    .image(colors.accent)
-                    .fit_to_exact_size(egui::vec2(19.0, 19.0)),
-            );
-            ui.vertical(|ui| {
-                ui.set_width((column_width - 36.0).max(1.0));
-                ui.label(RichText::new("Lyra").strong().color(colors.accent));
-                ui.add(
-                    egui::Label::new(RichText::new(&message.text).color(colors.text))
-                        .selectable(true)
-                        .wrap(),
-                );
-            });
-        });
-    }
 }
 
 impl Desktop {
@@ -408,16 +300,16 @@ impl Desktop {
                 .iter()
                 .map(|(_, text)| text.as_str())
                 .collect();
-            if summaries.is_empty() {
-                self.message.clone()
-            } else {
-                let mut text = summaries.join("\n\n");
-                if !report.context_optimization.is_empty() {
-                    text.push_str("\n\n");
-                    text.push_str(&self.message);
-                }
-                text
+            let mut text = task_facts(report, self.prefs.language);
+            if !summaries.is_empty() {
+                text.push_str("\n\n");
+                text.push_str(&summaries.join("\n\n"));
             }
+            if summaries.is_empty() || !report.context_optimization.is_empty() {
+                text.push_str("\n\n");
+                text.push_str(&self.message);
+            }
+            text
         } else {
             self.message.clone()
         };
@@ -440,316 +332,6 @@ impl Desktop {
                     .text("Какое назначение сайта и какие примеры оформления тебе нравятся?")
                     .into(),
             );
-        }
-    }
-
-    fn chat_composer(&mut self, ui: &mut egui::Ui, c: theme::Colors, l: Language) {
-        card(c).inner_margin(12).show(ui, |ui| {
-            ui.add_enabled_ui(self.job.is_none(), |ui| {
-                ui.horizontal_wrapped(|ui| {
-                    let before = self.chat_mode;
-                    if self.chat.messages.is_empty() {
-                        egui::ComboBox::from_id_salt("conversation-mode")
-                            .selected_text(l.text(if self.chat_mode == ChatMode::Chat {
-                                "Чат"
-                            } else {
-                                "Работа"
-                            }))
-                            .show_ui(ui, |ui| {
-                                ui.selectable_value(
-                                    &mut self.chat_mode,
-                                    ChatMode::Chat,
-                                    l.text("Чат"),
-                                );
-                                ui.selectable_value(
-                                    &mut self.chat_mode,
-                                    ChatMode::Task,
-                                    l.text("Работа"),
-                                );
-                            });
-                    } else {
-                        ui.label(l.text(if self.chat_mode == ChatMode::Chat {
-                            "Чат"
-                        } else {
-                            "Работа"
-                        }));
-                    }
-                    if before != self.chat_mode {
-                        self.capture_session();
-                    }
-                    let repo = self
-                        .prefs
-                        .repo
-                        .as_ref()
-                        .and_then(|p| p.file_name())
-                        .map(|p| p.to_string_lossy().into_owned())
-                        .unwrap_or_else(|| l.text("Выбрать репозиторий").into());
-                    if ui
-                        .button(format!("{} · {repo}", l.text("Проект")))
-                        .clicked()
-                    {
-                        self.choose_path(false);
-                    }
-                    if self.prefs.repo.is_some()
-                        && ui
-                            .small_button("×")
-                            .on_hover_text(l.text("Без проекта"))
-                            .clicked()
-                    {
-                        if !self.chat.messages.is_empty() {
-                            self.new_session();
-                        }
-                        self.prefs.repo = None;
-                        self.prefs.files.clear();
-                        self.capture_session();
-                    }
-                    let agents = if self.chat_mode == ChatMode::Chat {
-                        "Lyra"
-                    } else if self.prefs.repo.is_none() {
-                        "planner"
-                    } else if self.prefs.subagents {
-                        "researcher · coder · reviewer"
-                    } else {
-                        "coder"
-                    };
-                    ui.label(format!("{}: {agents}", l.text("Агенты")));
-                    if !self.prefs.active_skill.is_empty() {
-                        ui.label(format!("Skill: {}", self.prefs.active_skill));
-                    }
-                });
-            });
-            let edit = egui::ScrollArea::vertical()
-                .id_salt("composer-scroll")
-                .min_scrolled_height(42.0)
-                .max_height(96.0)
-                .auto_shrink([false, false])
-                .show(ui, |ui| {
-                    ui.add_enabled(
-                        self.job.is_none(),
-                        egui::TextEdit::multiline(&mut self.task)
-                            .id_salt("chat-composer")
-                            .desired_rows(3)
-                            .desired_width(f32::INFINITY)
-                            .char_limit(16384)
-                            .frame(egui::Frame::NONE)
-                            .return_key(Some(egui::KeyboardShortcut::new(
-                                egui::Modifiers::SHIFT,
-                                egui::Key::Enter,
-                            )))
-                            .hint_text(l.text("Напиши, что нужно сделать…")),
-                    )
-                })
-                .inner;
-            if edit.changed() {
-                self.capture_session();
-            }
-            let enter = edit.has_focus()
-                && ui.input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::Enter));
-            ui.horizontal(|ui| {
-                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    if let Some(job) = &self.job {
-                        if job.cancellable
-                            && icons::action(ui, Icon::Stop, l.text("Остановить"), c.error)
-                                .clicked()
-                        {
-                            job.cancel();
-                        }
-                        ui.label(
-                            RichText::new(format!("{:.0} s", job.started.elapsed().as_secs_f32()))
-                                .small()
-                                .weak(),
-                        );
-                    } else {
-                        let model_ready = match self.chat_mode {
-                            ChatMode::Chat => {
-                                #[cfg(feature = "gateway-http")]
-                                if self.prefs.cloud_chat {
-                                    true
-                                } else {
-                                    self.prefs.model.is_some()
-                                }
-                                #[cfg(not(feature = "gateway-http"))]
-                                {
-                                    self.prefs.model.is_some()
-                                }
-                            }
-                            ChatMode::Task => {
-                                #[cfg(feature = "gateway-http")]
-                                if self.prefs.cloud_task && self.prefs.repo.is_some() {
-                                    true
-                                } else {
-                                    self.prefs.model.is_some()
-                                }
-                                #[cfg(not(feature = "gateway-http"))]
-                                {
-                                    self.prefs.model.is_some()
-                                }
-                            }
-                        };
-                        let ready = (model_ready
-                            || self.direct_chat_reply(self.task.trim()).is_some())
-                            && !self.task.trim().is_empty();
-                        let clicked = ui
-                            .add_enabled(
-                                ready,
-                                egui::Button::image_and_text(
-                                    Icon::ArrowUp.image(c.on_accent),
-                                    RichText::new(l.text("Отправить")).color(c.on_accent),
-                                )
-                                .fill(c.accent),
-                            )
-                            .clicked();
-                        if (clicked || enter && ready) && self.real_app {
-                            if let Err(e) = self.submit_chat(ui.ctx()) {
-                                self.fail(e);
-                            }
-                            edit.request_focus();
-                        }
-                    }
-                });
-            });
-        });
-    }
-
-    pub(super) fn chat_home(&mut self, ui: &mut egui::Ui) {
-        let c = self.prefs.palette.colors();
-        let l = self.prefs.language;
-        if self.prefs.model.is_none() {
-            ui.horizontal(|ui| {
-                ui.label(l.text("Локальная модель не выбрана"));
-                if ui.button(l.text("Подобрать и установить GGUF")).clicked() {
-                    self.settings_open = true;
-                    self.settings_page = SettingsPage::Model;
-                }
-            });
-        }
-        ui.add_space(5.0);
-        let reserve = if self.error { 208.0 } else { 184.0 };
-        let height = (ui.available_height() - reserve).max(100.0);
-        egui::ScrollArea::vertical()
-            .id_salt("conversation")
-            .min_scrolled_height(height)
-            .max_height(height)
-            .auto_shrink([false, false])
-            .stick_to_bottom(true)
-            .show(ui, |ui| {
-                let available = ui.available_width();
-                let column_width = conversation_width(available);
-                ui.horizontal(|ui| {
-                    let offset =
-                        ((available - column_width) / 2.0 - ui.spacing().item_spacing.x).max(0.0);
-                    if offset > 0.0 {
-                        ui.add_space(offset);
-                    }
-                    ui.vertical(|ui| {
-                        ui.set_width(column_width);
-                        if self.chat.messages.is_empty() {
-                            let rect = egui::Rect::from_min_size(
-                                ui.cursor().min,
-                                egui::vec2(column_width, height),
-                            );
-                            ui.painter().text(
-                                rect.center(),
-                                egui::Align2::CENTER_CENTER,
-                                l.text("Что сделаем?"),
-                                egui::FontId::proportional(24.0),
-                                c.accent,
-                            );
-                            ui.allocate_space(egui::vec2(column_width, height));
-                        }
-                        for message in &self.chat.messages {
-                            ui.add_space(14.0);
-                            show_conversation_message(ui, message, c, column_width);
-                        }
-                        if self.chat.pending {
-                            ui.add_space(14.0);
-                            if let Some(worker) = &self.job {
-                                let mut snapshot = worker.progress();
-                                if self.operation != Operation::LocalChat {
-                                    snapshot.preview.clear();
-                                }
-                                show_runtime_progress(
-                                    ui,
-                                    &snapshot,
-                                    worker.started.elapsed(),
-                                    c,
-                                    column_width,
-                                    l,
-                                );
-                            }
-                        }
-                        if !self.chat.pending && !self.activity.activity.is_empty() {
-                            ui.add_space(8.0);
-                            ui.label(
-                                RichText::new(format!(
-                                    "{} · {:.1} s",
-                                    l.text(if self.error {
-                                        "Выполнение прервано"
-                                    } else {
-                                        "Выполнение завершено"
-                                    }),
-                                    self.activity_elapsed.as_secs_f32()
-                                ))
-                                .small()
-                                .weak(),
-                            );
-                            show_activity(ui, &self.activity, false, l);
-                        }
-                        if self.draft.plan.is_some() {
-                            self.project_result(ui);
-                        }
-                        if self.report.is_some() {
-                            ui.add_space(8.0);
-                            egui::CollapsingHeader::new(l.text("Файлы и предложения"))
-                                .default_open(false)
-                                .show(ui, |ui| self.changes(ui));
-                        }
-                        if !self.log.is_empty()
-                            || self
-                                .report
-                                .as_ref()
-                                .is_some_and(|report| !report.events.is_empty())
-                        {
-                            egui::CollapsingHeader::new(l.text("Журнал")).show(ui, |ui| {
-                                ui.add(Icon::Log.image(c.muted));
-                                if let Some(report) = &self.report {
-                                    for event in &report.events {
-                                        ui.label(format!(
-                                            "{} · {} · {} · {}",
-                                            event.call, event.role, event.tool, event.outcome
-                                        ));
-                                    }
-                                }
-                                selectable_code(ui, &self.log, c.muted);
-                            });
-                        }
-                    });
-                });
-            });
-        ui.add_space(5.0);
-        let composer_width = conversation_width(ui.available_width());
-        ui.horizontal(|ui| {
-            let offset = ((ui.available_width() - composer_width) / 2.0
-                - ui.spacing().item_spacing.x)
-                .max(0.0);
-            if offset > 0.0 {
-                ui.add_space(offset);
-            }
-            ui.allocate_ui_with_layout(
-                egui::vec2(composer_width, 0.0),
-                egui::Layout::top_down(egui::Align::Min),
-                |ui| {
-                    ui.set_min_width(composer_width);
-                    self.chat_composer(ui, c, l);
-                },
-            );
-        });
-        if self.error {
-            ui.add(
-                egui::Label::new(RichText::new(l.text(&self.message)).small().color(c.error))
-                    .truncate(),
-            )
-            .on_hover_text(l.text(&self.message));
         }
     }
 }
@@ -810,6 +392,34 @@ mod tests {
         assert!(!can_apply(app.report.as_ref().unwrap(), 0, &[]));
         assert!(app.chat.messages.last().unwrap().text.contains("таймаут"));
     }
+    #[test]
+    fn task_completion_shows_controller_facts_before_unverified_model_claims() {
+        for language in [Language::Ru, Language::En] {
+            let mut app = Desktop::default();
+            app.prefs.language = language;
+            app.operation = Operation::Task;
+            app.chat.sent("Fix the bug".into());
+            app.report = Some(serde_json::from_value(serde_json::json!({
+                "schema_version":4,"workspace":"project","status":"completed","outcome":"analysis_complete",
+                "summaries":[["coder","Everything fixed. Tests passed."]],"proposals":[],"events":[],
+                "calls":2,"subagents":false,"truncated_index":false,"model_review_is_verified_test":false
+            })).unwrap());
+            app.finish_chat();
+            let answer = &app.chat.messages.last().unwrap().text;
+            let facts = if language == Language::Ru {
+                "Изменения не подготовлены."
+            } else {
+                "No changes were prepared."
+            };
+            assert!(answer.find(facts).unwrap() < answer.find("Everything fixed").unwrap());
+            assert!(answer.contains(if language == Language::Ru {
+                "не подтверждена"
+            } else {
+                "not confirmed"
+            }));
+        }
+    }
+
     #[test]
     fn successful_task_keeps_controller_context_metrics_visible() {
         for enabled in [false, true] {

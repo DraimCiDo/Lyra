@@ -114,7 +114,7 @@ fn rejected_edit_keeps_recovery_evidence_and_pending_proposal_is_explicit() {
         std::fs::read_to_string(repo.0.join("src/lib.rs")).unwrap(),
         original
     );
-    assert_eq!(report.schema_version, 3);
+    assert_eq!(report.schema_version, 4);
     let report_path = repo.0.join("report.json");
     std::fs::write(&report_path, serde_json::to_vec(&report).unwrap()).unwrap();
     let output = std::process::Command::new(env!("CARGO_BIN_EXE_lyra"))
@@ -177,7 +177,7 @@ fn request_local_tool_pool_is_reversible_and_readonly_roles_get_no_edit_tools() 
     };
     let (plain, _) = run(false);
     let (packed, report) = run(true);
-    assert_eq!(report.schema_version, 3);
+    assert_eq!(report.schema_version, 4);
     assert_eq!(
         lyra::context_optimizer::restore(&packed.prompts[3]).unwrap(),
         plain.prompts[3]
@@ -396,7 +396,7 @@ fn symlinks_cannot_escape_the_workspace() {
 #[test]
 fn oversized_and_binary_files_fail_closed() {
     let repo = Repo::new();
-    repo.write("src/large.rs", &"x".repeat(65537));
+    repo.write("src/large.rs", &"x".repeat(lyra::workspace::FILE_LIMIT + 1));
     repo.write("src/binary.rs", "a\0b");
     let mut workspace = Workspace::open(&repo.0, &[]).unwrap();
     assert!(workspace.read("src/large.rs").is_err());
@@ -471,7 +471,7 @@ fn new_files_remain_proposals_until_explicit_apply_and_never_clobber() {
     ]);
     let report = agent::execute(&mut model, &mut workspace, "Add a module", false, 3);
     assert_eq!(report.status, "completed");
-    assert_eq!(report.schema_version, 2);
+    assert_eq!(report.schema_version, 4);
     assert!(report.proposals[0].create);
     assert!(!repo.0.join("src/new/module.rs").exists());
     workspace.apply(&report.proposals[0]).unwrap();

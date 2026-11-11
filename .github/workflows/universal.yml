@@ -1,0 +1,48 @@
+name: Universal tasks and document acceptance
+on:
+  pull_request:
+    paths: ['src/**', 'tools/documents/**', 'environments/**', 'tests/universal.rs', 'Cargo.*', '.github/workflows/universal.yml']
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: universal-${{ github.ref }}
+  cancel-in-progress: true
+jobs:
+  documents:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 40
+    env:
+      CARGO_PROFILE_DEV_DEBUG: '0'
+      CARGO_PROFILE_TEST_DEBUG: '0'
+      CARGO_INCREMENTAL: '0'
+      CARGO_BUILD_JOBS: '4'
+      LYRA_DOCUMENT_REGISTRY: /tmp/lyra-documents.json
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+      - name: Native dependencies
+        run: sudo apt-get update && sudo apt-get install -y cmake libclang-dev
+      - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9
+        with:
+          path: |
+            ~/.cargo/registry
+            target/debug/build
+          key: universal-native-${{ runner.os }}-${{ hashFiles('rust-toolchain.toml','Cargo.lock','Cargo.toml') }}
+      - name: Build tested CLI
+        run: cargo build --locked --bin lyra
+      - name: Prepare explicitly approved document environment
+        run: target/debug/lyra environment --registry "$LYRA_DOCUMENT_REGISTRY" build-documents --accept
+      - name: Office, PDF and rendered previews through the isolated executor
+        run: cargo test --locked --test universal document_environment -- --ignored --nocapture
+      - name: Trusted document regression fixtures
+        run: |
+          image=$(python3 -c 'import json,os;print(json.load(open(os.environ["LYRA_DOCUMENT_REGISTRY"]))["environments"][0]["image"])')
+          docker run --rm --network=none --memory=2048m --cpus=2 --pids-limit=128 --mount "type=bind,src=$PWD/tools/documents,dst=/tests,readonly" --env LYRA_DOCUMENT_SANDBOX=0 --env PYTHONPATH=/tests "$image" python -m unittest discover -s /tests -p 'test_*.py'
+      - name: Explicitly prepare additional language environments
+        run: |
+          target/debug/lyra environment --registry environments/runtimes.json prepare golang --accept
+          target/debug/lyra environment --registry environments/runtimes.json prepare php --accept
+      - name: Go and PHP execution without language profiles
+        run: cargo test --locked --test universal additional_registered_languages -- --ignored --nocapture

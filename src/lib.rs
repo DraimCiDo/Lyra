@@ -1,18 +1,30 @@
 pub mod agent;
 pub mod agent_runtime;
+pub mod codegraph;
 pub mod context_optimizer;
 #[cfg(feature = "desktop")]
 pub mod desktop;
 pub mod doctor;
+pub mod executor;
+#[cfg(feature = "gateway-http")]
+pub mod github;
+pub mod graphify;
 pub mod inference;
 pub mod knowledge;
 pub mod model_gateway;
 pub mod project;
 #[cfg(feature = "gateway-http")]
 pub mod provider_http;
+pub mod publication;
 pub mod resources;
+pub mod retrieval;
 pub mod routing;
+pub mod session;
+pub mod skill_package;
 pub mod skills;
+pub mod task_context;
+pub mod task_report;
+pub mod universal;
 pub mod workspace;
 
 use clap::{Parser, Subcommand};
@@ -23,7 +35,7 @@ use std::io::{self, Write};
     name = "lyra",
     version,
     about = "Локальная генерация текста и диагностика ПК",
-    long_about = "Локальный кодинг-агент: task, предложения правок и явный apply.\nПроизвольные команды модели ещё не реализованы.",
+    long_about = "AI-агент: код, документы, данные и предложения изменений.\nИсполнение программ требует явно разрешенной изолированной среды; применение файлов выполняется отдельно.",
     arg_required_else_help = true
 )]
 pub struct Cli {
@@ -33,14 +45,18 @@ pub struct Cli {
 
 #[derive(Debug, Subcommand)]
 pub enum Command {
+    /// Inspect or explicitly prepare registered execution environments
+    Environment(universal::environment::EnvironmentArgs),
     /// Создание проектов с нуля: blueprint, каркас, явное создание, контекст
     Project(project::ProjectArgs),
     /// Локальная документация, поиск и явная загрузка официальных источников
     Docs(knowledge::DocsArgs),
     /// Выполнить задачу: чтение проекта, предложения, опциональные подагенты
-    Task(agent::TaskArgs),
-    /// Применить одно выбранное предложение из завершённого JSON-отчёта
+    Task(Box<agent::TaskArgs>),
+    /// Применить одно предложение или весь набор из завершённого JSON-отчёта
     Apply(agent::ApplyArgs),
+    /// Inspect, complete or roll back interrupted file publication
+    Recover(publication::RecoveryArgs),
     /// Сгенерировать ответ локальной моделью (не исполняет сгенерированный код)
     Generate(inference::GenerateArgs),
     /// Локальный диалог GGUF с сохранением истории ролей, без задач и файлов проекта
@@ -89,12 +105,30 @@ pub enum Command {
         #[arg(long)]
         require_tools: bool,
     },
-    /// Просмотреть проверенный набор навыков ECC-совместимого формата JSON
+    /// Просмотреть JSON, SKILL.md или каталог навыков ECC
     Skills {
         #[arg(long)]
         manifest: std::path::PathBuf,
         #[arg(long)]
         id: Option<String>,
+    },
+    /// Граф кода: файлы, символы, импорты, сообщества, HTML-визуализация, влияние PR
+    Graph(codegraph::GraphArgs),
+    /// Коннектор GitHub: issues, PR, файлы, комментарии и публикация предложений как PR
+    #[cfg(feature = "gateway-http")]
+    Github(github::GithubArgs),
+    /// Установить, проверить или откатить локальный снимок навыков
+    SkillPackage(skill_package::PackageArgs),
+    /// Inspect, export or delete explicitly saved task checkpoints
+    Session(session::SessionArgs),
+    /// Run an explicitly configured offline check in a Docker snapshot
+    Verify {
+        #[arg(long)]
+        repo: std::path::PathBuf,
+        #[arg(long)]
+        config: std::path::PathBuf,
+        #[arg(long = "file")]
+        files: Vec<String>,
     },
     /// Показать характеристики компьютера, на котором запущена Lyra
     Doctor {
@@ -106,10 +140,15 @@ pub enum Command {
 
 pub fn run(cli: Cli, output: &mut impl Write) -> io::Result<()> {
     match cli.command {
+        Command::Environment(args) => universal::environment::run(args, output),
         Command::Project(args) => project::run(args, output),
         Command::Docs(args) => knowledge::run(args, output),
-        Command::Task(args) => agent::task(args, output),
+        Command::Task(args) => agent::task(*args, output),
         Command::Apply(args) => agent::apply(args, output),
+        Command::Graph(args) => codegraph::run(args, output),
+        #[cfg(feature = "gateway-http")]
+        Command::Github(args) => github::run(args, output),
+        Command::Recover(args) => publication::recover(args, output),
         Command::Generate(args) => {
             if args.selected_skills.is_empty() && args.skills.is_none() {
                 inference::generate(&args, output)
@@ -117,13 +156,7 @@ pub fn run(cli: Cli, output: &mut impl Write) -> io::Result<()> {
                 let pack = args
                     .skills
                     .as_ref()
-                    .map(|path| {
-                        if path.file_name().is_some_and(|name| name == "SKILL.md") {
-                            skills::SkillPack::load_markdown(path)
-                        } else {
-                            skills::SkillPack::load(path)
-                        }
-                    })
+                    .map(|path| crate::skills::SkillPack::load_source(path))
                     .transpose()?;
                 let request = model_gateway::Request {
                     messages: vec![model_gateway::Message {
@@ -163,13 +196,7 @@ pub fn run(cli: Cli, output: &mut impl Write) -> io::Result<()> {
             let pack = generate
                 .skills
                 .as_ref()
-                .map(|path| {
-                    if path.file_name().is_some_and(|name| name == "SKILL.md") {
-                        skills::SkillPack::load_markdown(path)
-                    } else {
-                        skills::SkillPack::load(path)
-                    }
-                })
+                .map(|path| crate::skills::SkillPack::load_source(path))
                 .transpose()?;
             let response = agent_runtime::complete_gguf_chat(
                 &generate,
@@ -226,13 +253,7 @@ pub fn run(cli: Cli, output: &mut impl Write) -> io::Result<()> {
             };
             let pack = skills
                 .as_ref()
-                .map(|path| {
-                    if path.file_name().is_some_and(|name| name == "SKILL.md") {
-                        skills::SkillPack::load_markdown(path)
-                    } else {
-                        skills::SkillPack::load(path)
-                    }
-                })
+                .map(|path| crate::skills::SkillPack::load_source(path))
                 .transpose()?;
             let request =
                 agent_runtime::prepare_request(&request, pack.as_ref(), &selected_skills)?;
@@ -286,12 +307,15 @@ pub fn run(cli: Cli, output: &mut impl Write) -> io::Result<()> {
                 model_gateway::select_priority(&descriptors, &allowed_providers, &request)?;
             writeln!(output, "{}/{}", selected.provider, selected.model)
         }
+        Command::Verify {
+            repo,
+            config,
+            files,
+        } => executor::run(&repo, &config, &files, output),
+        Command::Session(args) => session::run(args, output),
+        Command::SkillPackage(args) => skill_package::run(args, output),
         Command::Skills { manifest, id } => {
-            let pack = if manifest.file_name().is_some_and(|name| name == "SKILL.md") {
-                skills::SkillPack::load_markdown(&manifest)?
-            } else {
-                skills::SkillPack::load(&manifest)?
-            };
+            let pack = skills::SkillPack::load_source(&manifest)?;
             if let Some(id) = id {
                 let skill = pack
                     .find(&id)

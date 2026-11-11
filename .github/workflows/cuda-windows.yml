@@ -45,6 +45,15 @@ jobs:
           persist-credentials: false
       - name: Install pinned Rust
         run: rustup show active-toolchain
+      - name: Reuse CUDA native build cache
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            ~/.cargo/registry
+            target/release/build
+            target/x86_64-pc-windows-msvc/release/build
+          # CUDA objects must never share a CPU cache or another SDK/architecture.
+          key: lyra-cuda-native-v1-${{ runner.os }}-12.9-sm89-${{ hashFiles('rust-toolchain.toml', '.github/workflows/cuda-windows.yml') }}-${{ hashFiles('Cargo.lock', 'Cargo.toml') }}
       - name: Install CUDA Toolkit 12.9
         uses: Jimver/cuda-toolkit@3d45d157f327c09c04b50ee6ccdea2d9d017ec76 # v0.2.35
         with:
@@ -76,15 +85,27 @@ jobs:
           @'
           RTX 4060 test: CUDA sm_89 build. This CI runner has no NVIDIA GPU.
           Compilation does not prove actual runtime compatibility or VRAM safety.
-          Use Settings > Model and Resources > Qwen3.5-9B preset / Auto GPU.
+          Use Settings > Model and Resources > NVIDIA GPU Auto.
+          Existing saved CPU settings are preserved: select GPU Auto explicitly.
           Required NVIDIA driver must be installed separately on the test PC.
           '@ | Set-Content -Encoding utf8NoBOM -LiteralPath dist/README-CUDA.txt
+          "Source commit: https://github.com/DraimCiDo/Lyra/tree/$env:GITHUB_SHA" | Add-Content -Encoding utf8NoBOM -LiteralPath dist/README-CUDA.txt
+          Copy-Item -LiteralPath Cargo.lock -Destination dist/
+          python tools/collect_licenses.py --features desktop,gateway-http,cuda --target x86_64-pc-windows-msvc --output dist/THIRD_PARTY_NOTICES.txt
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           $cudaBin = Join-Path $env:CUDA_PATH 'bin'
           foreach ($name in @('cudart64_12.dll','cublas64_12.dll','cublasLt64_12.dll')) {
             $source = Join-Path $cudaBin $name
             if (-not (Test-Path -LiteralPath $source)) { throw "Missing required runtime: $source" }
             Copy-Item -LiteralPath $source -Destination dist/
           }
+          $eula = Join-Path $env:CUDA_PATH 'EULA.txt'
+          if (Test-Path -LiteralPath $eula) { Copy-Item -LiteralPath $eula -Destination dist/CUDA-EULA.txt }
+          $hashes = Get-ChildItem -LiteralPath dist -File | Sort-Object Name | ForEach-Object {
+            $hash = (Get-FileHash -Algorithm SHA256 -LiteralPath $_.FullName).Hash.ToLowerInvariant()
+            "$hash  $($_.Name)"
+          }
+          $hashes | Set-Content -Encoding utf8NoBOM -LiteralPath dist/SHA256SUMS.txt
           Get-ChildItem -LiteralPath dist | Select-Object Name,Length | Format-Table
       - name: Upload CUDA test package
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2

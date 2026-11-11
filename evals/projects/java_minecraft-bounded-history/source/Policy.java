@@ -1,0 +1,1 @@
+import java.util.*;public class Policy {public Policy(int capacity){}public void append(String player,String command){throw new UnsupportedOperationException();}public List<String> history(String player){throw new UnsupportedOperationException();}}

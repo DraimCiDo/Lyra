@@ -1,0 +1,10 @@
+{
+  "image": "rust@sha256:220ee93216b2acf3c04f312e24bf5d155c8eed61d707fc1ff8553ae24609da4e",
+  "program": "sh",
+  "args": [
+    "-c",
+    "cat > /tmp/check.rs <<'LYRA_TRUSTED_CHECK'\n#[path=\"/source/lib.rs\"] mod sut;\n#[test]fn transfer(){use std::collections::BTreeMap;let mut db=BTreeMap::from([(\"a\".into(),10),(\"b\".into(),3)]);sut::transfer(&mut db,\"a\",\"b\",4).unwrap();assert_eq!(db[\"a\"],6);assert_eq!(db[\"b\"],7);for (from,to,n) in [(\"a\",\"b\",99),(\"a\",\"b\",0),(\"a\",\"b\",-2),(\"x\",\"b\",1)]{let old=db.clone();assert!(sut::transfer(&mut db,from,to,n).is_err());assert_eq!(db,old);}sut::transfer(&mut db,\"a\",\"a\",2).unwrap();assert_eq!(db[\"a\"],6);db.insert(\"b\".into(),i64::MAX);let old=db.clone();assert!(sut::transfer(&mut db,\"a\",\"b\",1).is_err());assert_eq!(db,old);}\nLYRA_TRUSTED_CHECK\nrustc --edition=2024 --test /tmp/check.rs -o /tmp/check-tests && /tmp/check-tests"
+  ],
+  "timeout_secs": 60,
+  "memory_mib": 512
+}
