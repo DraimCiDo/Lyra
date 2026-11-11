@@ -2,9 +2,10 @@
 
 These rules apply to the whole repository; a nested `AGENTS.md` refines its own area.
 A direct instruction from the owner in the current session outranks this file.
-**Communicate with the owner in Russian** (final reports and short status notes). Everything
-else — code, comments, commit messages, plans, test names, tool calls — is written in English.
-Write symbol names and technical identifiers in English.
+**Communicate with the owner in English** (final reports and short status notes), in every
+session. Code, comments, commit messages, plans, test names, tool calls, symbol names and
+technical identifiers are English too. Replies are also kept short: language is not the only
+token cost, length is.
 
 ## Mission
 
@@ -58,7 +59,7 @@ Navigation: [README](README.md), [project map](docs/PROJECT_MAP.md),
 [workflows](docs/WORKFLOWS.md), [acceptance](docs/ACCEPTANCE.md), [plans](docs/plans/).
 The map and plans describe intent; verify facts from the sources, `git log` and by running.
 Many existing docs are written in Russian; keep their language when editing, and write new
-developer-facing text in English unless it is meant for end users in Russian.
+developer-facing text in English.
 
 ## How to work
 
@@ -165,7 +166,7 @@ These are requirements on Lyra itself, not on the development process.
 
 ## Reporting to the owner
 
-Write in Russian for a reader who has not seen your tool calls or files: key points in the first
+Write in English for a reader who has not seen your tool calls or files: key points in the first
 sentences, short sentences, plain words, one term per thing, no names you made up yourself. State
 the result, what was actually run (environment, revision), what is covered only by tests, what is
 not verified, and a link to the commit/branch. Do not call a plan an implemented feature.
