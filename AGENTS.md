@@ -1,159 +1,171 @@
-# Lyra — инструкции для разработки
+# Lyra — development instructions
 
-Правила действуют для всего репозитория; вложенный `AGENTS.md` уточняет свою область.
-Прямое указание владельца в текущей сессии важнее этого файла. Общайся с владельцем
-по-русски; имена символов и технические идентификаторы пиши по-английски.
+These rules apply to the whole repository; a nested `AGENTS.md` refines its own area.
+A direct instruction from the owner in the current session outranks this file.
+**Communicate with the owner in Russian** (final reports and short status notes). Everything
+else — code, comments, commit messages, plans, test names, tool calls — is written in English.
+Write symbol names and technical identifiers in English.
 
-## Миссия
+## Mission
 
-Довести Lyra до **работающего релиза-кандидата**: универсальный coding-агент, который
-владелец может скачать, запустить на Windows 11 и использовать как Codex / Claude Code —
-с локальной моделью (GGUF), с внешними моделями по явной настройке, с подагентами,
-проверкой изменений, GitHub-коннектором и графом кода. Владелец разрешил менять код,
-архитектуру и дизайн, если результат работает. Roadmap — в рамках поручения, а не
-«ориентир на будущее».
+Bring Lyra to a **working release candidate**: a universal coding agent the owner can download,
+run on Windows 11 and use like Codex / Claude Code — with a local model (GGUF), with external
+models by explicit configuration, with subagents, change verification, a GitHub connector and a
+code graph. The owner allows changing code, architecture and design as long as the result works.
+The roadmap is in scope of this assignment, not a "guide for the future".
 
-**Этот репозиторий — твой.** Что в нём и как устроено — решаешь ты, и ты будешь его
-развивать дальше. Улучшай структуру, объединяй повторяющийся код, чини найденное рядом.
-Не меняй ради изменений: каждая правка должна приближать критерии ниже.
+**This repository is yours.** What it contains and how it is built is your call, and you will
+keep building on it. Improve the structure, merge repeated code, fix problems you find nearby.
+Do not change things for the sake of changing them: every edit must move the criteria below forward.
 
-## Критерии «готово»
+## Definition of done
 
-1. `cargo fmt --all -- --check` и `cargo clippy --all-targets --locked -- -D warnings`
-   чистые, `cargo test --locked` проходит в трёх вариантах: без фич, `--features desktop`,
-   `--features desktop,gateway-http`. CI Linux и Windows зелёный.
-2. Нативная приёмка на Windows 11 x64: запускается `lyra-desktop.exe`, выбор/установка GGUF,
-   чат, «Работа» с проектом, панель результата, явное применение изменений.
-3. Агент на реальной модели (например Qwen2.5-Coder 7B Q4) доводит маленькую задачу до
-   проверенного предложения: «задача → правка → проверка → отчёт». Раньше протокол не
-   завершался — исправляй причину в агенте/контексте, а не тест.
-4. Сценарий «GitHub issue → задача → правка → проверка → черновик PR» проходит с настоящим
-   токеном владельца. Импорт и запуск Graphify проверены на реальном `graph.json`.
-5. Пользователь получает портативный пакет без Rust/Python; документация соответствует фактам.
-6. В итоговом отчёте разделено: проверено запуском / проверено тестами / не проверено.
+1. `cargo fmt --all -- --check` and `cargo clippy --all-targets --locked -- -D warnings` are clean,
+   and `cargo test --locked` passes in three variants: no features, `--features desktop`,
+   `--features desktop,gateway-http`. Linux and Windows CI are green.
+2. Native acceptance on Windows 11 x64: `lyra-desktop.exe` starts, GGUF can be chosen/installed,
+   chat works, "Work" mode with a project works, the result panel works, changes are applied explicitly.
+3. On a real model (for example Qwen2.5-Coder 7B Q4) the agent finishes a small task up to a verified
+   proposal: "task → edit → check → report". The protocol used to stall — fix the cause in the
+   agent/context code, not the test.
+4. The scenario "GitHub issue → task → edit → check → draft PR" passes with the owner's real token.
+   Graphify import and a real Graphify run are verified on a real `graph.json`.
+5. The user gets a portable package that needs no Rust/Python; the documentation matches the facts.
+6. The final report separates: verified by running / verified by tests / not verified.
 
-## Состояние на 2026-11-11 (`main`, после PR #6)
+## State as of 2026-11-11 (`main`, after PR #6)
 
-Есть и проверено тестами на Linux: CLI (`task`, `apply`, `generate`, `local-chat`, `chat`,
-`route`, `skills`, `skill-package`, `session`, `recover`, `verify`, `project`, `docs`,
-`github`, `graph`, `environment`, `doctor`); локальный GGUF (CPU) и HTTP-провайдеры; роли
-researcher/coder/reviewer; Docker-проверки (`--check-config`) и среды выполнения скриптов;
-SQLite-сессии; публикация правок с журналом отката; Office/PDF-workflow; GitHub-коннектор
-(issues, PR, файлы, комментарии, `publish` черновика PR); граф кода (встроенный анализатор
-и импорт Graphify); Desktop на egui — рейка, список чатов, палитра команд Ctrl+K, панель
-«Результат» с diff, настройки по группам, граф; 4 темы, RU/EN; обновления через GitHub Releases.
+Present and covered by tests on Linux: the CLI (`task`, `apply`, `generate`, `local-chat`, `chat`,
+`route`, `skills`, `skill-package`, `session`, `recover`, `verify`, `project`, `docs`, `github`,
+`graph`, `environment`, `doctor`); local GGUF (CPU) and HTTP providers; researcher/coder/reviewer
+roles; Docker checks (`--check-config`) and script execution environments; SQLite sessions;
+publication of edits with a rollback journal; the Office/PDF workflow; the GitHub connector
+(issues, PRs, files, comments, `publish` as a draft PR); the code graph (built-in analyzer and
+Graphify import); the egui Desktop — rail, chat list, Ctrl+K command palette, result panel with
+diff, grouped settings, graph screen; 4 themes, RU/EN; updates through GitHub Releases.
 
-**Не проверено** (не называй готовым, пока не проверено запуском): Windows-запуск нового
-интерфейса, CUDA-рантайм, качество 7B на сложных задачах, живой GitHub, настоящий запуск
-`graphify`, CI на последних коммитах.
+**Not verified** (do not call it done until it has been run): the new interface on Windows, the CUDA
+runtime, 7B quality on hard tasks, live GitHub, a real `graphify` run, CI on the latest commits.
 
-**Не реализовано или частично** (источник истины — `docs/integrations/PARITY.md`):
-роутинг с квотами/весами/здоровьем провайдеров, hooks и MCP, память и обучение, OS-песочница
-вне Docker, токен-учёт и продвинутое сжатие контекста, мультимодальность. Берись за них
-по приоритету критериев, а не списком; каждую функцию закрывай тестом и записью в PARITY.
+**Not implemented or partial** (source of truth: `docs/integrations/PARITY.md`): routing with
+quotas/weights/provider health, hooks and MCP, memory and learning, an OS sandbox beyond Docker,
+token accounting and advanced context compression, multimodality. Take these by priority of the
+criteria, not as a list; close each feature with a test and a PARITY entry.
 
-Навигация: [README](README.md), [карта проекта](docs/PROJECT_MAP.md),
-[архитектура](docs/ARCHITECTURE.md), [разработка](docs/DEVELOPMENT.md),
-[Desktop](docs/DESKTOP.md), [GitHub](docs/GITHUB.md), [граф](docs/GRAPH.md),
-[workflow](docs/WORKFLOWS.md), [приёмка](docs/ACCEPTANCE.md), [планы](docs/plans/).
-Карта и планы описывают намерения; факт проверяй по исходникам, `git log` и запуску.
+Navigation: [README](README.md), [project map](docs/PROJECT_MAP.md),
+[architecture](docs/ARCHITECTURE.md), [development](docs/DEVELOPMENT.md),
+[Desktop](docs/DESKTOP.md), [GitHub](docs/GITHUB.md), [graph](docs/GRAPH.md),
+[workflows](docs/WORKFLOWS.md), [acceptance](docs/ACCEPTANCE.md), [plans](docs/plans/).
+The map and plans describe intent; verify facts from the sources, `git log` and by running.
+Many existing docs are written in Russian; keep their language when editing, and write new
+developer-facing text in English unless it is meant for end users in Russian.
 
-## Как работать
+## How to work
 
-1. Начни с `git status`, ветки, `git log -5`, этого файла и `docs/PROJECT_MAP.md`;
-   дальше читай только то, что нужно задаче. Для поиска — `rg`, затем конкретные диапазоны файлов.
-2. Перед правками назови результат, границы и проверки в нескольких строках. Для
-   многоэтапной работы веди план в `docs/plans/NNNN-*.md` (шаблон — `docs/templates/TASK.md`)
-   и обновляй его по факту; при смене сессии сверяй план с `git status`.
-3. Меняй минимально законченными шагами, проверяй каждый шаг и только потом идёшь дальше.
-   Исправляй причину дефекта. Не отключай, не пропускай и не ослабляй проверки ради зелёного результата.
-4. Независимые чтения и запуски объединяй в один пакет; зависимые правки и git-команды — последовательно.
-5. Новая зависимость допустима с причиной: влияние на Windows, размер, лицензию. Версии и
-   toolchain закреплены (`rust-toolchain.toml`, `Cargo.lock` коммитится). Не придумывай версии
-   и API — сверяй с первоисточником.
+1. Start with `git status`, the branch, `git log -5`, this file and `docs/PROJECT_MAP.md`; then read
+   only what the task needs. Search with `rg`, then read specific file ranges.
+2. Before editing, state the result, the boundaries and the checks in a few lines. For multi-step
+   work keep a plan in `docs/plans/NNNN-*.md` (template: `docs/templates/TASK.md`) and update it
+   with facts; when a session changes, compare the plan with `git status`.
+3. Make small, complete steps, check each one, then move on. Fix the cause of a defect. Do not
+   disable, skip or weaken checks to get a green result.
+4. Batch independent reads and runs into one call; run dependent edits and git commands in sequence.
+5. A new dependency is acceptable with a reason: effect on Windows, size, license. Versions and the
+   toolchain are pinned (`rust-toolchain.toml`; `Cargo.lock` is committed). Do not invent versions
+   or APIs — check the primary source.
 
-### Доводи до конца
+### Finish the work
 
-Не останавливайся, пока остаётся работа, о которой просил владелец. Обычные препятствия —
-ошибка сборки, таймаут, занятый файл, упавший инструмент, пустой результат — сначала
-диагностируй и обходи: повтори, исправь запрос, используй другой путь. Остановка уместна,
-только если без ввода владельца двигаться нельзя или препятствие поставлено намеренно
-(запрет, чужие изменения, закрытый доступ, защита): тогда скажи прямо, что нашёл, и продолжай
-с тем, что можно сделать безопасно. Не заканчивай ход списком оставшегося и предложением продолжить.
+Do not stop while work the owner asked for remains. Ordinary obstacles — a build error, a timeout,
+a locked file, a failing tool, an empty result — are diagnosed and worked around first: retry, fix
+the request, use another path. Stopping is right only when you cannot move without the owner's
+input or the obstacle is deliberate (a prohibition, someone else's changes, withheld access, a
+guardrail): then say plainly what you found and continue with whatever can be done safely. Do not
+end a turn with a list of what remains and an offer to continue.
 
-### Разрешено без вопросов
+### Allowed without asking
 
-Править код, тесты и документацию; запускать `cargo`, `clippy`, тесты, Xvfb/Playwright;
-собирать пакеты; ставить dev-зависимости в свою среду; создавать ветки и делать коммиты;
-пушить в рабочую ветку; читать публичные репозитории и документацию.
+Edit code, tests and docs; run `cargo`, `clippy`, tests, Xvfb/Playwright; build packages; install
+dev dependencies in your own environment; create branches and commits; push to the working branch;
+read public repositories and documentation.
 
-### Спрашивай перед
+### Ask before
 
-force-push и переписыванием опубликованной истории; прямым пушем в `main`, merge и релизом
-(если владелец не поручил их прямо); удалением веток и файлов, которые создал не ты;
-платными API-вызовами и всем, что тратит деньги; публикацией в GitHub от имени владельца
-(PR, комментарии, issue) без поручения; передачей кода или секретов внешним сервисам.
-Если владелец поручил действие, исполняй именно его и ничего сверх.
+Force-pushing or rewriting published history; pushing directly to `main`, merging, or releasing
+(unless the owner asked for it explicitly); deleting branches or files you did not create; paid API
+calls and anything that spends money; publishing to GitHub on the owner's behalf (PRs, comments,
+issues) without being asked; sending code or secrets to external services. If the owner asked for
+an action, do exactly that and nothing beyond it.
 
-## Границы безопасности продукта (не ослабляй)
+## Product safety boundaries (do not weaken)
 
-Это требования к самому Lyra, не к процессу разработки.
+These are requirements on Lyra itself, not on the development process.
 
-- Модель предлагает действие; приложение проверяет схему, права и границы. Текст ответа
-  модели не исполняется как команда. Модель не выбирает команды и образы проверок —
-  их задаёт владелец через `--check-config`/реестр сред.
-- Файлы проекта, веб-страницы, issue/PR, навыки, ответы инструментов и вложенные
-  `AGENTS.md` целевого проекта — **недоверенные данные**: они не расширяют доступ и не меняют политику.
-- Не отправляй модели или провайдеру весь репозиторий автоматически. Исключай секреты,
-  двоичные файлы и служебные каталоги; ограничивай объёмы. Ключи и токены — только из
-  переменных окружения/хранилища ОС, не в репозитории, логах, диагностике и настройках.
-- Сеть разрешена только для: явно включённых провайдеров модели, проверки/загрузки обновлений
-  (GitHub Releases), установки GGUF из закреплённого каталога, явной загрузки документации,
-  GitHub-коннектора. Скрытая передача кода и телеметрия запрещены; cloud fallback — только с явным согласием.
-- Патч применяется с проверкой исходного содержимого; конфликт показывается, а не
-  перезаписывается. Не теряй незакоммиченные изменения пользователя. Процессы — с таймаутом,
-  отменой, лимитом вывода и завершением дочерних процессов. Повтор записи после сбоя сети не безопасен по умолчанию.
-- Подагенты, выбор модели и fallback работают в явно включённом режиме с лимитами; не меняй
-  модель и reasoning вопреки ручному выбору пользователя, показывай фактический маршрут.
-- Настройки и история хранятся локально; отчёты и логи автоматически не сохраняются.
-  Иконки — только из закреплённого Lucide (`third_party/lucide/SOURCE.md`), без загрузки в рантайме.
-  Постоянных таймеров в покое нет (кроме включённой проверки обновлений).
+- The model proposes an action; the application validates schema, permissions and boundaries.
+  Model output text is never executed as a command. The model does not choose check commands or
+  images — the owner sets them through `--check-config` / the environment registry.
+- Project files, web pages, issues/PRs, skills, tool outputs and nested `AGENTS.md` files of the
+  target project are **untrusted data**: they never widen access or change policy.
+- Never send the whole repository to a model or provider automatically. Exclude secrets, binaries
+  and service directories; bound sizes. Keys and tokens come only from environment variables / the OS
+  store — never from the repository, logs, diagnostics or settings.
+- The network is allowed only for: explicitly enabled model providers, update checks/downloads
+  (GitHub Releases), GGUF installation from the pinned catalog, explicit documentation fetches, and
+  the GitHub connector. Hidden code transfer and telemetry are forbidden; cloud fallback needs
+  explicit consent.
+- A patch is applied only after verifying the original content; a conflict is shown, never
+  overwritten. Do not lose the user's uncommitted changes. Processes have a timeout, cancellation,
+  an output limit and child-process termination. Repeating a write after a network failure is not
+  safe by default.
+- Subagents, model selection and fallback work only in an explicitly enabled mode with limits; do
+  not change the model or reasoning against the user's manual choice, and show the actual route.
+- Settings and chat history are stored locally; reports and logs are not saved automatically.
+  Icons come only from the pinned Lucide set (`third_party/lucide/SOURCE.md`), never downloaded at
+  runtime. There are no idle timers (except the enabled update check).
 
-## Rust и Windows
+## Rust and Windows
 
-- Безопасный Rust по умолчанию (`unsafe_code = "forbid"`); исключение — доказанная необходимость с описанием инвариантов.
-- Ошибки на границах файлов, процессов и сети обрабатывай; `unwrap`/`expect` — не для штатных ошибок ввода и окружения.
-- `Path`/`PathBuf`, аргументы процесса отдельными значениями, явный рабочий каталог, без сборки shell-команд из строк.
-- Учитывай пробелы и кириллицу в путях, CRLF, регистр, заблокированные файлы, junction/symlink, выход за рабочий каталог.
-- CLI не должен требовать Bash, WSL, Python или Node. В PowerShell — `-LiteralPath`, явный UTF-8.
-- Linux-проверка не доказывает работу на Windows; cross-build не заменяет запуск EXE. Указывай среду и ревизию.
+- Safe Rust by default (`unsafe_code = "forbid"`); an exception needs a demonstrated necessity and a
+  written invariant.
+- Handle errors at file, process and network boundaries; `unwrap`/`expect` are not for ordinary
+  input and environment errors.
+- Use `Path`/`PathBuf`, pass process arguments as separate values, set an explicit working
+  directory, never build shell commands from strings.
+- Account for spaces and Cyrillic in paths, CRLF, case-insensitivity, locked files,
+  junctions/symlinks, and escaping the working directory.
+- The CLI must not require Bash, WSL, Python or Node. In PowerShell use `-LiteralPath` and explicit UTF-8.
+- A Linux check does not prove Windows behaviour; a cross-build does not replace running the EXE.
+  State the environment and revision.
 
-## Проверки и достоверность
+## Checks and honesty
 
-- Команды: `cargo fmt --all -- --check`; `cargo clippy --all-targets --locked -- -D warnings`;
-  `cargo test --locked` — в вариантах без фич, `--features desktop`, `--features desktop,gateway-http`.
-  Подробнее — `docs/DEVELOPMENT.md`. На Linux для сборки нужны `cmake`, `gcc/g++`; для запуска
-  окна в Xvfb — `libxkbcommon-x11` и `LIBGL_ALWAYS_SOFTWARE=1`.
-- Для изменения поведения добавляй регрессионный тест пользовательского контракта, ошибки или границы
-  доступа, а не копию реализации. Тесты inference — на заглушках, без многогигабайтных весов и GPU.
-- Интерфейс проверяй в реальном окне (Xvfb + скриншот), а не только тестами отрисовки.
-- Сборка, созданный файл или `PASS` сами по себе не доказывают работу. Недоступную обязательную
-  проверку называй блокером. Превосходство над Codex/Claude Code не заявляй без сопоставимого теста.
-- Измеряй время, память и объём запросов для горячих путей до и после; сеть и модель — отдельно.
-- Профили железа пользователя — только в игнорируемой `.lyra/`.
+- Commands: `cargo fmt --all -- --check`; `cargo clippy --all-targets --locked -- -D warnings`;
+  `cargo test --locked` — with no features, `--features desktop`, and `--features desktop,gateway-http`.
+  Details: `docs/DEVELOPMENT.md`. On Linux the build needs `cmake` and `gcc/g++`; running the window
+  under Xvfb needs `libxkbcommon-x11` and `LIBGL_ALWAYS_SOFTWARE=1`.
+- For a behaviour change add a regression test of a user contract, an error or an access boundary —
+  not a copy of the implementation. Inference tests use stubs, no multi-gigabyte weights or GPU.
+- Check the interface in a real window (Xvfb + screenshot), not only with rendering tests.
+- A build, a created file or a `PASS` line does not prove that something works. Name an unavailable
+  mandatory check as a blocker. Do not claim superiority over Codex/Claude Code without a comparable test.
+- Measure time, memory and request volume on hot paths before and after; measure network and model
+  separately.
+- Hardware profiles of the user live only in the ignored `.lyra/`.
 
 ## Git
 
-- Коммиты делаются **от имени владельца**: используй настроенный `git config user.name/user.email`,
-  **без** `Co-Authored-By` и без ссылок на сессию или модель; то же для описаний PR.
-- Рабочая ветка — отдельная от `main`; небольшие осмысленные коммиты; `git add` только файлы задачи.
-  Ключи, сессии, логи, сборки и скачанные зависимости не коммить. Код других проектов — только после проверки лицензии.
-- Не используй `reset --hard`, force-push, массовую очистку без поручения владельца.
-- После законченной задачи и проверок — коммит и `git push -u origin <ветка>`. PR, merge и релиз — отдельные поручения.
+- Commits are made **as the owner**: use the configured `git config user.name/user.email`,
+  **without** `Co-Authored-By` and without references to a session or a model; the same for PR descriptions.
+- Work on a branch separate from `main`; small meaningful commits; `git add` only the task's files.
+  Do not commit keys, sessions, logs, builds or downloaded dependencies. Code from other projects
+  only after a license check.
+- Do not use `reset --hard`, force-push or bulk cleanup unless the owner asks.
+- After a finished task and its checks: commit and `git push -u origin <branch>`. A PR, a merge and a
+  release are separate assignments.
 
-## Отчёт владельцу
+## Reporting to the owner
 
-Пиши для читателя, который не видел твоих вызовов инструментов и файлов: главное — в первых
-предложениях, короткие предложения, обычные слова, один термин на одну вещь, без придуманных
-тобой названий. Укажи результат, что реально запускалось (среда, ревизия), что только покрыто
-тестами, что не проверено, и ссылку на коммит/ветку. Не называй план реализованной функцией.
+Write in Russian for a reader who has not seen your tool calls or files: key points in the first
+sentences, short sentences, plain words, one term per thing, no names you made up yourself. State
+the result, what was actually run (environment, revision), what is covered only by tests, what is
+not verified, and a link to the commit/branch. Do not call a plan an implemented feature.

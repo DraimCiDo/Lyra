@@ -1,5 +1,5 @@
 # Lyra
 
-Основные инструкции для AI-разработки находятся в [AGENTS.md](AGENTS.md).
-Прочитай его перед работой; затем используй [карту проекта](docs/PROJECT_MAP.md).
-Этот файл — точка входа для Claude Code, без дублирования правил.
+The main instructions for AI development are in [AGENTS.md](AGENTS.md).
+Read it before working, then use the [project map](docs/PROJECT_MAP.md).
+This file is only the entry point for Claude Code and does not duplicate the rules.
