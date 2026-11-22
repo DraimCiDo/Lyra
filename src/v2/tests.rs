@@ -279,3 +279,33 @@ fn replayed_edit_produces_a_reviewable_candidate_without_claiming_verification()
         ORIGINAL
     );
 }
+
+#[test]
+fn a_rejected_replacement_returns_the_current_file_for_recovery() {
+    let (_root, mut report) = fixture(false);
+    report.request.files.clear();
+    let mut step = 0;
+    report
+        .run(
+            &AtomicBool::new(false),
+            &mut |prompt| {
+                step += 1;
+                match step {
+                    1 => Ok(edit("undefined text", "unused").to_string()),
+                    2 => {
+                        let prompt: Value = serde_json::from_str(prompt).unwrap();
+                        let latest = &prompt["observations"][0]["result"];
+                        assert_eq!(latest["current_file"]["path"], "maths.py");
+                        assert_eq!(latest["current_file"]["text"], ORIGINAL);
+                        Ok(edit("a - b", "a + b").to_string())
+                    }
+                    _ => Ok(finish().to_string()),
+                }
+            },
+            &mut |_| Ok(()),
+        )
+        .unwrap();
+    assert!(!report.events[0].ok);
+    assert_eq!(report.state, TaskState::ReadyToApply);
+    assert_eq!(report.proposals[0].replacement, REPLACEMENT);
+}

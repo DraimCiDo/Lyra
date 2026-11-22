@@ -278,7 +278,11 @@ impl TaskReport {
                 }
             };
             self.calls += 1;
-            let action = serde_json::from_str::<Action>(&response);
+            let action = serde_json::from_str::<Action>(response.trim_end());
+            let replace_path = match &action {
+                Ok(Action::Replace { path, .. }) => Some(path.clone()),
+                _ => None,
+            };
             let (name, result) = match action {
                 Ok(Action::Finish { summary }) => {
                     self.finish_or_review(&summary, respond, check, cancel)
@@ -305,15 +309,32 @@ impl TaskReport {
                     }
                 }
                 Ok(action) => self.action(action, &mut workspace),
+                Err(error) if error.is_eof() => (
+                    "parse",
+                    Err(io::Error::other(
+                        "The response ended before the JSON action was complete. Use a shorter, exact text fragment.",
+                    )),
+                ),
                 Err(error) => ("parse", Err(io::Error::other(error))),
             };
             let interrupted = result
                 .as_ref()
                 .is_err_and(|error| error.kind() == io::ErrorKind::Interrupted);
-            let (ok, data) = match result {
+            let (ok, mut data) = match result {
                 Ok(data) => (true, data),
                 Err(error) => (false, json!({"error": limited(&error.to_string(), 2048)})),
             };
+            if !ok
+                && name == "replace"
+                && let Some(path) = replace_path
+                && let Ok(source) = self.read(&mut workspace, &path, 1)
+            {
+                data = json!({
+                    "error": "Replacement rejected. Copy a short, exact old fragment from the current file.",
+                    "reason": data["error"],
+                    "current_file": source,
+                });
+            }
             let detail = data["error"]
                 .as_str()
                 .or_else(|| data["status"].as_str())
