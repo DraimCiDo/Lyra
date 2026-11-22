@@ -94,7 +94,7 @@ class SuiteIntegrity(unittest.TestCase):
             return dict(exit_code=0)
 
         with patch.object(evaluate, "invoke", side_effect=invoke):
-            result = evaluate.run_case(args, self.root, case, 1)
+            result = evaluate.run_case(args, self.root.resolve(), case, 1)
         self.assertTrue(result["passed"], result)
         self.assertEqual([c[1] for c in calls], ["verify", "task", "apply", "verify"])
         self.assertEqual(calls[1][calls[1].index("--state") + 1], calls[2][-1])
