@@ -36,8 +36,17 @@ impl TaskStore {
         }
         #[cfg(not(unix))]
         fs::create_dir(&folder)?;
-        let store = Self::lock(&folder)?;
-        store.save(report)?;
+        // Remove only what this attempt created, so the same path can be retried.
+        let discard = |error: io::Error| {
+            let _ = fs::remove_file(folder.join("task.lock"));
+            let _ = fs::remove_dir(&folder);
+            error
+        };
+        let store = Self::lock(&folder).map_err(discard)?;
+        if let Err(error) = store.save(report) {
+            drop(store);
+            return Err(discard(error));
+        }
         Ok(store)
     }
 
@@ -139,11 +148,24 @@ impl TaskStore {
         report.check_candidate()?;
         report.state = TaskState::Applying;
         self.save(&report)?;
-        if let Err(error) =
-            crate::publication::apply_checked(&report.request.repo, &report.proposals, || {
-                report.check_candidate()
-            })
-        {
+        let checked = match &report.verification {
+            super::Verification::Passed { result } => {
+                result
+                    .source_sha256
+                    .clone()
+                    .map(|sha256| crate::publication::CheckedSource {
+                        scope: None,
+                        sha256,
+                    })
+            }
+            _ => None,
+        };
+        if let Err(error) = crate::publication::apply_checked(
+            &report.request.repo,
+            &report.proposals,
+            checked,
+            || report.check_candidate(),
+        ) {
             if matches!(
                 crate::publication::is_applied(&report.request.repo, &report.proposals),
                 Ok(false)

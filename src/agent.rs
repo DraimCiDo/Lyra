@@ -1672,7 +1672,19 @@ pub fn apply(args: ApplyArgs, output: &mut impl Write) -> io::Result<()> {
     {
         return Err(io::Error::other("Неполный отчёт или другой проект."));
     }
-    crate::publication::apply_checked(&args.repo, edits, || {
+    let checked = (report.outcome == TaskOutcome::ChangesVerified)
+        .then(|| {
+            report
+                .verifications
+                .last()
+                .and_then(|v| v.result.source_sha256.clone())
+        })
+        .flatten()
+        .map(|sha256| crate::publication::CheckedSource {
+            scope: Some(report.verification_scope.clone()),
+            sha256,
+        });
+    crate::publication::apply_checked(&args.repo, edits, checked, || {
         if report.outcome == TaskOutcome::ChangesVerified
             && let Some(expected) = report
                 .verifications

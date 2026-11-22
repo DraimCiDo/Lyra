@@ -144,6 +144,8 @@ pub fn with_session<T>(
     args: &GenerateArgs,
     work: impl FnOnce(&Session<'_>) -> io::Result<T>,
 ) -> io::Result<T> {
+    // Validate first: a rejected argument must not leave a process-wide handler behind.
+    validate(args)?;
     let cancelled = Arc::new(AtomicBool::new(false));
     let signal = cancelled.clone();
     ctrlc::set_handler(move || signal.store(true, Ordering::Relaxed))
@@ -525,6 +527,25 @@ impl Session<'_> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn an_invalid_model_path_can_be_retried_in_the_same_process() {
+        let args = GenerateArgs {
+            model: std::path::PathBuf::from("missing-model.gguf"),
+            prompt: "hello".into(),
+            skills: None,
+            selected_skills: Vec::new(),
+            context: 512,
+            max_tokens: 32,
+            threads: 1,
+            gpu_layers: 0,
+            timeout_secs: 5,
+            raw: false,
+        };
+        for _ in 0..2 {
+            let error = with_session(&args, |_| Ok(())).unwrap_err();
+            assert_eq!(error.kind(), io::ErrorKind::NotFound, "{error}");
+        }
+    }
     #[test]
     fn native_chat_template_input_preserves_turns_and_literal_role_labels() {
         use crate::model_gateway::{Message, Role};

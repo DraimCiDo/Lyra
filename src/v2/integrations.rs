@@ -71,13 +71,25 @@ pub(super) fn run_http(
                 }],
                 max_output_tokens: args.max_tokens,
                 require_tools: false,
-            })?;
-            Ok(response.text)
+            });
+            cancellable(response.map(|response| response.text), &cancel)
         },
         &mut |report| store.save(report),
     )?;
     cli::write_report(output, &report)?;
     cli::exit_status(report)
+}
+
+/// A request that fails after the user cancelled is recorded as a cancellation, so the
+/// saved proposals stay resumable.
+fn cancellable(result: io::Result<String>, cancel: &AtomicBool) -> io::Result<String> {
+    match result {
+        Err(error) if cancel.load(Ordering::Relaxed) => Err(io::Error::new(
+            io::ErrorKind::Interrupted,
+            format!("Cancelled: {error}"),
+        )),
+        result => result,
+    }
 }
 
 #[derive(Debug, Args)]
@@ -149,4 +161,25 @@ pub(super) fn publish(args: GitHubPublish, output: &mut impl Write) -> io::Resul
         true,
     )?;
     writeln!(output, "{url}")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_failed_request_after_cancellation_is_reported_as_cancelled() {
+        let cancel = AtomicBool::new(false);
+        let timeout = || Err(io::Error::new(io::ErrorKind::TimedOut, "deadline"));
+        assert_eq!(
+            cancellable(timeout(), &cancel).unwrap_err().kind(),
+            io::ErrorKind::TimedOut
+        );
+        cancel.store(true, Ordering::Relaxed);
+        assert_eq!(
+            cancellable(timeout(), &cancel).unwrap_err().kind(),
+            io::ErrorKind::Interrupted
+        );
+        assert_eq!(cancellable(Ok("ok".into()), &cancel).unwrap(), "ok");
+    }
 }

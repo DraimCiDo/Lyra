@@ -203,10 +203,11 @@ fn independent_docker_check_fails_on_baseline_and_passes_after_apply() {
 }
 
 #[test]
-fn reviewer_cannot_edit_and_approval_is_invalidated_by_a_later_revision() {
+fn reviewer_cannot_edit_and_a_revision_needs_a_new_approval() {
     let (_root, mut report) = fixture(false);
     report.request.reviewer = true;
     let approval = json!({"tool":"review","approved":true,"summary":"Looks correct"});
+    let rejection = json!({"tool":"review","approved":false,"summary":"Use addition"});
     report
         .run(
             &AtomicBool::new(false),
@@ -215,19 +216,40 @@ fn reviewer_cannot_edit_and_approval_is_invalidated_by_a_later_revision() {
                 finish(),
                 edit("a * b", "discard this reviewer edit"),
                 finish(),
-                approval.clone(),
+                rejection,
                 edit("a * b", "a + b"),
                 finish(),
                 approval,
-                finish(),
             ]),
             &mut |_| Ok(()),
         )
         .unwrap();
     assert_eq!(report.state, TaskState::ReadyToApply);
-    assert_eq!(report.calls, 9);
+    assert_eq!(report.calls, 8);
     assert_eq!(report.proposals[0].replacement, REPLACEMENT);
     assert!(!report.events[1].ok);
+    assert!(!report.events[2].ok);
+    assert_eq!(report.summary, "Fixed addition");
+}
+
+#[test]
+fn reviewer_approval_finishes_within_a_tight_budget() {
+    let (_root, mut report) = fixture(false);
+    report.request.reviewer = true;
+    report.request.max_calls = 3;
+    report
+        .run(
+            &AtomicBool::new(false),
+            &mut reply([
+                edit("a - b", "a + b"),
+                finish(),
+                json!({"tool":"review","approved":true,"summary":"Correct"}),
+            ]),
+            &mut |_| Ok(()),
+        )
+        .unwrap();
+    assert_eq!(report.state, TaskState::ReadyToApply);
+    assert_eq!(report.calls, 3);
 }
 
 #[test]
@@ -308,4 +330,94 @@ fn a_rejected_replacement_returns_the_current_file_for_recovery() {
     assert!(!report.events[0].ok);
     assert_eq!(report.state, TaskState::ReadyToApply);
     assert_eq!(report.proposals[0].replacement, REPLACEMENT);
+}
+
+#[test]
+fn a_line_longer_than_one_page_is_read_in_chunks() {
+    let (_root, mut report) = fixture(false);
+    let long = format!("x = '{}'\n", "é".repeat(3000));
+    fs::write(
+        report.request.repo.join("long.py"),
+        format!("a = 1\n{long}b = 2\n"),
+    )
+    .unwrap();
+    report.request.files.clear();
+    let mut workspace = Workspace::open(&report.request.repo, &[]).unwrap();
+    let first = report.read(&mut workspace, "long.py", 1, 0).unwrap();
+    assert_eq!(first["text"], "a = 1\n");
+    assert_eq!(first["next"], 2);
+    let mut text = String::new();
+    let mut byte = 0;
+    loop {
+        let page = report.read(&mut workspace, "long.py", 2, byte).unwrap();
+        let chunk = page["text"].as_str().unwrap();
+        assert!(chunk.len() <= 4096 && !chunk.is_empty());
+        text.push_str(chunk);
+        match page["next_byte"].as_u64() {
+            Some(next) => byte = next as usize,
+            None => {
+                assert_eq!(page["next"], Value::Null);
+                break;
+            }
+        }
+    }
+    assert_eq!(text, format!("{long}b = 2\n"));
+    assert!(report.read(&mut workspace, "long.py", 2, 6).is_err());
+}
+
+#[test]
+fn conflicting_created_paths_are_rejected_before_they_are_saved() {
+    let (_root, mut report) = fixture(false);
+    report.request.files.clear();
+    report
+        .run(
+            &AtomicBool::new(false),
+            &mut reply([
+                json!({"tool":"create","path":"generated","content":"a"}),
+                json!({"tool":"create","path":"generated/data.txt","content":"b"}),
+                finish(),
+            ]),
+            &mut |_| Ok(()),
+        )
+        .unwrap();
+    assert!(report.events[0].ok);
+    assert!(!report.events[1].ok);
+    assert_eq!(report.proposals.len(), 1);
+    assert_eq!(report.state, TaskState::ReadyToApply);
+}
+
+#[test]
+fn truncated_search_results_are_marked_incomplete() {
+    let (_root, mut report) = fixture(false);
+    report.request.files.clear();
+    for index in 0..9 {
+        fs::write(
+            report.request.repo.join(format!("m{index}.py")),
+            "needle = 1\n",
+        )
+        .unwrap();
+    }
+    let mut workspace = Workspace::open(&report.request.repo, &[]).unwrap();
+    let (_, result) = report.action(
+        Action::Search {
+            query: "needle".into(),
+            offset: 0,
+        },
+        &mut workspace,
+    );
+    let result = result.unwrap();
+    assert_eq!(result["matches"].as_array().unwrap().len(), 8);
+    assert_eq!(result["incomplete"], true);
+}
+
+#[test]
+fn a_failed_first_checkpoint_leaves_the_state_path_retryable() {
+    let (root, mut report) = fixture(false);
+    let state = root.path().join("job");
+    report.summary = "x".repeat(5 * 1024 * 1024);
+    assert!(TaskStore::create(&state, &report).is_err());
+    assert!(!state.exists());
+    report.summary.clear();
+    let store = TaskStore::create(&state, &report).unwrap();
+    assert_eq!(store.load().unwrap().state, TaskState::Running);
 }
