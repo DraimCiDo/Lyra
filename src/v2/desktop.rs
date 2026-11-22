@@ -19,6 +19,8 @@ use std::{
 };
 
 pub fn launch(smoke: bool) -> eframe::Result {
+    let rendered = Arc::new(AtomicBool::new(false));
+    let frame = Arc::clone(&rendered);
     eframe::run_native(
         "Lyra v2",
         eframe::NativeOptions {
@@ -33,12 +35,15 @@ pub fn launch(smoke: bool) -> eframe::Result {
         },
         Box::new(move |context| {
             context.egui_ctx.set_visuals(egui::Visuals::dark());
-            Ok(Box::new(Desktop {
-                smoke,
-                ..Desktop::default()
-            }))
+            Ok(Box::new(Desktop::new(smoke.then_some(frame))))
         }),
-    )
+    )?;
+    if smoke && !rendered.load(Ordering::Relaxed) {
+        return Err(eframe::Error::AppCreation(Box::new(io::Error::other(
+            "Lyra v2 window did not render",
+        ))));
+    }
+    Ok(())
 }
 
 enum Output {
@@ -74,7 +79,6 @@ struct Worker {
     thread: JoinHandle<()>,
 }
 
-#[derive(Default)]
 struct Desktop {
     model: Option<PathBuf>,
     repo: Option<PathBuf>,
@@ -89,7 +93,7 @@ struct Desktop {
     status: String,
     chat: bool,
     reviewer: bool,
-    smoke: bool,
+    smoke: Option<Arc<AtomicBool>>,
     worker: Option<Worker>,
     events: Option<mpsc::Receiver<Output>>,
 }
@@ -139,6 +143,27 @@ fn choose_path(ui: &mut egui::Ui, label: &str, path: Option<&Path>) -> bool {
 }
 
 impl Desktop {
+    fn new(smoke: Option<Arc<AtomicBool>>) -> Self {
+        Self {
+            model: None,
+            repo: None,
+            checker: None,
+            state_folder: None,
+            report: None,
+            messages: Vec::new(),
+            chat_preview: String::new(),
+            import_preview: None,
+            imported: None,
+            input: String::new(),
+            status: String::new(),
+            chat: false,
+            reviewer: false,
+            smoke,
+            worker: None,
+            events: None,
+        }
+    }
+
     fn start(
         &mut self,
         work: impl FnOnce(&AtomicBool, &mpsc::Sender<Output>) -> io::Result<()> + Send + 'static,
@@ -535,8 +560,8 @@ impl eframe::App for Desktop {
     }
 
     fn ui(&mut self, ui: &mut egui::Ui, _: &mut eframe::Frame) {
-        egui::Panel::top("controls").show_inside(ui, |ui| self.controls(ui));
-        egui::Panel::bottom("composer").show_inside(ui, |ui| {
+        egui::Panel::top("controls").show(ui, |ui| self.controls(ui));
+        egui::Panel::bottom("composer").show(ui, |ui| {
             if !self.status.is_empty() {
                 ui.label(&self.status);
             }
@@ -578,20 +603,21 @@ impl eframe::App for Desktop {
                                 self.apply();
                             }
                         }
-                        TaskState::Running | TaskState::Cancelled if self.model.is_some() => {
-                            if ui.button("Resume task").clicked() {
-                                self.resume();
-                            }
+                        TaskState::Running | TaskState::Cancelled
+                            if self.model.is_some() && ui.button("Resume task").clicked() =>
+                        {
+                            self.resume();
                         }
                         _ => {}
                     }
                 }
             });
         });
-        egui::CentralPanel::default().show_inside(ui, |ui| {
+        egui::CentralPanel::default().show(ui, |ui| {
             egui::ScrollArea::vertical().show(ui, |ui| self.result(ui));
         });
-        if self.smoke {
+        if let Some(rendered) = &self.smoke {
+            rendered.store(true, Ordering::Relaxed);
             ui.ctx().send_viewport_cmd(egui::ViewportCommand::Close);
         }
     }
