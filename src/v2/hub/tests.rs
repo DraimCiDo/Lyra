@@ -19,6 +19,8 @@ fn fixture(check: Option<ExecutionRequest>) -> Fixture {
         &["config", "user.name", "Hub Test"],
         &["config", "user.email", "hub@example.invalid"],
         &["config", "commit.gpgsign", "false"],
+        // Byte-exact fixtures regardless of the machine's line-ending conversion.
+        &["config", "core.autocrlf", "false"],
     ] {
         git::ok(&repo, args).unwrap();
     }
