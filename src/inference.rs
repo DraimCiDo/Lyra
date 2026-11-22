@@ -288,7 +288,13 @@ impl Session<'_> {
                 content: prompt.into(),
             },
         ];
-        let rendered = self.rendered_prompt(&messages)?;
+        self.prompt_tokens(&messages)
+    }
+    pub(crate) fn prompt_tokens(
+        &self,
+        messages: &[crate::model_gateway::Message],
+    ) -> io::Result<usize> {
+        let rendered = self.rendered_prompt(messages)?;
         Ok(self
             .model
             .vocab()
