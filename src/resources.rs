@@ -3,6 +3,7 @@
 use std::{
     fs::File,
     io::{self, Read, Seek, SeekFrom},
+    ops::RangeInclusive,
     path::Path,
 };
 
@@ -95,7 +96,11 @@ fn skip_value(file: &mut File, ty: u32) -> io::Result<Option<u64>> {
 }
 
 /// Read only the GGUF metadata; no tensor weights are allocated.
-pub fn gguf_block_count(path: &Path) -> io::Result<u32> {
+fn gguf_metadata_u32(
+    path: &Path,
+    suffixes: &[&str],
+    range: RangeInclusive<u32>,
+) -> io::Result<Option<u32>> {
     let mut file = File::open(path)?;
     let mut magic = [0; 4];
     file.read_exact(&mut magic)?;
@@ -117,17 +122,25 @@ pub fn gguf_block_count(path: &Path) -> io::Result<u32> {
         let name = std::str::from_utf8(&key).map_err(|_| invalid("Invalid GGUF key"))?;
         let ty = read_u32(&mut file)?;
         let count = skip_value(&mut file, ty)?;
-        if (name.ends_with(".block_count") || name.ends_with(".layer_count"))
+        if suffixes.iter().any(|suffix| name.ends_with(suffix))
             && let Some(count) = count
             && let Ok(count) = u32::try_from(count)
-            && (1..=1022).contains(&count)
+            && range.contains(&count)
         {
-            return Ok(count);
+            return Ok(Some(count));
         }
     }
-    Err(invalid(
-        "GGUF block count not found. Select a manual CUDA layer count.",
-    ))
+    Ok(None)
+}
+
+pub fn gguf_block_count(path: &Path) -> io::Result<u32> {
+    gguf_metadata_u32(path, &[".block_count", ".layer_count"], 1..=1022)?
+        .ok_or_else(|| invalid("GGUF block count not found. Select a manual CUDA layer count."))
+}
+
+/// The trained context window, when the GGUF records one.
+pub fn gguf_context_length(path: &Path) -> io::Result<Option<u32>> {
+    gguf_metadata_u32(path, &[".context_length"], 1..=u32::MAX)
 }
 
 /// Reserve at least 1.5 GiB, plus a modest context-dependent buffer.
@@ -217,5 +230,24 @@ mod tests {
         file.write_all(&32u32.to_le_bytes()).unwrap();
         drop(file);
         assert_eq!(gguf_block_count(&path).unwrap(), 32);
+        assert_eq!(gguf_context_length(&path).unwrap(), None);
+    }
+    #[test]
+    fn read_trained_context_from_minimal_gguf_metadata() {
+        use std::io::Write;
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("small.gguf");
+        let mut file = File::create(&path).unwrap();
+        file.write_all(b"GGUF").unwrap();
+        file.write_all(&3u32.to_le_bytes()).unwrap();
+        file.write_all(&0u64.to_le_bytes()).unwrap();
+        file.write_all(&1u64.to_le_bytes()).unwrap();
+        let key = b"llama.context_length";
+        file.write_all(&(key.len() as u64).to_le_bytes()).unwrap();
+        file.write_all(key).unwrap();
+        file.write_all(&4u32.to_le_bytes()).unwrap();
+        file.write_all(&4096u32.to_le_bytes()).unwrap();
+        drop(file);
+        assert_eq!(gguf_context_length(&path).unwrap(), Some(4096));
     }
 }

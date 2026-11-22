@@ -93,6 +93,8 @@ struct Desktop {
     status: String,
     chat: bool,
     reviewer: bool,
+    /// Requested context window; `None` picks the model's trained window up to 8192.
+    context: Option<u32>,
     smoke: Option<Arc<AtomicBool>>,
     worker: Option<Worker>,
     events: Option<mpsc::Receiver<Output>>,
@@ -158,6 +160,7 @@ impl Desktop {
             status: String::new(),
             chat: false,
             reviewer: false,
+            context: None,
             smoke,
             worker: None,
             events: None,
@@ -218,11 +221,14 @@ impl Desktop {
     }
 
     fn model_args(&self) -> Option<inference::GenerateArgs> {
+        let model = self.model.clone()?;
+        let trained = crate::resources::gguf_context_length(&model).ok().flatten();
+        let context = fit_context(self.context, trained);
         Some(
             LocalModel {
-                model: self.model.clone()?,
-                context: 8192,
-                max_tokens: 1024,
+                model,
+                context,
+                max_tokens: (context / 4).min(1024),
                 threads: inference::default_threads(),
                 timeout_secs: 300,
             }
@@ -247,14 +253,17 @@ impl Desktop {
                 role: Role::User,
                 content: std::mem::take(&mut self.input),
             });
-            let messages = self.messages[self.messages.len().saturating_sub(11)..].to_vec();
+            let messages = self.messages[self.messages.len().saturating_sub(64)..].to_vec();
             self.start(move |cancel, send| {
                 let mut response = ChatWriter {
                     sender: send,
                     content: String::new(),
                 };
                 inference::with_cancellable_session(&model, cancel, |session| {
-                    session.complete_chat_messages(&messages, &mut response)
+                    let messages = fit_history(&messages, session.input_token_limit(), |turns| {
+                        session.prompt_tokens(turns)
+                    })?;
+                    session.complete_chat_messages(messages, &mut response)
                 })?;
                 let _ = send.send(Output::Chat(response.content));
                 Ok(())
@@ -416,6 +425,23 @@ impl Desktop {
                 {
                     self.model = Some(path);
                 }
+                egui::ComboBox::from_id_salt("context")
+                    .selected_text(match self.context {
+                        None => "Context · Auto".to_owned(),
+                        Some(value) => format!("Context · {value}"),
+                    })
+                    .show_ui(ui, |ui| {
+                        ui.selectable_value(&mut self.context, None, "Auto");
+                        for value in [2048, 4096, 8192, 16384, 32768] {
+                            ui.selectable_value(&mut self.context, Some(value), value.to_string());
+                        }
+                    })
+                    .response
+                    .on_hover_text("Limited to the model's trained window");
+                if self.chat && !self.messages.is_empty() && ui.button("New chat").clicked() {
+                    self.messages.clear();
+                    self.chat_preview.clear();
+                }
                 if !self.chat {
                     ui.checkbox(&mut self.reviewer, "Reviewer");
                     if choose_path(ui, "Project", self.repo.as_deref())
@@ -510,6 +536,44 @@ impl Desktop {
                         );
                     }
                 });
+            }
+        }
+    }
+}
+
+/// Keep larger windows available, but never exceed the trained context of the model.
+fn fit_context(requested: Option<u32>, trained: Option<u32>) -> u32 {
+    let requested = requested.unwrap_or(8192);
+    trained
+        .map_or(requested, |trained| requested.min(trained))
+        .clamp(512, 32768)
+}
+
+/// Drop the oldest complete turns until the conversation fits the input budget.
+/// A conversation that already fits is returned unchanged.
+fn fit_history(
+    messages: &[Message],
+    limit: usize,
+    mut tokens: impl FnMut(&[Message]) -> io::Result<usize>,
+) -> io::Result<&[Message]> {
+    let mut start = 0;
+    loop {
+        let window = &messages[start..];
+        if tokens(window)? <= limit {
+            return Ok(window);
+        }
+        let next = window
+            .iter()
+            .enumerate()
+            .skip(1)
+            .find(|(_, message)| message.role == Role::User)
+            .map(|(index, _)| start + index);
+        match next {
+            Some(next) => start = next,
+            None => {
+                return Err(io::Error::other(
+                    "The message exceeds the model context. Shorten it or choose a larger context.",
+                ));
             }
         }
     }
@@ -620,5 +684,43 @@ impl eframe::App for Desktop {
             rendered.store(true, Ordering::Relaxed);
             ui.ctx().send_viewport_cmd(egui::ViewportCommand::Close);
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn message(role: Role, content: &str) -> Message {
+        Message {
+            role,
+            content: content.into(),
+        }
+    }
+
+    #[test]
+    fn context_follows_the_trained_window_and_the_user_choice() {
+        assert_eq!(fit_context(None, Some(4096)), 4096);
+        assert_eq!(fit_context(None, Some(131_072)), 8192);
+        assert_eq!(fit_context(Some(16384), Some(131_072)), 16384);
+        assert_eq!(fit_context(Some(16384), Some(2048)), 2048);
+        assert_eq!(fit_context(None, None), 8192);
+    }
+
+    #[test]
+    fn history_drops_whole_old_turns_until_it_fits() {
+        let messages = vec![
+            message(Role::User, "aaaa"),
+            message(Role::Assistant, "bbbb"),
+            message(Role::User, "cc"),
+            message(Role::Assistant, "dd"),
+            message(Role::User, "e"),
+        ];
+        let count = |turns: &[Message]| Ok(turns.iter().map(|m| m.content.len()).sum());
+        assert_eq!(fit_history(&messages, 100, count).unwrap().len(), 5);
+        let fitted = fit_history(&messages, 6, count).unwrap();
+        assert_eq!(fitted.len(), 3);
+        assert_eq!(fitted[0].content, "cc");
+        assert!(fit_history(&messages, 0, count).is_err());
     }
 }

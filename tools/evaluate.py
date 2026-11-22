@@ -177,7 +177,11 @@ def _run_case(args, root, case, iteration):
         result["task"] = task
         report = task["body"] or {}
         if protocol == "v2":
-            verified = report.get("state") == "ready_to_apply" and report.get("verification", {}).get("state") == "passed"
+            verified = (report.get("state") == "ready_to_apply"
+                        and report.get("verification", {}).get("state") == "passed")
+            # A finished task without proposals reaches the case's no-change allowance;
+            # the final independent check below still runs against the unchanged source.
+            verified = verified or (report.get("state") == "complete" and not report.get("proposals"))
         else:
             verified = report.get("outcome") == "changes_verified"
         if task["exit_code"] != 0 or not verified:

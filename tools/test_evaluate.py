@@ -99,6 +99,25 @@ class SuiteIntegrity(unittest.TestCase):
         self.assertEqual([c[1] for c in calls], ["verify", "task", "apply", "verify"])
         self.assertEqual(calls[1][calls[1].index("--state") + 1], calls[2][-1])
 
+    def test_v2_complete_without_proposals_reaches_the_no_change_allowance(self):
+        case = dict(evaluate.load_suite(self.root / "suite.json")["cases"][0])
+        args = Namespace(protocol="v2", binary=Path("lyra-v2"), model=Path("code.gguf"),
+                         context=4096, tokens=512, calls=16, timeout=30, threads=2,
+                         measure_resources=False)
+        check = dict(cleanup_confirmed=True, timed_out=False, cancelled=False)
+
+        def invoke(argv, timeout, measure_resources=False):
+            if argv[1] == "verify":
+                return dict(exit_code=1, timed_out=False, body=dict(check, exit_code=1))
+            return dict(exit_code=0, peak_ram_bytes=None, peak_vram_bytes=None,
+                        resource_measurement=None, body={"state": "complete", "proposals": []})
+
+        for allowed, status in ((False, "no_changes"), (True, "verification_failed")):
+            case["allow_no_changes"] = allowed
+            with patch.object(evaluate, "invoke", side_effect=invoke):
+                result = evaluate.run_case(args, self.root.resolve(), case, 1)
+            self.assertEqual(result["status"], status, result)
+
     def test_invoke_measures_the_child_process_and_timeout_reaps_it(self):
         run = evaluate.invoke([sys.executable, "-c", "import time; data=bytearray(32*1024*1024);time.sleep(.5);print('{}')"], 10, True)
         self.assertEqual(run["exit_code"], 0)
