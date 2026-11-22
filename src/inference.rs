@@ -362,7 +362,17 @@ impl Session<'_> {
         grammar: Option<&str>,
         output: &mut impl Write,
     ) -> io::Result<()> {
-        self.complete_messages_with_sampling(messages, grammar, false, output)
+        self.complete_messages_with_sampling(messages, grammar, false, output, |_| false)
+    }
+
+    pub(crate) fn complete_messages_until<W: Write>(
+        &self,
+        messages: &[crate::model_gateway::Message],
+        grammar: &str,
+        output: &mut W,
+        complete: impl FnMut(&W) -> bool,
+    ) -> io::Result<()> {
+        self.complete_messages_with_sampling(messages, Some(grammar), false, output, complete)
     }
 
     /// Natural conversation uses repetition control; constrained tool/plan JSON
@@ -372,15 +382,16 @@ impl Session<'_> {
         messages: &[crate::model_gateway::Message],
         output: &mut impl Write,
     ) -> io::Result<()> {
-        self.complete_messages_with_sampling(messages, None, !self.args.raw, output)
+        self.complete_messages_with_sampling(messages, None, !self.args.raw, output, |_| false)
     }
 
-    fn complete_messages_with_sampling(
+    fn complete_messages_with_sampling<W: Write>(
         &self,
         messages: &[crate::model_gateway::Message],
         grammar: Option<&str>,
         sample_chat: bool,
-        output: &mut impl Write,
+        output: &mut W,
+        mut complete: impl FnMut(&W) -> bool,
     ) -> io::Result<()> {
         if messages.is_empty()
             || messages.iter().all(|m| m.content.is_empty())
@@ -478,6 +489,9 @@ impl Session<'_> {
             count += 1;
             if count == 1 || count % 8 == 0 {
                 progress_tokens(count);
+            }
+            if complete(output) {
+                break;
             }
             if index + 1 < args.max_tokens {
                 batch.clear();

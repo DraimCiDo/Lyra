@@ -245,3 +245,14 @@ fn local_model_session_accepts_the_native_loader_configuration() {
     .inference_args();
     crate::inference::validate(&args).unwrap();
 }
+
+#[test]
+fn structured_generation_stops_at_the_first_complete_action() {
+    assert!(!action_complete(
+        br#"{"tool":"finish","summary":"example }"#
+    ));
+    assert!(!action_complete(br#"{"tool":"finish"}"#));
+    assert!(action_complete(
+        br#"{"tool":"finish","summary":"example }"}  "#
+    ));
+}

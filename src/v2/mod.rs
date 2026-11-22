@@ -150,6 +150,11 @@ fn limited(text: &str, bytes: usize) -> &str {
     &text[..text.floor_char_boundary(bytes.min(text.len()))]
 }
 
+fn action_complete(bytes: &[u8]) -> bool {
+    bytes.iter().rfind(|byte| !byte.is_ascii_whitespace()) == Some(&b'}')
+        && serde_json::from_slice::<Action>(bytes).is_ok()
+}
+
 impl TaskReport {
     pub fn new(mut request: TaskRequest) -> io::Result<Self> {
         if request.task.trim().is_empty()
@@ -203,7 +208,9 @@ impl TaskReport {
                     messages[0].content = input.to_string();
                 }
                 let mut response = Vec::new();
-                session.complete_messages(&messages, Some(ACTION_GRAMMAR), &mut response)?;
+                session.complete_messages_until(&messages, ACTION_GRAMMAR, &mut response, |bytes| {
+                    action_complete(bytes)
+                })?;
                 String::from_utf8(response).map_err(io::Error::other)
             },
             checkpoint,
@@ -247,6 +254,14 @@ impl TaskReport {
             workspace.read_pending(proposal)?;
         }
         let ranked = retrieval::ranked(&workspace, &self.request.task);
+        if self.calls == 0
+            && self.observations.is_empty()
+            && let [selected] = self.request.files.as_slice()
+            && let Ok(source) = self.read(&mut workspace, selected, 1)
+        {
+            self.observations
+                .push_back(json!({"tool": "read", "result": source}));
+        }
         self.state = TaskState::Running;
         checkpoint(self)?;
         while self.calls < self.request.max_calls && !cancel.load(Ordering::Relaxed) {
@@ -258,7 +273,8 @@ impl TaskReport {
                 Err(error) => {
                     self.state = TaskState::Failed;
                     self.summary = limited(&error.to_string(), 2048).into();
-                    return checkpoint(self);
+                    checkpoint(self)?;
+                    return Err(error);
                 }
             };
             self.calls += 1;
