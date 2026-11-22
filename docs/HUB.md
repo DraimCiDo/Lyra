@@ -7,7 +7,7 @@ edit the same checkout. You (the owner) keep the decisions that change the proje
 command, merging ("landing") a finished branch, and cancelling work.
 
 Status: preview in `lyra-v2`. Covered by tests on Linux; a real Claude Code client completed the
-MCP handshake. Not yet verified: Codex as a client, a long session with several real agents,
+MCP handshake; the Desktop Agents view was driven in a real window under Xvfb (diff and land). Not yet verified: Codex as a client, a long session with several real agents,
 native Windows.
 
 ## How it works
@@ -49,6 +49,12 @@ lyra-v2 hub --hub C:\work\app-hub cancel --task 3
 ```
 
 All commands print JSON.
+
+The same owner actions are available in `lyra-v2-desktop` under **Agents**: open or create a
+hub, see agents, leases and tasks, add a task from the composer (first line is the title),
+show a diff, land, reopen (the composer text is the note) or cancel, and read the inbox. The
+view refreshes when you act or press Refresh; there is no background polling. Start it on a
+hub directly with `lyra-v2-desktop --hub <folder>`.
 
 ## Connecting Codex and Claude Code (MCP)
 

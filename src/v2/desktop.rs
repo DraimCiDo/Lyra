@@ -18,7 +18,7 @@ use std::{
     time::{Duration, SystemTime, UNIX_EPOCH},
 };
 
-pub fn launch(smoke: bool) -> eframe::Result {
+pub fn launch(smoke: bool, hub: Option<PathBuf>) -> eframe::Result {
     let rendered = Arc::new(AtomicBool::new(false));
     let frame = Arc::clone(&rendered);
     eframe::run_native(
@@ -35,7 +35,12 @@ pub fn launch(smoke: bool) -> eframe::Result {
         },
         Box::new(move |context| {
             context.egui_ctx.set_visuals(egui::Visuals::dark());
-            Ok(Box::new(Desktop::new(smoke.then_some(frame))))
+            let mut desktop = Desktop::new(smoke.then_some(frame));
+            if let Some(folder) = hub {
+                desktop.agents = true;
+                desktop.hub.open(folder);
+            }
+            Ok(Box::new(desktop))
         }),
     )?;
     if smoke && !rendered.load(Ordering::Relaxed) {
@@ -92,6 +97,8 @@ struct Desktop {
     input: String,
     status: String,
     chat: bool,
+    agents: bool,
+    hub: super::hub::desktop::HubView,
     reviewer: bool,
     /// Requested context window; `None` picks the model's trained window up to 8192.
     context: Option<u32>,
@@ -159,6 +166,8 @@ impl Desktop {
             input: String::new(),
             status: String::new(),
             chat: false,
+            agents: false,
+            hub: Default::default(),
             reviewer: false,
             context: None,
             smoke,
@@ -411,11 +420,41 @@ impl Desktop {
             ui.heading("Lyra v2");
             ui.add_space(18.0);
             ui.add_enabled_ui(idle, |ui| {
-                ui.selectable_value(&mut self.chat, false, "Work");
-                ui.selectable_value(&mut self.chat, true, "Chat");
+                if ui
+                    .selectable_label(!self.chat && !self.agents, "Work")
+                    .clicked()
+                {
+                    (self.chat, self.agents) = (false, false);
+                }
+                if ui.selectable_label(self.chat, "Chat").clicked() {
+                    (self.chat, self.agents) = (true, false);
+                }
+                if ui.selectable_label(self.agents, "Agents").clicked() {
+                    (self.chat, self.agents) = (false, true);
+                    self.hub.refresh();
+                }
             });
         });
         ui.add_space(6.0);
+        if self.agents {
+            ui.horizontal_wrapped(|ui| {
+                if choose_path(ui, "Project", self.repo.as_deref())
+                    && let Some(path) = rfd::FileDialog::new().pick_folder()
+                {
+                    self.repo = Some(path);
+                }
+                if choose_path(ui, "Check config", self.checker.as_deref())
+                    && let Some(path) = rfd::FileDialog::new()
+                        .add_filter("JSON config", &["json"])
+                        .pick_file()
+                {
+                    self.checker = Some(path);
+                }
+            });
+            self.hub
+                .controls(ui, self.repo.as_deref(), self.checker.as_deref());
+            return;
+        }
         ui.add_enabled_ui(idle, |ui| {
             ui.horizontal_wrapped(|ui| {
                 if choose_path(ui, "GGUF", self.model.as_deref())
@@ -625,6 +664,19 @@ impl eframe::App for Desktop {
 
     fn ui(&mut self, ui: &mut egui::Ui, _: &mut eframe::Frame) {
         egui::Panel::top("controls").show(ui, |ui| self.controls(ui));
+        if self.agents {
+            egui::Panel::bottom("composer").show(ui, |ui| {
+                self.hub.composer(ui, &mut self.input);
+            });
+            egui::CentralPanel::default().show(ui, |ui| {
+                egui::ScrollArea::vertical().show(ui, |ui| self.hub.body(ui, &self.input));
+            });
+            if let Some(rendered) = &self.smoke {
+                rendered.store(true, Ordering::Relaxed);
+                ui.ctx().send_viewport_cmd(egui::ViewportCommand::Close);
+            }
+            return;
+        }
         egui::Panel::bottom("composer").show(ui, |ui| {
             if !self.status.is_empty() {
                 ui.label(&self.status);

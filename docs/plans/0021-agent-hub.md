@@ -10,7 +10,7 @@ Lyra and work on one project at the same time, with every function working.
 
 In scope: a shared local task board, per-task git worktrees, advisory file leases, messages,
 an MCP stdio server for external agents, a local GGUF worker, owner-only landing and
-cancellation, documentation. Out of scope: a Desktop view for the hub, Lyra calling external
+cancellation, an owner view in the v2 Desktop, documentation. Out of scope: Lyra calling external
 MCP servers (MCP client), automatic task splitting by a model, network transport.
 
 ## Decisions
@@ -44,6 +44,8 @@ MCP servers (MCP client), automatic task splitting by a model, network transport
   connected (`claude mcp list` → Connected) on Linux.
 - [x] A local worker turns a hub task into a committed branch in review; no-change runs release
   the task (tests with a scripted model).
+- [x] Desktop Agents view: real window under Xvfb showed agents, leases and tasks; clicking
+  Diff and Land merged the reviewed branch into the project.
 - [ ] Two real Codex and two real Claude Code sessions finish separate tasks on one project.
 - [ ] Native Windows run (paths with spaces/Cyrillic are covered on Linux only).
 

@@ -7,6 +7,8 @@
 //! through MCP (`lyra-v2 hub mcp`); the owner keeps the decisions that change the project:
 //! the check command, landing a branch and cancelling work.
 pub mod cli;
+#[cfg(feature = "desktop")]
+pub mod desktop;
 mod git;
 pub mod mcp;
 pub mod worker;
