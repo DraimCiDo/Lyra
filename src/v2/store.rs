@@ -80,8 +80,16 @@ impl TaskStore {
             }
             Err(error) => return Err(error),
         };
-        lock.try_lock()
-            .map_err(|error| io::Error::other(format!("Task is already in use: {error}")))?;
+        // A child process forked elsewhere in this program can share the lock's open file
+        // description until its exec closes it, so allow a short retry before refusing.
+        let mut attempts = 0;
+        while let Err(error) = lock.try_lock() {
+            attempts += 1;
+            if attempts == 40 {
+                return Err(io::Error::other(format!("Task is already in use: {error}")));
+            }
+            std::thread::sleep(std::time::Duration::from_millis(25));
+        }
         Ok(Self {
             folder,
             _lock: lock,

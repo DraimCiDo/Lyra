@@ -183,6 +183,19 @@ pub struct Hub {
     agent: String,
 }
 
+/// Canonical paths without the Windows verbatim prefix (`\\?\C:\...`), which git
+/// rejects for worktree paths.
+fn canonical(path: &Path) -> io::Result<PathBuf> {
+    let path = path.canonicalize()?;
+    #[cfg(windows)]
+    if let Some(rest) = path.to_str().and_then(|text| text.strip_prefix(r"\\?\"))
+        && rest.as_bytes().get(1) == Some(&b':')
+    {
+        return Ok(PathBuf::from(rest));
+    }
+    Ok(path)
+}
+
 fn open_connection(path: &Path) -> io::Result<Connection> {
     let connection = Connection::open(path).map_err(db)?;
     connection
@@ -204,10 +217,10 @@ impl Hub {
         base: &str,
         check: Option<ExecutionRequest>,
     ) -> io::Result<()> {
-        let repo = repo.canonicalize()?;
+        let repo = canonical(repo)?;
         let top = git::ok(&repo, &["rev-parse", "--show-toplevel"])
             .map_err(|_| error("The agent hub needs a git repository"))?;
-        if Path::new(&top).canonicalize()? != repo {
+        if canonical(Path::new(&top))? != repo {
             return Err(error("Choose the top folder of the git repository"));
         }
         if base.is_empty() || base.starts_with('-') || base.len() > 200 {
@@ -224,8 +237,8 @@ impl Hub {
         let parent = root
             .parent()
             .filter(|p| !p.as_os_str().is_empty())
-            .unwrap_or_else(|| Path::new("."))
-            .canonicalize()?;
+            .unwrap_or_else(|| Path::new("."));
+        let parent = canonical(parent)?;
         let root = parent.join(
             root.file_name()
                 .ok_or_else(|| error("Invalid hub folder"))?,
@@ -274,7 +287,7 @@ impl Hub {
         if agent != OWNER {
             validate_agent(agent)?;
         }
-        let root = root.canonicalize()?;
+        let root = canonical(root)?;
         let path = root.join(DATABASE);
         if !fs::symlink_metadata(&path)?.is_file() {
             return Err(error("Not an agent hub folder"));
