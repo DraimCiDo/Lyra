@@ -217,6 +217,7 @@ impl Workspace {
         Ok(workspace)
     }
 
+    #[cfg(feature = "gateway-http")]
     /// Whether discovery would index `path` if it existed locally. Used to compare a
     /// remote tree with the checked snapshot.
     pub(crate) fn would_index(&mut self, path: &str) -> io::Result<bool> {

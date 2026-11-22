@@ -2,6 +2,7 @@
 pub mod cli;
 #[cfg(feature = "desktop")]
 pub mod desktop;
+pub mod hub;
 #[cfg(feature = "gateway-http")]
 pub mod integrations;
 #[cfg(feature = "desktop")]

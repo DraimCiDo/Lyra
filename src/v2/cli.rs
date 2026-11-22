@@ -73,6 +73,8 @@ pub enum Command {
     Recover(crate::publication::RecoveryArgs),
     /// Build, import or query a code graph.
     Graph(crate::codegraph::GraphArgs),
+    /// Coordinate several agents (Codex, Claude Code, local Lyra) on one project.
+    Hub(super::hub::cli::HubArgs),
     /// Read a GitHub issue and export it as a task file.
     #[cfg(feature = "gateway-http")]
     GithubIssue(super::integrations::GitHubIssue),
@@ -230,6 +232,7 @@ pub fn run(cli: Cli, output: &mut impl Write) -> io::Result<()> {
         } => executor::run(&repo, &config, &files, output),
         Command::Recover(args) => crate::publication::recover(args, output),
         Command::Graph(args) => crate::codegraph::run(args, output),
+        Command::Hub(args) => super::hub::cli::run(args, output),
         #[cfg(feature = "gateway-http")]
         Command::GithubIssue(args) => super::integrations::issue(args, output),
         #[cfg(feature = "gateway-http")]
