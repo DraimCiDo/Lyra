@@ -144,13 +144,22 @@ pub fn with_session<T>(
     args: &GenerateArgs,
     work: impl FnOnce(&Session<'_>) -> io::Result<T>,
 ) -> io::Result<T> {
-    validate(args)?;
     let cancelled = Arc::new(AtomicBool::new(false));
     let signal = cancelled.clone();
     ctrlc::set_handler(move || signal.store(true, Ordering::Relaxed))
         .map_err(|e| fail(e.to_string()))?;
+    with_cancellable_session(args, &cancelled, work)
+}
+
+pub(crate) fn with_cancellable_session<T>(
+    args: &GenerateArgs,
+    cancelled: &AtomicBool,
+    work: impl FnOnce(&Session<'_>) -> io::Result<T>,
+) -> io::Result<T> {
+    validate(args)?;
     let started = Instant::now();
     let timeout = Duration::from_secs(args.timeout_secs);
+    check(cancelled, started, timeout)?;
     let backend = LlamaBackend::init().map_err(|e| fail(e.to_string()))?;
     let model_bytes = std::fs::metadata(&args.model)?.len();
     let free_ram = sysinfo::System::new_with_specifics(
@@ -203,7 +212,7 @@ pub fn with_session<T>(
     let params = LlamaModelParams::default().with_n_gpu_layers(gpu_layers);
     let model = LlamaModel::load_from_file(&backend, &args.model, &params)
         .map_err(|e| fail(format!("Не удалось загрузить GGUF: {e}")))?;
-    check(&cancelled, started, timeout)?;
+    check(cancelled, started, timeout)?;
     progress_event("context");
     if args.context > model.n_ctx_train() {
         return Err(fail(format!(
@@ -217,7 +226,7 @@ pub fn with_session<T>(
         model: &model,
         backend: &backend,
         args,
-        cancelled: &cancelled,
+        cancelled,
         started,
         timeout,
     })

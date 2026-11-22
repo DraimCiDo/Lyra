@@ -158,10 +158,17 @@ def _run_case(args, root, case, iteration):
             return result
         task_file = work / "TASK.txt"
         task_file.write_text(case["task"], encoding="utf-8")
+        protocol = getattr(args, "protocol", "v1")
+        state = work / "v2-task"
         command = [str(args.binary), "task", "--model", str(args.model), "--repo", str(repo),
                    "--task-file", str(task_file), "--check-config", checker, "--context", str(args.context),
                    "--max-tokens", str(args.tokens), "--max-calls", str(args.calls),
-                   "--timeout-secs", str(args.timeout), "--gpu-layers", str(args.gpu_layers), "--threads", str(args.threads), *selected]
+                   "--timeout-secs", str(args.timeout), "--threads", str(args.threads)]
+        if protocol == "v2":
+            # The v2 checker hashes the full candidate, including new files.
+            command.extend(["--state", str(state)])
+        else:
+            command.extend(["--gpu-layers", str(args.gpu_layers), *selected])
         result["model_run_attempted"] = True
         task = invoke(command, args.timeout + 15, args.measure_resources)
         result["peak_ram_bytes"] = task["peak_ram_bytes"]
@@ -169,8 +176,16 @@ def _run_case(args, root, case, iteration):
         result["resource_measurement"] = task["resource_measurement"]
         result["task"] = task
         report = task["body"] or {}
-        if task["exit_code"] != 0 or report.get("outcome") != "changes_verified":
-            result["status"] = report.get("status", "task_failed")
+        if protocol == "v2":
+            verified = report.get("state") == "ready_to_apply" and report.get("verification", {}).get("state") == "passed"
+        else:
+            verified = report.get("outcome") == "changes_verified"
+        if task["exit_code"] != 0 or not verified:
+            result["status"] = report.get("state") or report.get("status") or "task_failed"
+            return result
+        unchanged = {p.relative_to(repo).as_posix(): file_sha256(p) for p in repo.rglob("*") if p.is_file()}
+        if unchanged != copied:
+            result["status"] = "source_changed_before_apply"
             return result
         if not report.get("proposals") and not case.get("allow_no_changes", False):
             result["status"] = "no_changes"
@@ -178,11 +193,14 @@ def _run_case(args, root, case, iteration):
         if not set(p["path"] for p in report.get("proposals", [])) <= set(case["allowed_changes"]):
             result["status"] = "unexpected_changes"
             return result
-        report_file = work / "report.json"
-        report_file.write_text(json.dumps(report, ensure_ascii=False), encoding="utf-8")
         if report.get("proposals"):
-            applied = invoke([str(args.binary), "apply", "--repo", str(repo), "--report",
-                              str(report_file), "--all"], 30)
+            if protocol == "v2":
+                apply = [str(args.binary), "apply", "--state", str(state)]
+            else:
+                report_file = work / "report.json"
+                report_file.write_text(json.dumps(report, ensure_ascii=False), encoding="utf-8")
+                apply = [str(args.binary), "apply", "--repo", str(repo), "--report", str(report_file), "--all"]
+            applied = invoke(apply, 30)
             if applied["exit_code"] != 0:
                 result["status"] = "apply_failed"
                 result["apply"] = applied
@@ -245,6 +263,8 @@ def main():
     parser.add_argument("--threads", type=int, default=min(os.cpu_count() or 2, 8))
     parser.add_argument("--measure-resources", action="store_true")
     parser.add_argument("--profile", action="append", default=[])
+    parser.add_argument("--case", action="append", default=[], help="Select exact case IDs")
+    parser.add_argument("--protocol", choices=["v1", "v2"], default="v1")
     parser.add_argument("--resume", action="store_true")
     args = parser.parse_args()
     args.binary = args.binary.resolve(); args.model = args.model.resolve(); args.suite = args.suite.resolve()
@@ -252,6 +272,8 @@ def main():
         parser.error("Output already exists; choose a new run file or use --resume")
     if not (128 <= args.context <= 32768 and 1 <= args.tokens < args.context and args.tokens <= 8192 and 1 <= args.calls <= 256 and 1 <= args.timeout <= 3600 and 1 <= args.threads <= 256 and 0 <= args.gpu_layers <= 1024):
         parser.error("Resource settings exceed CLI bounds")
+    if args.protocol == "v2" and not (args.context >= 512 and args.tokens >= 32 and args.calls <= 64 and args.gpu_layers == 0):
+        parser.error("v2 evaluation requires CPU, context >= 512, tokens >= 32 and calls <= 64")
     suite = load_suite(args.suite)
     if not args.binary.is_file() or not args.model.is_file():
         parser.error("Binary and explicit local GGUF must exist")
@@ -260,6 +282,10 @@ def main():
               "model_sha256": file_sha256(args.model),
               "model": str(args.model), "configuration": {k: v for k, v in vars(args).items() if k not in ("binary", "suite", "model", "output", "resume")},
               "results": []}
+    if args.protocol == "v1":
+        report["configuration"].pop("protocol")
+    if not args.case:
+        report["configuration"].pop("case")
     if args.resume and args.output.exists():
         if args.output.stat().st_size > 256 * 1024 * 1024:
             parser.error("Resume report exceeds 256 MiB")
@@ -271,7 +297,11 @@ def main():
     if len(done) != len(report["results"]):
         parser.error("Duplicate runs in resume report")
     args.output.parent.mkdir(parents=True, exist_ok=True)
-    selected = [case for case in suite["cases"] if not args.profile or case["profile"] in args.profile]
+    selected = [case for case in suite["cases"]
+                if (not args.profile or case["profile"] in args.profile)
+                and (not args.case or case["id"] in args.case)]
+    if set(args.case) - {case["id"] for case in selected}:
+        parser.error("A requested case is absent from the selected profiles")
     if not selected:
         parser.error("No cases selected")
     allowed = {(case["id"], iteration) for case in selected for iteration in range(1, args.repeats + 1)}

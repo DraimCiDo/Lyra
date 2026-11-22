@@ -310,6 +310,25 @@ fn ensure_final(
     Ok(())
 }
 
+pub(crate) fn is_applied(repo: &Path, edits: &[Edit]) -> io::Result<bool> {
+    validate_set(edits)?;
+    let mut workspace = open_workspace(repo, edits)?;
+    let publication = State::open(&workspace)?;
+    if publication.pending()? {
+        return Err(error(
+            "Resolve the pending publication journal before retrying",
+        ));
+    }
+    let current = states(&mut workspace, edits)?;
+    if current.iter().all(|state| *state == FileState::Applied) {
+        Ok(true)
+    } else if current.iter().all(|state| *state == FileState::Original) {
+        Ok(false)
+    } else {
+        Err(error("The interrupted publication has mixed file states"))
+    }
+}
+
 pub fn apply(repo: &Path, edits: &[Edit]) -> io::Result<()> {
     apply_checked(repo, edits, || Ok(()))
 }

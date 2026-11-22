@@ -505,6 +505,14 @@ pub(crate) fn checked_source_hash(
     )?))
 }
 
+pub(crate) fn candidate_source_hash(
+    repo: &Path,
+    proposals: &[crate::workspace::Edit],
+) -> io::Result<String> {
+    let workspace = crate::workspace::Workspace::for_snapshot(repo, &[])?;
+    Ok(source_hash(&snapshot_sources(workspace, proposals, true)?))
+}
+
 /// Copies only permitted regular UTF-8 files; no host sockets, links or credentials
 /// are mounted. Source is read-only; all check output must go to container /tmp.
 /// The caller grants this check explicitly; models cannot select an image or argv.

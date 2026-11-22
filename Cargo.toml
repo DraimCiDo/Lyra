@@ -47,8 +47,17 @@ winresource = { version = "=0.1.34", optional = true }
 eframe = { version = "=0.37.0", default-features = false, features = ["glow", "x11", "wayland"], optional = true }
 
 [[bin]]
+name = "lyra-v2"
+path = "src/bin/lyra-v2.rs"
+
+[[bin]]
 name = "lyra-desktop"
 path = "src/bin/lyra-desktop.rs"
+required-features = ["desktop"]
+
+[[bin]]
+name = "lyra-v2-desktop"
+path = "src/bin/lyra-v2-desktop.rs"
 required-features = ["desktop"]
 
 [[example]]

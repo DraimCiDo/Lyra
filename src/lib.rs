@@ -25,6 +25,7 @@ pub mod skills;
 pub mod task_context;
 pub mod task_report;
 pub mod universal;
+pub mod v2;
 pub mod workspace;
 
 use clap::{Parser, Subcommand};
