@@ -217,6 +217,26 @@ impl Workspace {
         Ok(workspace)
     }
 
+    /// Whether discovery would index `path` if it existed locally. Used to compare a
+    /// remote tree with the checked snapshot.
+    pub(crate) fn would_index(&mut self, path: &str) -> io::Result<bool> {
+        if !permitted(path) {
+            return Ok(false);
+        }
+        let mut folders = Vec::new();
+        let mut parent = Path::new(path).parent();
+        while let Some(folder) = parent.filter(|p| !p.as_os_str().is_empty()) {
+            folders.push(folder.to_string_lossy().replace('\\', "/"));
+            parent = folder.parent();
+        }
+        for folder in folders.iter().rev() {
+            if self.dir.symlink_metadata(folder).is_ok_and(|m| m.is_dir()) {
+                self.load_ignore(folder)?;
+            }
+        }
+        Ok(!self.ignored(path, false))
+    }
+
     fn load_ignore(&mut self, folder: &str) -> io::Result<()> {
         if !self.ignore_dirs.insert(folder.into()) {
             return Ok(());

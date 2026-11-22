@@ -151,10 +151,13 @@ pub(super) fn publish(args: GitHubPublish, output: &mut impl Write) -> io::Resul
     }
     report.check_candidate()?;
     let client = GithubClient::new(github::DEFAULT_API, &args.token_env)?;
-    let url = client.publish(
+    let (base, tree) = client.base_tree(&args.repo, &args.base)?;
+    remote_matches_checked(&report, &tree)?;
+    let url = client.publish_at(
         &args.repo,
         &args.branch,
         &args.base,
+        Some(&base),
         &args.title,
         &args.body,
         &report.proposals,
@@ -163,9 +166,108 @@ pub(super) fn publish(args: GitHubPublish, output: &mut impl Write) -> io::Resul
     writeln!(output, "{url}")
 }
 
+/// The check ran on the local snapshot plus the proposals. Publishing applies the same
+/// proposals to the remote base, so every file the check saw must be identical there,
+/// and the base must not hold indexed files the check did not see.
+fn remote_matches_checked(
+    report: &TaskReport,
+    remote: &std::collections::BTreeMap<String, String>,
+) -> io::Result<()> {
+    let mut workspace = crate::workspace::Workspace::for_snapshot(&report.request.repo, &[])?;
+    let created: std::collections::BTreeSet<_> = report
+        .proposals
+        .iter()
+        .filter(|edit| edit.create)
+        .map(|edit| edit.path.as_str())
+        .collect();
+    let mut differences = Vec::new();
+    for path in workspace.files.clone() {
+        if created.contains(path.as_str()) {
+            continue;
+        }
+        let local = workspace.read_snapshot(&path)?;
+        // A checkout with CRLF conversion still matches a blob stored with LF.
+        let matches = remote.get(&path).is_some_and(|blob| {
+            *blob == github::git_blob_id(local.as_bytes())
+                || local.contains("\r\n")
+                    && *blob == github::git_blob_id(local.replace("\r\n", "\n").as_bytes())
+        });
+        if !matches {
+            differences.push(path);
+        }
+    }
+    for path in remote.keys() {
+        if !workspace.files.contains(path) && workspace.would_index(path)? {
+            differences.push(path.clone());
+        }
+    }
+    if differences.is_empty() {
+        return Ok(());
+    }
+    differences.truncate(8);
+    Err(io::Error::other(format!(
+        "The remote base differs from the checked snapshot: {}. Update the project and run the task check again.",
+        differences.join(", ")
+    )))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::{v2::TaskRequest, workspace::Edit};
+    use std::collections::BTreeMap;
+
+    #[test]
+    fn publication_requires_the_remote_base_to_match_the_checked_snapshot() {
+        let root = tempfile::tempdir().unwrap();
+        let repo = root.path().join("project");
+        fs::create_dir_all(repo.join("src")).unwrap();
+        fs::write(repo.join("src/lib.rs"), "pub fn add() {}\r\n").unwrap();
+        fs::write(repo.join("src/util.rs"), "pub fn helper() {}\n").unwrap();
+        fs::write(repo.join(".gitignore"), "build/\n").unwrap();
+        let mut report = TaskReport::new(TaskRequest {
+            repo: repo.clone(),
+            task: "task".into(),
+            files: Vec::new(),
+            check: None,
+            max_calls: 4,
+            reviewer: false,
+        })
+        .unwrap();
+        report.proposals.push(Edit {
+            path: "src/new.rs".into(),
+            original: String::new(),
+            replacement: "new".into(),
+            create: true,
+        });
+        let mut remote = BTreeMap::new();
+        for path in ["src/lib.rs", "src/util.rs"] {
+            let text = fs::read_to_string(repo.join(path))
+                .unwrap()
+                .replace("\r\n", "\n");
+            remote.insert(path.to_owned(), github::git_blob_id(text.as_bytes()));
+        }
+        remote.insert(".gitignore".into(), github::git_blob_id(b"build/\n"));
+        remote.insert("build/out.rs".into(), github::git_blob_id(b"ignored"));
+        remote.insert(".github/ci.yml".into(), "0".repeat(40));
+        remote_matches_checked(&report, &remote).unwrap();
+
+        let mut drifted = remote.clone();
+        drifted.insert(
+            "src/util.rs".into(),
+            github::git_blob_id(b"pub fn other() {}\n"),
+        );
+        let error = remote_matches_checked(&report, &drifted).unwrap_err();
+        assert!(error.to_string().contains("src/util.rs"), "{error}");
+
+        let mut extra = remote;
+        extra.insert(
+            "src/extra.rs".into(),
+            github::git_blob_id(b"pub fn x() {}\n"),
+        );
+        let error = remote_matches_checked(&report, &extra).unwrap_err();
+        assert!(error.to_string().contains("src/extra.rs"), "{error}");
+    }
 
     #[test]
     fn a_failed_request_after_cancellation_is_reported_as_cancelled() {

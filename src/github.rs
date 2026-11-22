@@ -452,6 +452,57 @@ impl GithubClient {
         proposals: &[crate::workspace::Edit],
         draft: bool,
     ) -> io::Result<String> {
+        self.publish_at(repo, branch, base, None, title, body, proposals, draft)
+    }
+
+    /// The commit `base` points to and the git blob id of every file in its tree.
+    pub fn base_tree(
+        &self,
+        repo: &str,
+        base: &str,
+    ) -> io::Result<(String, std::collections::BTreeMap<String, String>)> {
+        validate_slug(repo)?;
+        validate_branch(base)?;
+        let reference = self.get(&format!("/repos/{repo}/git/ref/heads/{base}"))?;
+        let commit = reference["object"]["sha"]
+            .as_str()
+            .filter(|sha| sha.len() == 40 && sha.bytes().all(|b| b.is_ascii_hexdigit()))
+            .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, "Missing base sha"))?
+            .to_owned();
+        let tree = self.get(&format!("/repos/{repo}/git/trees/{commit}?recursive=1"))?;
+        if tree["truncated"].as_bool().unwrap_or(true) {
+            return Err(io::Error::other(
+                "The remote tree is too large to compare with the checked snapshot",
+            ));
+        }
+        let blobs = tree["tree"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .filter(|entry| entry["type"] == "blob")
+            .map(|entry| {
+                (
+                    field(entry, "path").to_owned(),
+                    field(entry, "sha").to_owned(),
+                )
+            })
+            .collect();
+        Ok((commit, blobs))
+    }
+
+    /// Publish only if `base` still points to `expected_base`, when one is given.
+    #[allow(clippy::too_many_arguments)]
+    pub fn publish_at(
+        &self,
+        repo: &str,
+        branch: &str,
+        base: &str,
+        expected_base: Option<&str>,
+        title: &str,
+        body: &str,
+        proposals: &[crate::workspace::Edit],
+        draft: bool,
+    ) -> io::Result<String> {
         validate_slug(repo)?;
         validate_branch(branch)?;
         validate_branch(base)?;
@@ -491,6 +542,11 @@ impl GithubClient {
         let base_sha = reference["object"]["sha"]
             .as_str()
             .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, "Missing base sha"))?;
+        if expected_base.is_some_and(|expected| expected != base_sha) {
+            return Err(io::Error::other(format!(
+                "{base} moved after it was compared with the checked snapshot"
+            )));
+        }
         self.post(
             &format!("/repos/{repo}/git/refs"),
             &json!({"ref":format!("refs/heads/{branch}"),"sha":base_sha}),
@@ -700,6 +756,59 @@ pub fn run(args: GithubArgs, output: &mut impl Write) -> io::Result<()> {
     }
 }
 
+/// Git's object id for a blob: SHA-1 over `blob <len>\0<content>`. This compares a
+/// remote tree with local files; it is not used as a security boundary.
+pub fn git_blob_id(content: &[u8]) -> String {
+    let mut message = format!("blob {}\0", content.len()).into_bytes();
+    message.extend_from_slice(content);
+    let bit_len = (message.len() as u64).wrapping_mul(8);
+    message.push(0x80);
+    while message.len() % 64 != 56 {
+        message.push(0);
+    }
+    message.extend_from_slice(&bit_len.to_be_bytes());
+    let mut h: [u32; 5] = [
+        0x6745_2301,
+        0xEFCD_AB89,
+        0x98BA_DCFE,
+        0x1032_5476,
+        0xC3D2_E1F0,
+    ];
+    for block in message.as_chunks::<64>().0 {
+        let mut w = [0u32; 80];
+        for (i, word) in block.as_chunks::<4>().0.iter().enumerate() {
+            w[i] = u32::from_be_bytes(*word);
+        }
+        for i in 16..80 {
+            w[i] = (w[i - 3] ^ w[i - 8] ^ w[i - 14] ^ w[i - 16]).rotate_left(1);
+        }
+        let [mut a, mut b, mut c, mut d, mut e] = h;
+        for (i, word) in w.iter().enumerate() {
+            let (f, k) = match i {
+                0..=19 => ((b & c) | (!b & d), 0x5A82_7999),
+                20..=39 => (b ^ c ^ d, 0x6ED9_EBA1),
+                40..=59 => ((b & c) | (b & d) | (c & d), 0x8F1B_BCDC),
+                _ => (b ^ c ^ d, 0xCA62_C1D6),
+            };
+            let next = a
+                .rotate_left(5)
+                .wrapping_add(f)
+                .wrapping_add(e)
+                .wrapping_add(k)
+                .wrapping_add(*word);
+            e = d;
+            d = c;
+            c = b.rotate_left(30);
+            b = a;
+            a = next;
+        }
+        for (state, value) in h.iter_mut().zip([a, b, c, d, e]) {
+            *state = state.wrapping_add(value);
+        }
+    }
+    h.iter().map(|word| format!("{word:08x}")).collect()
+}
+
 const ALPHABET: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
 
 pub fn base64_encode(bytes: &[u8]) -> String {
@@ -746,6 +855,19 @@ pub fn base64_decode(text: &str) -> io::Result<Vec<u8>> {
 mod tests {
     use super::*;
 
+    #[test]
+    fn git_blob_ids_match_git() {
+        assert_eq!(git_blob_id(b""), "e69de29bb2d1d6434b8b29ae775ad8c2e48c5391");
+        assert_eq!(
+            git_blob_id(b"hello\n"),
+            "ce013625030ba8dba906f756967f9e9ca394464a"
+        );
+        let long = "x".repeat(1000);
+        assert_eq!(
+            git_blob_id(long.as_bytes()),
+            "14c7dfdd4258dec5c0e9d2e919bd249bd674be1f"
+        );
+    }
     #[test]
     fn base64_round_trips_and_ignores_github_line_wraps() {
         for sample in [
