@@ -1,0 +1,74 @@
+name: PR guard
+# Metadata-only checks of the owner's PR structure and attribution rules.
+# No project code is executed and nothing is written to the repository.
+on:
+  pull_request:
+    types: [opened, edited, synchronize, reopened, ready_for_review]
+permissions:
+  contents: read
+  pull-requests: read
+env:
+  OWNER_EMAIL: 53317146+DraimCiDo@users.noreply.github.com
+  FORBIDDEN: 'co-authored-by|generated (with|by)[^.]*claude|claude-session|claude\.ai/code'
+jobs:
+  guard:
+    # Skip by the PR author, not the triggering actor: a bot re-running or editing a PR must not change the verdict.
+    if: github.event.pull_request.user.login != 'dependabot[bot]'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          fetch-depth: 0
+      - name: PR title and body
+        env:
+          PR_TITLE: ${{ github.event.pull_request.title }}
+          PR_BODY: ${{ github.event.pull_request.body }}
+          # Set the repository variable GUARD_CONVENTIONAL_TITLE=true when squash titles must be Conventional Commits.
+          CONVENTIONAL: ${{ vars.GUARD_CONVENTIONAL_TITLE }}
+        run: |
+          fail=0
+          for section in Problem Changes Verification Risks; do
+            if ! printf '%s\n' "$PR_BODY" | grep -qE "^## ${section}[[:space:]]*$"; then
+              echo "::error::PR body is missing the '## ${section}' section"
+              fail=1
+            fi
+          done
+          if printf '%s\n%s\n' "$PR_TITLE" "$PR_BODY" | grep -qiE "$FORBIDDEN"; then
+            echo "::error::PR title or body contains a "Generated with/by Claude", session-link, or co-author line"
+            fail=1
+          fi
+          if [ "$CONVENTIONAL" = "true" ] && ! printf '%s' "$PR_TITLE" | grep -qE '^(feat|fix|chore|docs|refactor|test|perf|build|ci|style|revert)(\([^)]+\))?!?: .+'; then
+            echo "::error::PR title must follow Conventional Commits (type(scope): summary)"
+            fail=1
+          fi
+          exit "$fail"
+      - name: Commit attribution
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          fail=0
+          git cat-file -e "${BASE_SHA}^{commit}" 2>/dev/null || git fetch --no-tags origin "$BASE_SHA"
+          if ! commits=$(git rev-list "${BASE_SHA}..${HEAD_SHA}"); then
+            echo "::error::Could not list the commits of this pull request"
+            exit 1
+          fi
+          for sha in $commits; do
+            author=$(git show -s --format=%ae "$sha")
+            committer=$(git show -s --format=%ce "$sha")
+            case "$author" in
+              "$OWNER_EMAIL" | *'[bot]@users.noreply.github.com') ;;
+              *) echo "::error::${sha:0:7} has author $author; commits must come from the owner"; fail=1 ;;
+            esac
+            case "$committer" in
+              "$OWNER_EMAIL" | noreply@github.com | *'[bot]@users.noreply.github.com') ;;
+              *) echo "::error::${sha:0:7} has committer $committer; commits must come from the owner"; fail=1 ;;
+            esac
+            if git show -s --format=%B "$sha" | grep -qiE "$FORBIDDEN"; then
+              echo "::error::${sha:0:7} message contains a "Generated with/by Claude", session-link, or co-author line"
+              fail=1
+            fi
+          done
+          exit "$fail"

@@ -1,0 +1,9 @@
+# Code owners are requested for review on every pull request.
+*                                   @DraimCiDo
+
+# Critical paths always need the owner's review
+/AGENTS.md                          @DraimCiDo
+/CLAUDE.md                          @DraimCiDo
+/.claude/                           @DraimCiDo
+/.ai-playbook/                      @DraimCiDo
+/.github/                           @DraimCiDo

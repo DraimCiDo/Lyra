@@ -1,0 +1,59 @@
+{
+  "files": {
+    ".ai-playbook/reference/coordination.md": {
+      "hash": "d14af892373c020d1953d1d476ae54f989900bed5ed914c21dd1690c007da51d"
+    },
+    ".ai-playbook/reference/git-workflow.md": {
+      "hash": "6258cdd01b3a0dd95cc0976a2c7cf8bfec9a6091c6be68338d569bc5d16b6b39"
+    },
+    ".ai-playbook/reference/pr-template.md": {
+      "hash": "703be946fd9ecb66832ae2fc54aa1731be2ad57e1a26b3d145e7623d4a05d0c1"
+    },
+    ".ai-playbook/reference/project-template.md": {
+      "hash": "06d376124374d23386fe8a3a7b5a0ab3723e2dbacde351e34b24095b128ee40f"
+    },
+    ".ai-playbook/reference/task-template.md": {
+      "hash": "f835d2d3a2d7582ecc606cb7119332dcda0318cda7cfe013c8e9b4a9b4d49968"
+    },
+    ".ai-playbook/reference/verification.md": {
+      "hash": "1c755a8587730f50bd6b87d0958c204cf8531e376f654f05e11a958348203868"
+    },
+    ".coderabbit.yaml": {
+      "hash": "82e7cd0e2f6b2aa9ddcfc724ef8cfc415f8740afd835a41b0fba2cecfd8f817e"
+    },
+    ".github/CODEOWNERS": {
+      "hash": "b9e3c7781663690915af032bdb622b6d10d88b1ed928eb15130f7a2ebe133fb2"
+    },
+    ".github/dependabot.yml": {
+      "hash": "b66c3293dbf7fcdb24501c4093c5893143bc561877a4637ab69328191913a9a9"
+    },
+    ".github/labeler.yml": {
+      "hash": "c57fcb8df54c113d92f750f6c32e69fde1c2a6241909c7fc34fbe36bc897a94a"
+    },
+    ".github/pull_request_template.md": {
+      "hash": "703be946fd9ecb66832ae2fc54aa1731be2ad57e1a26b3d145e7623d4a05d0c1"
+    },
+    ".github/workflows/guard.yml": {
+      "hash": "09b2202bbc1cbcb21ad185669635e1d02e2686591dd817d868440da63528b7ff"
+    },
+    ".github/workflows/labeler.yml": {
+      "hash": "53a92868f8df418d5c7a1c9aec1d6f9d26e2f6fdcc1007087f7c384e80c093a9"
+    },
+    ".github/workflows/secrets.yml": {
+      "hash": "e3ee9ea951e802fe7bb4bf28972bcf41a997ae0a3eb98596b93caebcf6f92ce5"
+    },
+    "AGENTS.md": {
+      "existed": true,
+      "hash": "3b6aea78122fde61e788613cb51dca5fb9c5408528ef19149585f0592b849c1f",
+      "separator": "\n\n"
+    },
+    "CLAUDE.md": {
+      "existed": true,
+      "hash": "3b6aea78122fde61e788613cb51dca5fb9c5408528ef19149585f0592b849c1f",
+      "separator": "\n\n"
+    }
+  },
+  "playbook_version": "0.1.1",
+  "profile": "default",
+  "version": 2
+}

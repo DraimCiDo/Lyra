@@ -1,0 +1,17 @@
+# yaml-language-server: $schema=https://coderabbit.ai/integrations/schema.v2.json
+# Review settings for CodeRabbit. Draft PRs are reviewed because every PR starts as a draft.
+language: en-US
+reviews:
+  profile: chill
+  poem: false
+  path_filters:
+    - "!.ai-playbook/**"
+  auto_review:
+    enabled: true
+    drafts: true
+  path_instructions:
+    - path: "**"
+      instructions: |
+        Review for correctness, security, and compatibility with existing behavior.
+        Do not suggest speculative refactors, new dependencies, or comments that only
+        restate the code. Mention missing tests only when behavior changes.

@@ -1,0 +1,10 @@
+# Automatic PR labels by changed files (see .github/workflows/labeler.yml)
+documentation:
+  - changed-files:
+      - any-glob-to-any-file: ["docs/**", "*.md"]
+chore:
+  - changed-files:
+      - any-glob-to-any-file: [".github/**", ".ai-playbook/**", "AGENTS.md", "CLAUDE.md"]
+tests:
+  - changed-files:
+      - any-glob-to-any-file: ["tests/**", "**/test_*.py"]

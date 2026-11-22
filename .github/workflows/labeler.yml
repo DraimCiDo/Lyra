@@ -1,0 +1,19 @@
+name: Labeler
+
+on:
+  pull_request_target:
+    types: [opened, synchronize, reopened]
+
+permissions:
+  contents: read
+  pull-requests: write
+  issues: write  # lets the labeler create labels that do not exist yet
+
+jobs:
+  label:
+    runs-on: ubuntu-latest
+    steps:
+      # No checkout of PR code: pull_request_target runs with write permissions.
+      - uses: actions/labeler@v7
+        with:
+          sync-labels: true
