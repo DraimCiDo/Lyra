@@ -360,7 +360,18 @@ impl Workspace {
     pub(crate) fn read_snapshot(&self, path: &str) -> io::Result<String> {
         self.read_bounded(path, SNAPSHOT_FILE_LIMIT)
     }
+    /// Raw bytes for an isolated check snapshot; binary files are allowed.
+    pub(crate) fn read_snapshot_bytes(&self, path: &str) -> io::Result<Vec<u8>> {
+        self.read_bounded_bytes(path, SNAPSHOT_FILE_LIMIT)
+    }
     fn read_bounded(&self, path: &str, limit: usize) -> io::Result<String> {
+        let bytes = self.read_bounded_bytes(path, limit)?;
+        if bytes.contains(&0) {
+            return Err(error("Файл превышает лимит чтения или содержит NUL."));
+        }
+        String::from_utf8(bytes).map_err(|_| error("Файл не является UTF-8."))
+    }
+    fn read_bounded_bytes(&self, path: &str, limit: usize) -> io::Result<Vec<u8>> {
         if !self.files.contains(path) {
             return Err(error("Файл не входит в выбранный контекст."));
         }
@@ -374,10 +385,10 @@ impl Workspace {
         }
         let mut bytes = Vec::new();
         file.take((limit + 1) as u64).read_to_end(&mut bytes)?;
-        if bytes.len() > limit || bytes.contains(&0) {
+        if bytes.len() > limit {
             return Err(error("Файл превышает лимит чтения или содержит NUL."));
         }
-        String::from_utf8(bytes).map_err(|_| error("Файл не является UTF-8."))
+        Ok(bytes)
     }
 
     pub fn scoped_instructions(&self, path: &str) -> io::Result<Vec<serde_json::Value>> {

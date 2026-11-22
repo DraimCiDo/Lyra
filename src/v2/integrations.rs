@@ -185,12 +185,17 @@ fn remote_matches_checked(
         if created.contains(path.as_str()) {
             continue;
         }
-        let local = workspace.read_snapshot(&path)?;
-        // A checkout with CRLF conversion still matches a blob stored with LF.
+        let local = workspace.read_snapshot_bytes(&path)?;
+        // A text checkout with CRLF conversion still matches a blob stored with LF.
+        let lf = std::str::from_utf8(&local)
+            .ok()
+            .filter(|text| text.contains("\r\n"))
+            .map(|text| text.replace("\r\n", "\n"));
         let matches = remote.get(&path).is_some_and(|blob| {
-            *blob == github::git_blob_id(local.as_bytes())
-                || local.contains("\r\n")
-                    && *blob == github::git_blob_id(local.replace("\r\n", "\n").as_bytes())
+            *blob == github::git_blob_id(&local)
+                || lf
+                    .as_ref()
+                    .is_some_and(|text| *blob == github::git_blob_id(text.as_bytes()))
         });
         if !matches {
             differences.push(path);
@@ -225,6 +230,7 @@ mod tests {
         fs::write(repo.join("src/lib.rs"), "pub fn add() {}\r\n").unwrap();
         fs::write(repo.join("src/util.rs"), "pub fn helper() {}\n").unwrap();
         fs::write(repo.join(".gitignore"), "build/\n").unwrap();
+        fs::write(repo.join("logo.png"), [0x89, b'P', 0, 0xff]).unwrap();
         let mut report = TaskReport::new(TaskRequest {
             repo: repo.clone(),
             task: "task".into(),
@@ -248,6 +254,10 @@ mod tests {
             remote.insert(path.to_owned(), github::git_blob_id(text.as_bytes()));
         }
         remote.insert(".gitignore".into(), github::git_blob_id(b"build/\n"));
+        remote.insert(
+            "logo.png".into(),
+            github::git_blob_id(&[0x89, b'P', 0, 0xff]),
+        );
         remote.insert("build/out.rs".into(), github::git_blob_id(b"ignored"));
         remote.insert(".github/ci.yml".into(), "0".repeat(40));
         remote_matches_checked(&report, &remote).unwrap();
