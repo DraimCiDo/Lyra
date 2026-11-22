@@ -280,14 +280,30 @@ impl TaskReport {
             self.calls += 1;
             let action = serde_json::from_str::<Action>(&response);
             let (name, result) = match action {
-                Ok(Action::Finish { .. })
-                    if self.request.reviewer
-                        && !self.proposals.is_empty()
-                        && self.review != Some(true) =>
-                {
-                    ("review", self.review_proposal(respond, cancel))
+                Ok(Action::Finish { summary }) => {
+                    self.finish_or_review(&summary, respond, check, cancel)
                 }
-                Ok(Action::Finish { summary }) => ("finish", self.finish(&summary, check, cancel)),
+                Ok(Action::Replace { path, old, new })
+                    if self.replace_already_pending(&path, &old, &new) =>
+                {
+                    if self.observations.back().is_some_and(|last| {
+                        last["tool"] == "repeat_replace" && last["result"]["path"] == path
+                    }) {
+                        self.finish_or_review(
+                            "The model repeated an existing edit. Review the pending proposal and its check status.",
+                            respond, check, cancel,
+                        )
+                    } else {
+                        (
+                            "repeat_replace",
+                            Ok(json!({
+                                "status": "The change is already pending",
+                                "path": path,
+                                "next_action": {"tool":"finish","summary":"Prepared the pending change"},
+                            })),
+                        )
+                    }
+                }
                 Ok(action) => self.action(action, &mut workspace),
                 Err(error) => ("parse", Err(io::Error::other(error))),
             };
@@ -468,6 +484,32 @@ impl TaskReport {
         self.verification = Verification::Skipped;
         self.review = None;
         Ok(json!({"status": "proposed", "path": path}))
+    }
+
+    fn replace_already_pending(&self, path: &str, old: &str, new: &str) -> bool {
+        !old.is_empty()
+            && old != new
+            && self.proposals.iter().any(|edit| {
+                edit.path == path
+                    && !edit.create
+                    && !edit.replacement.contains(old)
+                    && edit.original.matches(old).count() == 1
+                    && edit.original.replacen(old, new, 1) == edit.replacement
+            })
+    }
+
+    fn finish_or_review(
+        &mut self,
+        summary: &str,
+        respond: &mut dyn FnMut(&str) -> io::Result<String>,
+        check: &mut Checker<'_>,
+        cancel: &AtomicBool,
+    ) -> (&'static str, io::Result<Value>) {
+        if self.request.reviewer && !self.proposals.is_empty() && self.review != Some(true) {
+            ("review", self.review_proposal(respond, cancel))
+        } else {
+            ("finish", self.finish(summary, check, cancel))
+        }
     }
 
     fn review_proposal(

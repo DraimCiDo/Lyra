@@ -256,3 +256,26 @@ fn structured_generation_stops_at_the_first_complete_action() {
         br#"{"tool":"finish","summary":"example }"}  "#
     ));
 }
+
+#[test]
+fn replayed_edit_produces_a_reviewable_candidate_without_claiming_verification() {
+    let (_root, mut report) = fixture(false);
+    let replacement = edit("a - b", "a + b");
+    report
+        .run(
+            &AtomicBool::new(false),
+            &mut reply([replacement.clone(), replacement.clone(), replacement]),
+            &mut |_| Ok(()),
+        )
+        .unwrap();
+    assert_eq!(report.state, TaskState::ReadyToApply);
+    assert_eq!(report.calls, 3);
+    assert_eq!(report.events[1].action, "repeat_replace");
+    assert!(report.summary.contains("repeated"));
+    assert!(matches!(report.verification, Verification::Skipped));
+    assert_eq!(report.proposals[0].replacement, REPLACEMENT);
+    assert_eq!(
+        fs::read_to_string(report.request.repo.join("maths.py")).unwrap(),
+        ORIGINAL
+    );
+}
