@@ -439,6 +439,12 @@ fn a_local_worker_commits_its_proposal_on_the_task_branch_for_review() {
             .unwrap()
             .contains("a + b")
     );
+    let committed = git::ok(
+        &fixture.repo,
+        &["show", "--name-only", "--format=", "HEAD^2"],
+    )
+    .unwrap();
+    assert_eq!(committed, "maths.py");
 }
 
 #[test]

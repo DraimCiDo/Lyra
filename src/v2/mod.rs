@@ -330,13 +330,20 @@ impl TaskReport {
             if !ok
                 && name == "replace"
                 && let Some(path) = replace_path
-                && let Ok(source) = self.read(&mut workspace, &path, 1, 0)
             {
-                data = json!({
-                    "error": "Replacement rejected. Copy a short, exact old fragment from the current file.",
-                    "reason": data["error"],
-                    "current_file": source,
-                });
+                data = match self.read(&mut workspace, &path, 1, 0) {
+                    Ok(source) => json!({
+                        "error": "Replacement rejected. Copy a short, exact old fragment from the current file.",
+                        "reason": data["error"],
+                        "current_file": source,
+                    }),
+                    // Small models copy example paths; name the real candidates instead.
+                    Err(_) => json!({
+                        "error": format!("Replacement rejected: '{}' is not a project file. Use one of the listed paths.", limited(&path, 200)),
+                        "reason": data["error"],
+                        "project_files": ranked.iter().take(12).collect::<Vec<_>>(),
+                    }),
+                };
             }
             let detail = data["error"]
                 .as_str()
@@ -376,7 +383,11 @@ impl TaskReport {
         let files: Vec<_> = ranked.iter().take(24).collect();
         let proposed: Vec<_> = self.proposals.iter().map(|edit| &edit.path).collect();
         serde_json::to_string(&json!({
-            "instructions": PROTOCOL,
+            // Small models copy example paths verbatim; show the most relevant real file.
+            "instructions": match files.first() {
+                Some(path) => PROTOCOL.replace("src/lib.rs", &limited(path, 200).replace(['"', '\\'], "")),
+                None => PROTOCOL.to_owned(),
+            },
             "task": self.request.task,
             "initial_files": files,
             "indexed_files": workspace.files.len(),
@@ -427,7 +438,11 @@ impl TaskReport {
                     Some(edit) => workspace.revise(edit, &old, &new),
                     None => workspace.propose(&path, &old, &new),
                 };
-                ("replace", edit.and_then(|edit| self.save_proposal(edit)))
+                let result = edit.and_then(|edit| self.save_proposal(edit));
+                (
+                    "replace",
+                    result.map(|status| self.show_proposal(workspace, status, &path)),
+                )
             }
             Action::Create { path, content } => {
                 let edit = if self.request.files.is_empty()
@@ -439,7 +454,11 @@ impl TaskReport {
                         "Creation is outside the selected file scope or already proposed",
                     ))
                 };
-                ("create", edit.and_then(|edit| self.save_proposal(edit)))
+                let result = edit.and_then(|edit| self.save_proposal(edit));
+                (
+                    "create",
+                    result.map(|status| self.show_proposal(workspace, status, &path)),
+                )
             }
             Action::Discard { path } => {
                 let before = self.proposals.len();
@@ -513,6 +532,18 @@ impl TaskReport {
             json!({"path": path, "start": start + 1, "byte": byte, "text": output,
             "next": more.then_some(start + consumed + 1)}),
         )
+    }
+
+    /// After an accepted edit, show the proposed file so the model sees the effect of
+    /// its own change instead of editing blind, and point to finish.
+    fn show_proposal(&self, workspace: &mut Workspace, mut status: Value, path: &str) -> Value {
+        if let Ok(page) = self.read(workspace, path, 1, 0) {
+            status["proposed_file"] = page;
+        }
+        status["next_step"] = json!(
+            "Check proposed_file. If the task is done, call finish; otherwise make one more exact replacement."
+        );
+        status
     }
 
     fn save_proposal(&mut self, edit: Edit) -> io::Result<Value> {

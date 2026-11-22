@@ -421,3 +421,54 @@ fn a_failed_first_checkpoint_leaves_the_state_path_retryable() {
     let store = TaskStore::create(&state, &report).unwrap();
     assert_eq!(store.load().unwrap().state, TaskState::Running);
 }
+
+#[test]
+fn an_accepted_edit_shows_the_proposed_file_to_the_model() {
+    let (_root, mut report) = fixture(false);
+    let mut step = 0;
+    report
+        .run(
+            &AtomicBool::new(false),
+            &mut |prompt| {
+                step += 1;
+                if step == 1 {
+                    return Ok(edit("a - b", "a + b").to_string());
+                }
+                let prompt: Value = serde_json::from_str(prompt).unwrap();
+                let latest = prompt["observations"].as_array().unwrap().last().unwrap();
+                assert_eq!(latest["result"]["proposed_file"]["text"], REPLACEMENT);
+                assert!(
+                    latest["result"]["next_step"]
+                        .as_str()
+                        .unwrap()
+                        .contains("finish")
+                );
+                Ok(finish().to_string())
+            },
+            &mut |_| Ok(()),
+        )
+        .unwrap();
+    assert_eq!(report.state, TaskState::ReadyToApply);
+}
+
+#[test]
+fn protocol_examples_use_a_real_project_file() {
+    let (_root, mut report) = fixture(false);
+    report.request.files.clear();
+    report
+        .run(
+            &AtomicBool::new(false),
+            &mut |prompt| {
+                let prompt: Value = serde_json::from_str(prompt).unwrap();
+                let instructions = prompt["instructions"].as_str().unwrap();
+                assert!(
+                    instructions.contains(r#""path":"maths.py""#),
+                    "{instructions}"
+                );
+                assert!(!instructions.contains("src/lib.rs"));
+                Ok(finish().to_string())
+            },
+            &mut |_| Ok(()),
+        )
+        .unwrap();
+}

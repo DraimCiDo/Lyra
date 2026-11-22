@@ -56,8 +56,12 @@ pub fn run_one(
         }
         let mut state = report.state;
         if state == TaskState::ReadyToApply {
-            state = store.apply()?.state;
-            git::ok(&worktree, &["add", "-A"])?;
+            let applied = store.apply()?;
+            state = applied.state;
+            // Stage exactly the applied proposal, not Lyra's own lock or journal files.
+            let mut add = vec!["add", "--"];
+            add.extend(applied.proposals.iter().map(|edit| edit.path.as_str()));
+            git::ok(&worktree, &add)?;
             git::ok(
                 &worktree,
                 &["commit", "-m", &format!("Task {}: {}", task.id, task.title)],

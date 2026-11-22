@@ -87,7 +87,12 @@ pub(super) fn head(dir: &Path) -> io::Result<String> {
     ok(dir, &["rev-parse", "HEAD"])
 }
 
-/// Tracked changes and untracked files that are not ignored.
+/// Tracked changes and untracked files that are not ignored, except Lyra's own
+/// publication lock and journal folder.
 pub(super) fn dirty(dir: &Path) -> io::Result<bool> {
-    Ok(!ok(dir, &["status", "--porcelain"])?.is_empty())
+    Ok(!ok(
+        dir,
+        &["status", "--porcelain", "--", ".", ":(exclude).lyra"],
+    )?
+    .is_empty())
 }

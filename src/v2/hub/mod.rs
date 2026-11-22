@@ -979,7 +979,8 @@ impl Hub {
         if let Some(worktree) = &task.worktree {
             let _ = git::ok(
                 &self.repo,
-                &["worktree", "remove", &worktree.to_string_lossy()],
+                // Only Lyra's lock files can remain; everything else was committed and merged.
+                &["worktree", "remove", "--force", &worktree.to_string_lossy()],
             );
         }
         let _ = git::ok(&self.repo, &["branch", "-d", &branch]);
