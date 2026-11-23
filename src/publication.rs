@@ -63,7 +63,15 @@ enum FileState {
 }
 pub(crate) struct State {
     pub(crate) dir: Dir,
-    _lock: std::fs::File,
+    lock: std::fs::File,
+}
+
+impl Drop for State {
+    fn drop(&mut self) {
+        // On Unix, a concurrent fork can keep this open file description alive
+        // until the child calls exec. Release the lock before closing our handle.
+        let _ = self.lock.unlock();
+    }
 }
 fn error(message: impl std::fmt::Display) -> io::Error {
     io::Error::other(message.to_string())
@@ -131,7 +139,7 @@ impl State {
         .into_std();
         lock.try_lock()
             .map_err(|e| error(format!("Another publication/recovery is active: {e}")))?;
-        Ok(Self { dir, _lock: lock })
+        Ok(Self { dir, lock })
     }
     pub(crate) fn pending(&self) -> io::Result<bool> {
         Ok(checked_exists(&self.dir, JOURNAL)?
@@ -658,6 +666,19 @@ mod tests {
         assert_original(repo.path());
         drop(lock);
         apply(repo.path(), &edits()).unwrap();
+    }
+    #[cfg(unix)]
+    #[test]
+    fn release_does_not_wait_for_an_inherited_descriptor_to_close() {
+        let repo = fixture();
+        let workspace = open_workspace(repo.path(), &edits()).unwrap();
+        let state = State::open(&workspace).unwrap();
+        let inherited = state.lock.try_clone().unwrap();
+        drop(state);
+        let next = State::open(&workspace).unwrap();
+        drop(inherited);
+        assert!(State::open(&workspace).is_err());
+        drop(next);
     }
     #[test]
     fn readonly_late_file_is_rejected_before_first_write() {
