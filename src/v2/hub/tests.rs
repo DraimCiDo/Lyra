@@ -1019,3 +1019,28 @@ fn text_limits_count_characters_like_the_mcp_schema() {
     codex.update(id, Status::Review, &summary).unwrap();
     owner.reopen(id, &summary).unwrap();
 }
+
+#[test]
+fn leases_may_cover_ordinary_dot_folders_but_not_git_or_escapes() {
+    let fixture = fixture(None);
+    let mut codex = agent(&fixture, "codex-1");
+    let paths = |items: &[&str]| {
+        items
+            .iter()
+            .map(|item| item.to_string())
+            .collect::<Vec<_>>()
+    };
+    assert_eq!(
+        codex
+            .lease(
+                None,
+                &paths(&["src/lib.rs", ".github/workflows/ci.yml"]),
+                600
+            )
+            .unwrap()["leased"],
+        true
+    );
+    for bad in [".git/config", "src/.LYRA/x", "../x", "/abs", "a//b", "a\\b"] {
+        assert!(codex.lease(None, &paths(&[bad]), 600).is_err(), "{bad}");
+    }
+}

@@ -155,6 +155,14 @@ fn limited(text: &str, bytes: usize) -> &str {
     &text[..text.floor_char_boundary(bytes.min(text.len()))]
 }
 
+/// A project file name is untrusted text; only a plain path may enter the instructions.
+fn safe_example_path(path: &str) -> bool {
+    path.len() <= 120
+        && path
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'_' | b'-' | b'.' | b'/'))
+}
+
 fn action_complete(bytes: &[u8]) -> bool {
     bytes.iter().rfind(|byte| !byte.is_ascii_whitespace()) == Some(&b'}')
         && serde_json::from_slice::<Action>(bytes).is_ok()
@@ -396,8 +404,8 @@ impl TaskReport {
         let proposed: Vec<_> = self.proposals.iter().map(|edit| &edit.path).collect();
         serde_json::to_string(&json!({
             // Small models copy example paths verbatim; show the most relevant real file.
-            "instructions": match files.first() {
-                Some(path) => PROTOCOL.replace("src/lib.rs", &limited(path, 200).replace(['"', '\\'], "")),
+            "instructions": match files.first().filter(|path| safe_example_path(path)) {
+                Some(path) => PROTOCOL.replace("src/lib.rs", path),
                 None => PROTOCOL.to_owned(),
             },
             "task": self.request.task,

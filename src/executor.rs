@@ -98,6 +98,7 @@ impl ExecutionRequest {
                 )
             })?;
         let mut command = Command::new("docker");
+        quiet(&mut command);
         command.args([
             "run",
             "--pull=never",
@@ -164,6 +165,16 @@ fn bounded_read(mut pipe: impl Read, limit: usize) -> io::Result<(String, bool)>
         truncated |= take < count;
     }
     Ok((String::from_utf8_lossy(&kept).into_owned(), truncated))
+}
+
+/// A GUI process must not flash a console window for every helper it starts on Windows.
+pub(crate) fn quiet(command: &mut Command) -> &mut Command {
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        command.creation_flags(0x0800_0000); // CREATE_NO_WINDOW
+    }
+    command
 }
 
 pub(crate) fn capture(
@@ -353,6 +364,7 @@ impl DockerCapabilities {
 
 pub fn preflight(cancel: &AtomicBool) -> io::Result<()> {
     let mut command = Command::new("docker");
+    quiet(&mut command);
     command.args(["info", "--format", "{{json .}}"]);
     let result = capture(command, Duration::from_secs(5), cancel)?;
     if result.cancelled {
@@ -390,6 +402,7 @@ fn image_metadata_bounded(image: &serde_json::Value) -> bool {
 
 pub(crate) fn preflight_image(image: &str, cancel: &AtomicBool) -> io::Result<()> {
     let mut command = Command::new("docker");
+    quiet(&mut command);
     command.args([
         "image",
         "inspect",
@@ -598,6 +611,7 @@ pub fn verify_changes(
     let command = request.command(&source_root, &name)?;
     let result = capture(command, Duration::from_secs(request.timeout_secs), cancel);
     let mut cleanup = Command::new("docker");
+    quiet(&mut cleanup);
     cleanup.args(["rm", "--force", "--volumes", &name]);
     let cleaned = capture(cleanup, Duration::from_secs(5), &AtomicBool::new(false));
     let mut result = result?;

@@ -203,16 +203,20 @@ fn remote_matches_checked(
             Some(edit) => edit.original.as_bytes(),
             None => checked,
         };
-        // A text checkout with CRLF conversion still matches a blob stored with LF.
-        let lf = std::str::from_utf8(expected)
+        // A text checkout whose line endings were converted still matches the remote blob
+        // in either direction (CRLF checkout of an LF blob, or LF checkout of a CRLF blob).
+        let converted: Vec<String> = std::str::from_utf8(expected)
             .ok()
-            .filter(|text| text.contains("\r\n"))
-            .map(|text| text.replace("\r\n", "\n"));
+            .map(|text| {
+                let lf = text.replace("\r\n", "\n");
+                vec![lf.clone(), lf.replace('\n', "\r\n")]
+            })
+            .unwrap_or_default();
         let matches = remote.get(path).is_some_and(|blob| {
             *blob == github::git_blob_id(expected)
-                || lf
-                    .as_ref()
-                    .is_some_and(|text| *blob == github::git_blob_id(text.as_bytes()))
+                || converted
+                    .iter()
+                    .any(|text| *blob == github::git_blob_id(text.as_bytes()))
         });
         if !matches {
             differences.push(path.clone());
@@ -314,6 +318,13 @@ mod tests {
         fs::write(repo.join("src/new.rs"), "new").unwrap();
         let mut remote = extra;
         remote.remove("src/extra.rs");
+        compare(&applied, &remote).unwrap();
+        // An LF checkout of a CRLF blob is the same file.
+        remote.insert(
+            "src/lib.rs".into(),
+            github::git_blob_id(b"pub fn add() {}\r\n"),
+        );
+        fs::write(repo.join("src/lib.rs"), "pub fn add() {}\n").unwrap();
         compare(&applied, &remote).unwrap();
         // The proposed file must still equal its original on the remote base.
         remote.insert(

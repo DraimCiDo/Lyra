@@ -819,9 +819,27 @@ impl Hub {
         self.task(id)
     }
 
+    /// Lease paths are coordination keys, not file access, so ordinary dot-folders such as
+    /// `.github` are allowed; only Git's and Lyra's own folders and escapes are refused.
     fn lease_key(path: &str) -> io::Result<String> {
         let trimmed = path.trim_end_matches('/');
-        crate::project::validate_path(trimmed, true)?;
+        let components: Vec<&str> = trimmed.split('/').collect();
+        if trimmed.is_empty()
+            || trimmed.len() > 240
+            || components.len() > 24
+            || trimmed.starts_with('/')
+            || trimmed.contains(['\\', ':'])
+            || trimmed.chars().any(char::is_control)
+            || components.iter().any(|part| {
+                part.is_empty()
+                    || *part == "."
+                    || *part == ".."
+                    || part.eq_ignore_ascii_case(".git")
+                    || part.eq_ignore_ascii_case(".lyra")
+            })
+        {
+            return Err(error(format!("Invalid lease path: {path}")));
+        }
         Ok(trimmed.to_lowercase())
     }
 

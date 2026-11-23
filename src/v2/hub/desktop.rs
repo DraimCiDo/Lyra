@@ -45,6 +45,8 @@ pub struct HubView {
     diff: Option<(i64, String, String, bool)>,
     notice: String,
     pending: Option<mpsc::Receiver<Finished>>,
+    /// Whether the running (or last) operation was a plain refresh.
+    last_was_refresh: bool,
 }
 
 impl HubView {
@@ -93,7 +95,8 @@ impl HubView {
             Err(error) => {
                 self.notice = error;
                 // The hub may have changed under a failed action; show what is true now.
-                if self.status.is_some() {
+                // A failed refresh is not retried here: that would loop on every frame.
+                if self.status.is_some() && !self.last_was_refresh {
                     self.refresh();
                 }
             }
@@ -111,6 +114,7 @@ impl HubView {
         let generation = self.generation;
         let (send, receive) = mpsc::channel();
         self.pending = Some(receive);
+        self.last_was_refresh = false;
         std::thread::spawn(move || {
             let outcome = Hub::open(&folder, OWNER, None)
                 .and_then(|hub| work(&hub))
@@ -141,6 +145,7 @@ impl HubView {
 
     pub fn refresh(&mut self) {
         self.spawn(|hub| Ok(Outcome::Loaded(hub.status()?, hub.tasks(None)?)));
+        self.last_was_refresh = self.pending.is_some();
     }
 
     fn create(&mut self, repo: PathBuf, check: Option<PathBuf>, folder: PathBuf) {
@@ -177,7 +182,9 @@ impl HubView {
                         folder.file_name().unwrap_or_default().to_string_lossy()
                     )
                 });
-            if ui.button(label).clicked()
+            if ui
+                .add_enabled(!self.busy(), egui::Button::new(label))
+                .clicked()
                 && let Some(folder) = rfd::FileDialog::new().pick_folder()
             {
                 self.switch(folder);
@@ -514,6 +521,14 @@ mod tests {
         settle(&mut view);
         assert!(view.tasks.is_empty());
         assert!(view.status.is_some());
+
+        // A refresh that keeps failing is reported once and not retried on every frame.
+        let moved = root.path().join("first-hub-moved");
+        std::fs::rename(root.path().join("second-hub"), &moved).unwrap();
+        view.refresh();
+        settle(&mut view);
+        assert!(!view.notice.is_empty() && !view.busy());
+        std::fs::rename(&moved, root.path().join("second-hub")).unwrap();
 
         // A folder that cannot be loaded leaves no task actions behind.
         view.switch(root.path().join("missing-hub"));

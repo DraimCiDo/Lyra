@@ -55,7 +55,7 @@ fn kill_tree(child: &mut Child) {
     }
     #[cfg(windows)]
     {
-        let _ = Command::new("taskkill")
+        let _ = crate::executor::quiet(&mut Command::new("taskkill"))
             .args(["/PID", &child.id().to_string(), "/T", "/F"])
             .stdin(Stdio::null())
             .stdout(Stdio::null())
@@ -73,7 +73,7 @@ pub(super) fn run(dir: &Path, args: &[&str]) -> io::Result<Output> {
 /// One deadline covers the process and the draining of its output pipes.
 fn run_with_timeout(dir: &Path, args: &[&str], timeout: Duration) -> io::Result<Output> {
     let mut command = Command::new("git");
-    command
+    crate::executor::quiet(&mut command)
         .arg("-c")
         .arg("core.quotepath=false")
         .args(args)
@@ -169,7 +169,7 @@ pub(super) fn head(dir: &Path) -> io::Result<String> {
 /// so it is filtered while it streams instead of being collected.
 fn hidden_index_entries(dir: &Path) -> io::Result<bool> {
     let mut command = Command::new("git");
-    command
+    crate::executor::quiet(&mut command)
         .args(["-c", "core.quotepath=false", "ls-files", "-v"])
         .current_dir(dir)
         .env("GIT_TERMINAL_PROMPT", "0")
