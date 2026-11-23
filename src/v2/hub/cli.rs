@@ -163,9 +163,13 @@ pub fn run(args: HubArgs, output: &mut impl Write) -> io::Result<()> {
             let args = model.inference_args();
             inference::with_session(&args, |session| {
                 loop {
-                    let result = worker::run_one(&mut hub, task, max_calls, &mut |report, save| {
-                        report.run_local(session, save)
-                    });
+                    let result = worker::run_one(
+                        &mut hub,
+                        task,
+                        max_calls,
+                        session.cancellation(),
+                        &mut |report, save| report.run_local(session, save),
+                    );
                     match result {
                         Ok(value) => print(output, &value)?,
                         Err(error) if repeat && error.kind() == io::ErrorKind::NotFound => {

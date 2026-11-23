@@ -5,6 +5,7 @@ use crate::v2::{TaskReport, TaskRequest, TaskState, TaskStore};
 use serde_json::{Value, json};
 use std::{
     io,
+    sync::atomic::{AtomicBool, Ordering},
     time::{SystemTime, UNIX_EPOCH},
 };
 
@@ -24,8 +25,15 @@ pub fn run_one(
     hub: &mut Hub,
     task: Option<i64>,
     max_calls: u32,
+    cancel: &AtomicBool,
     drive: &mut dyn FnMut(&mut TaskReport, &mut Checkpoint<'_>) -> io::Result<()>,
 ) -> io::Result<Value> {
+    if cancel.load(Ordering::Relaxed) {
+        return Err(io::Error::new(
+            io::ErrorKind::Interrupted,
+            "Worker cancelled",
+        ));
+    }
     let task = hub.claim(task)?;
     let worktree = task
         .worktree
@@ -71,11 +79,11 @@ pub fn run_one(
     })();
     match outcome {
         Ok((TaskState::Applied, summary, state)) => {
-            if hub.check_request().is_some() {
-                hub.check(task.id, &std::sync::atomic::AtomicBool::new(false))?;
-            }
             let summary = format!("Lyra worker: {summary}");
             hub.update(task.id, Status::Review, &summary)?;
+            if hub.check_request().is_some() {
+                hub.check(task.id, cancel)?;
+            }
             Ok(json!({"task": task.id, "status": "review", "summary": summary, "state": state}))
         }
         Ok((state, summary, folder)) => {

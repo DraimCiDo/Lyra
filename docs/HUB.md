@@ -26,9 +26,11 @@ native Windows.
   `init`. Agents can run it on their worktree (`task_check`); the result is recorded for the
   exact commit. Agents cannot choose the command or image. The check needs Docker, as in v2.
 - **Landing.** `lyra-v2 hub land --task N` merges the branch into the base branch of your
-  project with `git merge --no-ff`, only if the task is in `review`, its worktree is committed,
-  your checkout is on the base branch without uncommitted changes and, when a check is
-  configured, the check passed on the current branch commit. A conflicting merge is aborted.
+  project only if the task is in `review`, its worktree is committed and your checkout is on the base branch
+  without uncommitted changes. With a configured check, Lyra fast-forwards to the exact commit
+  whose current snapshot passed. Integrate any newer base into the task branch and rerun the check
+  first. Without a configured check, Lyra creates a merge commit and aborts conflicting merges.
+  A worktree that Git cannot remove safely is retained.
 
 Git must be on `PATH`. The hub does not use the network.
 
@@ -58,8 +60,9 @@ hub directly with `lyra-v2-desktop --hub <folder>`.
 
 ## Connecting Codex and Claude Code (MCP)
 
-Each agent connects with its own name. The name comes from the client configuration, so one
-agent cannot act as another. Use one configuration per running agent instance.
+Use a distinct name and configuration for each agent instance. The MCP connection exposes
+agent operations under that name. The hub trusts processes with access to its local database
+and project checkout, including other processes running under the owner's OS account.
 
 **Claude Code** (one instance):
 

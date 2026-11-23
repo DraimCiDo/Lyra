@@ -14,7 +14,7 @@ pub mod mcp;
 pub mod worker;
 
 use crate::executor::{self, ExecutionRequest};
-use rusqlite::{Connection, OptionalExtension, TransactionBehavior, params};
+use rusqlite::{Connection, OptionalExtension, Transaction, TransactionBehavior, params};
 use serde::Serialize;
 use serde_json::{Value, json};
 use std::{
@@ -168,6 +168,7 @@ struct CheckRecord {
     passed: bool,
     head: String,
     clean: bool,
+    source_sha256: Option<String>,
     exit_code: Option<i32>,
     timed_out: bool,
     elapsed_ms: u64,
@@ -465,10 +466,9 @@ impl Hub {
         self.touch()?;
         let agent = self.agent.clone();
         let worktrees = self.root.join("worktrees");
-        let transaction = self
-            .connection
-            .transaction_with_behavior(TransactionBehavior::Immediate)
-            .map_err(db)?;
+        let transaction =
+            Transaction::new_unchecked(&self.connection, TransactionBehavior::Immediate)
+                .map_err(db)?;
         let candidates: Vec<(i64, String)> = {
             let mut statement = transaction
                 .prepare("SELECT id, depends_on FROM tasks WHERE status='open' AND (?1 IS NULL OR id=?1) ORDER BY id")
@@ -515,23 +515,31 @@ impl Hub {
                 params![task, agent, branch, worktree.to_string_lossy(), now()],
             )
             .map_err(db)?;
+        self.ensure_worktree(&branch, &worktree)?;
         transaction.commit().map_err(db)?;
-        if let Err(cause) = self.ensure_worktree(&branch, &worktree) {
-            self.connection
-                .execute(
-                    "UPDATE tasks SET status='open', owner=NULL, updated_at=?2 WHERE id=?1",
-                    params![task, now()],
-                )
-                .map_err(db)?;
-            return Err(cause);
-        }
         self.log(Some(task), "claim", &branch)?;
         self.task(task)
     }
 
     fn ensure_worktree(&self, branch: &str, worktree: &Path) -> io::Result<()> {
         if worktree.join(".git").exists() {
-            return Ok(());
+            let current = git::ok(worktree, &["symbolic-ref", "--quiet", "HEAD"])?;
+            let common = git::ok(
+                worktree,
+                &["rev-parse", "--path-format=absolute", "--git-common-dir"],
+            )?;
+            let expected = git::ok(
+                &self.repo,
+                &["rev-parse", "--path-format=absolute", "--git-common-dir"],
+            )?;
+            if current == format!("refs/heads/{branch}")
+                && canonical(Path::new(&common))? == canonical(Path::new(&expected))?
+            {
+                return Ok(());
+            }
+            return Err(error(
+                "Existing task worktree does not match the hub repository and branch",
+            ));
         }
         fs::create_dir_all(self.root.join("worktrees"))?;
         let path = worktree.to_string_lossy();
@@ -575,6 +583,9 @@ impl Hub {
     /// review -> claimed (continue). The owner may also reopen a task under review.
     pub fn update(&self, id: i64, status: Status, summary: &str) -> io::Result<Task> {
         self.touch()?;
+        let transaction =
+            Transaction::new_unchecked(&self.connection, TransactionBehavior::Immediate)
+                .map_err(db)?;
         let task = self.owned_task(id)?;
         if summary.len() > 8 * 1024 || summary.contains('\0') {
             return Err(error("A summary is at most 8 KiB of text"));
@@ -613,6 +624,7 @@ impl Hub {
                 .map_err(db)?;
         }
         self.log(Some(id), status.as_str(), summary)?;
+        transaction.commit().map_err(db)?;
         self.task(id)
     }
 
@@ -620,6 +632,9 @@ impl Hub {
         if self.agent != OWNER {
             return Err(error("Only the owner can cancel a task"));
         }
+        let transaction =
+            Transaction::new_unchecked(&self.connection, TransactionBehavior::Immediate)
+                .map_err(db)?;
         let task = self.task(id)?;
         if matches!(task.status, Status::Done | Status::Cancelled) {
             return Err(error(format!("Task {id} is already finished")));
@@ -634,6 +649,7 @@ impl Hub {
             .execute("DELETE FROM leases WHERE task=?1", [id])
             .map_err(db)?;
         self.log(Some(id), "cancel", "")?;
+        transaction.commit().map_err(db)?;
         self.task(id)
     }
 
@@ -655,9 +671,6 @@ impl Hub {
         if paths.is_empty() || paths.len() > 64 || !(60..=MAX_LEASE_SECS).contains(&ttl_secs) {
             return Err(error("Lease 1 to 64 paths for 60 to 14400 seconds"));
         }
-        if let Some(task) = task {
-            self.owned_task(task)?;
-        }
         let keys = paths
             .iter()
             .map(|path| {
@@ -669,10 +682,15 @@ impl Hub {
             .collect::<io::Result<Vec<_>>>()?;
         let agent = self.agent.clone();
         let at = now();
-        let transaction = self
-            .connection
-            .transaction_with_behavior(TransactionBehavior::Immediate)
-            .map_err(db)?;
+        let transaction =
+            Transaction::new_unchecked(&self.connection, TransactionBehavior::Immediate)
+                .map_err(db)?;
+        if let Some(id) = task {
+            let task = self.owned_task(id)?;
+            if matches!(task.status, Status::Done | Status::Cancelled) {
+                return Err(error("A finished task cannot acquire a lease"));
+            }
+        }
         transaction
             .execute("DELETE FROM leases WHERE expires_at<=?1", [at])
             .map_err(db)?;
@@ -870,25 +888,35 @@ impl Hub {
             .filter(|path| path.join(".git").exists())
             .ok_or_else(|| error(format!("Task {id} has no worktree")))?;
         let head = git::head(&worktree)?;
-        let clean = !git::dirty(&worktree)?;
+        let clean_before = !git::dirty(&worktree)?;
+        let source_before = executor::candidate_source_hash(&worktree, &[])?;
         let result = executor::verify(&worktree, &[], check, cancel)?;
+        let clean = clean_before
+            && !git::dirty(&worktree)?
+            && git::head(&worktree)? == head
+            && result.source_sha256.as_ref() == Some(&source_before)
+            && source_before == executor::candidate_source_hash(&worktree, &[])?;
         let output = format!("{}\n{}", result.stdout, result.stderr);
         let record = CheckRecord {
             passed: result.passed(),
             head,
             clean,
+            source_sha256: result.source_sha256,
             exit_code: result.exit_code,
             timed_out: result.timed_out,
             elapsed_ms: result.elapsed_ms,
             output: output[..output.floor_char_boundary(4000)].to_owned(),
         };
         let value = serde_json::to_value(&record).map_err(error)?;
-        self.connection
+        let updated = self.connection
             .execute(
-                "UPDATE tasks SET check_result=?2, updated_at=?3 WHERE id=?1",
-                params![id, value.to_string(), now()],
+                "UPDATE tasks SET check_result=?2, updated_at=?3 WHERE id=?1 AND status=?4 AND owner IS ?5",
+                params![id, value.to_string(), now(), task.status.as_str(), task.owner],
             )
             .map_err(db)?;
+        if updated == 0 {
+            return Err(error("The task changed while the check was running"));
+        }
         self.log(
             Some(id),
             "check",
@@ -926,6 +954,9 @@ impl Hub {
         if self.agent != OWNER {
             return Err(error("Only the owner can land a task"));
         }
+        let transaction =
+            Transaction::new_unchecked(&self.connection, TransactionBehavior::Immediate)
+                .map_err(db)?;
         let task = self.task(id)?;
         if task.status != Status::Review {
             return Err(error(format!("Task {id} is not waiting for review")));
@@ -946,11 +977,27 @@ impl Hub {
         if self.check.is_some() {
             let record: Option<CheckRecord> = task
                 .check
-                .clone()
                 .and_then(|value| serde_json::from_value(value).ok());
-            if !record.is_some_and(|record| record.passed && record.clean && record.head == head) {
+            let worktree = task
+                .worktree
+                .as_deref()
+                .ok_or_else(|| error("The checked task has no worktree"))?;
+            let record = record
+                .filter(|record| record.passed && record.clean && record.head == head)
+                .ok_or_else(|| {
+                    error("The configured check has not passed on the current branch commit")
+                })?;
+            if git::head(worktree)? != head
+                || record.source_sha256.as_ref()
+                    != Some(&executor::candidate_source_hash(worktree, &[])?)
+            {
                 return Err(error(
-                    "The configured check has not passed on the current branch commit",
+                    "The checked snapshot changed or lacks a source hash; rerun the check",
+                ));
+            }
+            if !git::run(&self.repo, &["merge-base", "--is-ancestor", "HEAD", &head])?.success {
+                return Err(error(
+                    "The base advanced; integrate it into the task branch and rerun the check",
                 ));
             }
         }
@@ -972,13 +1019,25 @@ impl Hub {
             ));
         }
         let message = format!("Merge task {id}: {}", task.title);
-        let merge = git::run(&self.repo, &["merge", "--no-ff", "-m", &message, &branch])?;
+        let checked = self.check.is_some();
+        let args: &[&str] = if checked {
+            &["merge", "--ff-only", &head]
+        } else {
+            &["merge", "--no-ff", "-m", &message, &head]
+        };
+        let merge = git::run(&self.repo, args)?;
         if !merge.success {
-            let _ = git::run(&self.repo, &["merge", "--abort"]);
+            if !checked {
+                let _ = git::run(&self.repo, &["merge", "--abort"]);
+            }
             return Err(error(format!(
-                "The merge conflicts and was aborted: {}",
-                merge.stdout.trim()
+                "Git could not land the reviewed commit: {}",
+                merge.stderr.trim()
             )));
+        }
+        let landed = git::head(&self.repo)?;
+        if checked && landed != head {
+            return Err(error("The base does not match the checked commit"));
         }
         self.connection
             .execute(
@@ -989,16 +1048,25 @@ impl Hub {
         self.connection
             .execute("DELETE FROM leases WHERE task=?1", [id])
             .map_err(db)?;
-        if let Some(worktree) = &task.worktree {
-            let _ = git::ok(
-                &self.repo,
-                // Only Lyra's lock files can remain; everything else was committed and merged.
-                &["worktree", "remove", "--force", &worktree.to_string_lossy()],
-            );
-        }
-        let _ = git::ok(&self.repo, &["branch", "-d", &branch]);
         self.log(Some(id), "land", &head)?;
-        Ok(json!({"landed": id, "branch": branch, "commit": git::head(&self.repo)?}))
+        transaction.commit().map_err(db)?;
+        let worktree_retained = task.worktree.as_ref().is_some_and(|worktree| {
+            worktree.exists()
+                && git::ok(
+                    &self.repo,
+                    &["worktree", "remove", &worktree.to_string_lossy()],
+                )
+                .is_err()
+        });
+        if !worktree_retained
+            && git::ok(&self.repo, &["rev-parse", &format!("refs/heads/{branch}")])
+                .is_ok_and(|current| current == head)
+        {
+            let _ = git::ok(&self.repo, &["branch", "-d", &branch]);
+        }
+        Ok(
+            json!({"landed": id, "branch": branch, "commit": landed, "worktree_retained": worktree_retained}),
+        )
     }
 
     pub(crate) fn check_request(&self) -> Option<&ExecutionRequest> {

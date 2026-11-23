@@ -295,8 +295,9 @@ fn a_configured_check_must_pass_on_the_exact_commit_before_landing() {
         )
         .unwrap();
     assert!(owner.land(id).is_err());
+    let snapshot = executor::candidate_source_hash(&worktree, &[]).unwrap();
     let current = json!({"passed": true, "head": head, "clean": true, "exit_code": 0,
-        "timed_out": false, "elapsed_ms": 1, "output": ""});
+        "timed_out": false, "elapsed_ms": 1, "output": "", "source_sha256": snapshot});
     owner
         .connection
         .execute(
@@ -304,7 +305,61 @@ fn a_configured_check_must_pass_on_the_exact_commit_before_landing() {
             params![id, current.to_string()],
         )
         .unwrap();
-    owner.land(id).unwrap();
+    let source = worktree.join("maths.py");
+    let original = fs::read(&source).unwrap();
+    git::ok(
+        &worktree,
+        &["update-index", "--assume-unchanged", "maths.py"],
+    )
+    .unwrap();
+    fs::write(&source, "changed since verification\n").unwrap();
+    assert!(!git::dirty(&worktree).unwrap());
+    assert!(
+        owner
+            .land(id)
+            .unwrap_err()
+            .to_string()
+            .contains("snapshot changed")
+    );
+    fs::write(source, original).unwrap();
+    git::ok(
+        &worktree,
+        &["update-index", "--no-assume-unchanged", "maths.py"],
+    )
+    .unwrap();
+    git::ok(
+        &fixture.repo,
+        &["commit", "--allow-empty", "-qm", "Base advances"],
+    )
+    .unwrap();
+    assert!(
+        owner
+            .land(id)
+            .unwrap_err()
+            .to_string()
+            .contains("base advanced")
+    );
+    assert_eq!(owner.task(id).unwrap().status, Status::Review);
+    // Integrating the base invalidates the previous check even when the source tree is identical.
+    git::ok(&worktree, &["merge", "--no-edit", "main"]).unwrap();
+    assert!(
+        owner
+            .land(id)
+            .unwrap_err()
+            .to_string()
+            .contains("check has not passed")
+    );
+    let mut current = current;
+    let new_head = git::head(&worktree).unwrap();
+    current["head"] = json!(new_head);
+    owner
+        .connection
+        .execute(
+            "UPDATE tasks SET check_result=?2 WHERE id=?1",
+            params![id, current.to_string()],
+        )
+        .unwrap();
+    assert_eq!(owner.land(id).unwrap()["commit"], new_head);
 }
 
 fn rpc(fixture: &Fixture, agent: &str, requests: &[Value]) -> Vec<Value> {
@@ -414,16 +469,22 @@ fn a_local_worker_commits_its_proposal_on_the_task_branch_for_review() {
         json!({"tool":"finish","summary":"Use addition"}),
     ]
     .into_iter();
-    let result = worker::run_one(&mut lyra, None, 8, &mut |report, save| {
-        report.run(
-            &AtomicBool::new(false),
-            &mut |prompt| {
-                assert!(prompt.contains("untrusted data"));
-                Ok(actions.next().unwrap().to_string())
-            },
-            save,
-        )
-    })
+    let result = worker::run_one(
+        &mut lyra,
+        None,
+        8,
+        &AtomicBool::new(false),
+        &mut |report, save| {
+            report.run(
+                &AtomicBool::new(false),
+                &mut |prompt| {
+                    assert!(prompt.contains("untrusted data"));
+                    Ok(actions.next().unwrap().to_string())
+                },
+                save,
+            )
+        },
+    )
     .unwrap();
     assert_eq!(result["status"], "review");
     let task = owner.task(id).unwrap();
@@ -457,13 +518,19 @@ fn a_worker_that_finds_no_change_releases_the_task() {
         .create_task("Explain", "Nothing to change", &[])
         .unwrap();
     let mut lyra = Hub::open(&fixture.hub, "lyra-1", Some(AgentKind::Lyra)).unwrap();
-    let result = worker::run_one(&mut lyra, None, 4, &mut |report, save| {
-        report.run(
-            &AtomicBool::new(false),
-            &mut |_| Ok(json!({"tool":"finish","summary":"No change needed"}).to_string()),
-            save,
-        )
-    })
+    let result = worker::run_one(
+        &mut lyra,
+        None,
+        4,
+        &AtomicBool::new(false),
+        &mut |report, save| {
+            report.run(
+                &AtomicBool::new(false),
+                &mut |_| Ok(json!({"tool":"finish","summary":"No change needed"}).to_string()),
+                save,
+            )
+        },
+    )
     .unwrap();
     assert_eq!(result["status"], "open");
     assert_eq!(owner.task(id).unwrap().status, Status::Open);
