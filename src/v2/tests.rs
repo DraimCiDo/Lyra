@@ -555,3 +555,20 @@ fn scoped_search_reaches_the_target_module_without_scanning_unrelated_files() {
     assert!(result["next_offset"].is_null());
     assert!(retrieval::search_scoped(&mut workspace, &[], "register_mod", 0, "../").is_err());
 }
+
+#[test]
+fn a_project_too_large_for_the_check_snapshot_fails_before_any_model_call() {
+    let (_root, mut report) = fixture(true);
+    for index in 0..2100 {
+        fs::write(report.request.repo.join(format!("f{index}.txt")), "x").unwrap();
+    }
+    let error = report
+        .run(
+            &AtomicBool::new(false),
+            &mut |_| panic!("the model must not be called"),
+            &mut |_| Ok(()),
+        )
+        .unwrap_err();
+    assert!(error.to_string().contains("whole project"), "{error}");
+    assert_eq!(report.calls, 0);
+}

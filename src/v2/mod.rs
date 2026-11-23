@@ -251,6 +251,16 @@ impl TaskReport {
                 "Only a running or cancelled task can resume",
             ));
         }
+        if self.request.check.is_some() {
+            // The isolated check always snapshots the whole project. Learn that it cannot
+            // before the model spends minutes on a proposal that could never be checked.
+            Workspace::for_snapshot(&self.request.repo, &[]).map_err(|error| {
+                io::Error::other(format!(
+                    "The isolated check needs the whole project in its snapshot (up to {} files and 16 MiB): {error}",
+                    crate::workspace::SNAPSHOT_FILES
+                ))
+            })?;
+        }
         let mut workspace = Workspace::open(&self.request.repo, &self.request.files)?;
         if workspace.root != self.request.repo {
             return Err(io::Error::other("The task workspace has moved"));

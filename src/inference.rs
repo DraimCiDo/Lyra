@@ -7,7 +7,7 @@ use llama_cpp_2::{
     sampling::LlamaSampler,
 };
 use std::{
-    cell::RefCell,
+    cell::{Cell, RefCell},
     fs::File,
     io::{self, Read, Write},
     num::NonZeroU32,
@@ -229,7 +229,7 @@ pub(crate) fn with_cancellable_session<T>(
         backend: &backend,
         args,
         cancelled,
-        started,
+        started: Rc::new(Cell::new(started)),
         timeout,
     })
 }
@@ -241,7 +241,8 @@ pub struct Session<'a> {
     backend: &'a LlamaBackend,
     args: &'a GenerateArgs,
     cancelled: &'a AtomicBool,
-    started: Instant,
+    /// Start of the current timeout window; `reset_deadline` begins a new one.
+    started: Rc<Cell<Instant>>,
     timeout: Duration,
 }
 
@@ -272,6 +273,11 @@ fn native_chat_messages(
 }
 
 impl Session<'_> {
+    /// Start a new timeout window. A session shared by several tasks (a worker loop)
+    /// must not let the first tasks use up the time of the later ones.
+    pub(crate) fn reset_deadline(&self) {
+        self.started.set(Instant::now());
+    }
     pub(crate) fn cancellation(&self) -> &AtomicBool {
         self.cancelled
     }
@@ -410,6 +416,7 @@ impl Session<'_> {
             started,
             timeout,
         } = self.clone();
+        let started = started.get();
         check(cancelled, started, timeout)?;
         let prompt = self.rendered_prompt(messages)?;
         let vocab = model.vocab();

@@ -227,7 +227,11 @@ pub fn call(hub: &mut Hub, name: &str, arguments: &Value) -> io::Result<Value> {
             &strings(&arguments["paths"])?,
             optional_u64(arguments, "ttl_secs", 30 * 60)?,
         )?,
-        "file_release" => json!({"released": hub.release(&strings(&arguments["paths"])?)?}),
+        // Omitting `paths` releases everything; an empty list releases nothing.
+        "file_release" => json!({"released": match &arguments["paths"] {
+            Value::Null => hub.release_all()?,
+            paths => hub.release(&strings(paths)?)?,
+        }}),
         "message_send" => {
             let id = hub.send(
                 optional_str(arguments, "to")?,
@@ -344,7 +348,7 @@ pub fn serve(
     mut input: impl BufRead,
     mut output: impl Write,
 ) -> io::Result<()> {
-    let mut hub = Hub::open(root, agent, Some(kind))?;
+    let mut hub = Hub::open_agent(root, agent, kind)?;
     let mut line = Vec::new();
     loop {
         line.clear();

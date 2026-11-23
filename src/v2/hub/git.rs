@@ -164,12 +164,70 @@ pub(super) fn head(dir: &Path) -> io::Result<String> {
     ok(dir, &["rev-parse", "HEAD"])
 }
 
+/// Lines of `ls-files -v` whose tag is not the plain `H` (cached): assume-unchanged,
+/// skip-worktree and similar. The listing of a large repository exceeds the output limit,
+/// so it is filtered while it streams instead of being collected.
+fn hidden_index_entries(dir: &Path) -> io::Result<bool> {
+    let mut command = Command::new("git");
+    command
+        .args(["-c", "core.quotepath=false", "ls-files", "-v"])
+        .current_dir(dir)
+        .env("GIT_TERMINAL_PROMPT", "0")
+        .env("GIT_OPTIONAL_LOCKS", "0")
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null());
+    #[cfg(unix)]
+    {
+        use std::os::unix::process::CommandExt;
+        command.process_group(0);
+    }
+    let mut child = command.spawn().map_err(|error| {
+        io::Error::new(
+            error.kind(),
+            format!("The agent hub needs git on PATH: {error}"),
+        )
+    })?;
+    let stdout = child
+        .stdout
+        .take()
+        .ok_or_else(|| io::Error::other("Missing git output"))?;
+    let (send, receive) = mpsc::channel();
+    thread::spawn(move || {
+        use std::io::BufRead;
+        let mut reader = io::BufReader::new(stdout);
+        let mut line = Vec::new();
+        let mut hidden = false;
+        loop {
+            line.clear();
+            match reader.read_until(b'\n', &mut line) {
+                Ok(0) | Err(_) => break,
+                Ok(_) => hidden |= line.first().is_some_and(|tag| *tag != b'H'),
+            }
+        }
+        let _ = send.send(hidden);
+    });
+    let deadline = Instant::now() + TIMEOUT;
+    let hidden = receive.recv_timeout(deadline.saturating_duration_since(Instant::now()));
+    let status = match hidden {
+        Ok(_) => child.wait()?,
+        Err(_) => {
+            kill_tree(&mut child);
+            return Err(io::Error::new(io::ErrorKind::TimedOut, "git timed out"));
+        }
+    };
+    if !status.success() {
+        return Err(io::Error::other("git ls-files failed"));
+    }
+    Ok(hidden.unwrap_or(true))
+}
+
 /// Whether the worktree differs from its commit: tracked changes and untracked files that
 /// are not ignored, except Lyra's own lock folder. Files hidden from `git status`
 /// (`assume-unchanged`, `skip-worktree`) count as dirty because their bytes can differ
 /// from the commit without being reported.
 pub(super) fn dirty(dir: &Path) -> io::Result<bool> {
-    let status = ok(
+    let status = checked(
         dir,
         &[
             "status",
@@ -180,13 +238,12 @@ pub(super) fn dirty(dir: &Path) -> io::Result<bool> {
             ":(exclude).lyra",
         ],
     )?;
-    if !status.is_empty() {
+    // Any output at all means a change, however long the listing is.
+    if !status.stdout.trim().is_empty() || status.truncated {
         return Ok(true);
     }
     // Tags: `H` cached, `h` assume-unchanged, `S` skip-worktree, `s` both.
-    Ok(ok(dir, &["ls-files", "-v"])?
-        .lines()
-        .any(|line| line.starts_with(|tag: char| tag != 'H')))
+    hidden_index_entries(dir)
 }
 
 #[cfg(test)]
@@ -234,7 +291,7 @@ mod tests {
     }
 
     #[test]
-    fn truncated_output_is_an_error_for_decisions_and_allowed_for_patches() {
+    fn big_outputs_are_errors_for_decisions_and_do_not_break_the_cleanliness_test() {
         let repo = repo();
         // More than 1 MiB of listing output: 30k tracked files with long names.
         let folder = repo.path().join("d");
@@ -246,7 +303,22 @@ mod tests {
         let error = ok(repo.path(), &["ls-files", "-v"]).unwrap_err();
         assert!(error.to_string().contains("more than 1 MiB"), "{error}");
         assert!(ok_prefix(repo.path(), &["ls-files", "-v"]).unwrap().len() <= 1 << 20);
-        assert!(dirty(repo.path()).is_err());
+        // Large listings do not break the cleanliness test, and a hidden entry that sorts
+        // after the output limit is still found.
+        // Staged but uncommitted: dirty, even though the status listing is huge.
+        assert!(dirty(repo.path()).unwrap());
+        ok(repo.path(), &["commit", "-q", "-m", "many files"]).unwrap();
+        assert!(!dirty(repo.path()).unwrap());
+        std::fs::write(repo.path().join("zzz-last.txt"), "x").unwrap();
+        ok(repo.path(), &["add", "zzz-last.txt"]).unwrap();
+        ok(repo.path(), &["commit", "-q", "-m", "last"]).unwrap();
+        assert!(!dirty(repo.path()).unwrap());
+        ok(
+            repo.path(),
+            &["update-index", "--assume-unchanged", "zzz-last.txt"],
+        )
+        .unwrap();
+        assert!(dirty(repo.path()).unwrap());
     }
 
     #[cfg(unix)]

@@ -196,7 +196,8 @@ fn file_leases_are_exclusive_case_insensitive_and_cover_folders() {
     );
     assert!(claude.lease(None, &paths(&["../escape"]), 600).is_err());
     assert!(claude.lease(None, &paths(&["src"]), 10).is_err());
-    assert_eq!(codex.release(&[]).unwrap(), 2);
+    assert_eq!(codex.release(&[]).unwrap(), 0);
+    assert_eq!(codex.release_all().unwrap(), 2);
     assert_eq!(
         claude
             .lease(None, &paths(&["src/api/routes.rs"]), 600)
@@ -949,4 +950,32 @@ fn landing_a_worker_task_removes_its_worktree_and_branch() {
         .unwrap()
         .success
     );
+}
+
+#[test]
+fn a_task_whose_check_cannot_run_stays_claimed_with_its_commit() {
+    // A digest that is not present locally: the isolated check cannot start.
+    let fixture = fixture(Some(ExecutionRequest {
+        image: format!("python@sha256:{}", "0".repeat(64)),
+        program: "python".into(),
+        args: vec!["-c".into(), "print(1)".into()],
+        timeout_secs: 15,
+        memory_mib: 256,
+    }));
+    let owner = owner(&fixture);
+    let id = owner.create_task("Fix add", "Use addition", &[]).unwrap();
+    let mut lyra = Hub::open(&fixture.hub, "lyra-1", Some(AgentKind::Lyra)).unwrap();
+    let task = lyra.claim(None).unwrap();
+    let worktree = task.worktree.unwrap();
+    fs::write(
+        worktree.join("maths.py"),
+        "def add(a, b):\n    return a + b\n",
+    )
+    .unwrap();
+    git::ok(&worktree, &["commit", "-qam", "work"]).unwrap();
+    let cancel = AtomicBool::new(false);
+    assert!(worker::hand_off(&lyra, id, "Done", &cancel, Path::new("state")).is_err());
+    let task = owner.task(id).unwrap();
+    assert_eq!(task.status, Status::Claimed);
+    assert!(task.check.is_none());
 }

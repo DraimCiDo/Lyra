@@ -49,6 +49,14 @@ CREATE TABLE events(id INTEGER PRIMARY KEY AUTOINCREMENT, at INTEGER NOT NULL,
     agent TEXT NOT NULL, task INTEGER, kind TEXT NOT NULL, detail TEXT NOT NULL);
 ";
 
+/// The error message of a claim that found nothing to claim; see `is_queue_empty`.
+const NO_READY_TASK: &str = "No open task is ready to claim";
+
+/// Whether `error` means the queue has no ready task (and not, say, a missing `git`).
+pub fn is_queue_empty(error: &io::Error) -> bool {
+    error.kind() == io::ErrorKind::NotFound && error.to_string() == NO_READY_TASK
+}
+
 /// The name the owner's own CLI commands use in the hub log.
 pub const OWNER: &str = "owner";
 
@@ -73,9 +81,17 @@ fn now() -> i64 {
         .map_or(0, |time| time.as_secs() as i64)
 }
 
+/// `limit` counts characters, the unit the MCP schemas advertise as `maxLength`; the byte
+/// cap keeps what is stored bounded for any script.
 fn bounded(name: &str, text: &str, limit: usize) -> io::Result<()> {
-    if text.trim().is_empty() || text.len() > limit || text.contains('\0') {
-        return Err(error(format!("{name} must be 1 to {limit} bytes of text")));
+    if text.trim().is_empty()
+        || text.chars().count() > limit
+        || text.len() > limit * 4
+        || text.contains('\0')
+    {
+        return Err(error(format!(
+            "{name} must be 1 to {limit} characters of text"
+        )));
     }
     Ok(())
 }
@@ -261,51 +277,65 @@ impl Hub {
         }
         #[cfg(not(unix))]
         fs::create_dir(&root)?;
-        let connection = open_connection(&root.join(DATABASE))?;
-        let check = check
-            .map(|check| serde_json::to_string(&check))
-            .transpose()
-            .map_err(error)?;
-        let mut connection = connection;
-        let transaction = connection
-            .transaction_with_behavior(TransactionBehavior::Immediate)
-            .map_err(db)?;
-        transaction.execute_batch(SCHEMA).map_err(db)?;
-        let id = {
-            use sha2::{Digest, Sha256};
-            let mut hash = Sha256::new();
-            hash.update(now().to_le_bytes());
-            hash.update(std::process::id().to_le_bytes());
-            hash.update(root.to_string_lossy().as_bytes());
-            hash.update(
-                SystemTime::now()
-                    .duration_since(UNIX_EPOCH)
-                    .map_or(0, |time| time.subsec_nanos())
-                    .to_le_bytes(),
-            );
-            hash.finalize()[..4]
-                .iter()
-                .map(|byte| format!("{byte:02x}"))
-                .collect::<String>()
-        };
-        for (key, value) in [
-            ("id", Some(id)),
-            ("repo", Some(repo.to_string_lossy().into_owned())),
-            ("base", Some(base.to_owned())),
-            ("check", check),
-        ] {
-            if let Some(value) = value {
-                transaction
-                    .execute("INSERT INTO meta VALUES (?1, ?2)", params![key, value])
-                    .map_err(db)?;
+        // Remove the folder this call created if setup fails, so the same path can be retried.
+        let created = (|| -> io::Result<()> {
+            let connection = open_connection(&root.join(DATABASE))?;
+            let check = check
+                .map(|check| serde_json::to_string(&check))
+                .transpose()
+                .map_err(error)?;
+            let mut connection = connection;
+            let transaction = connection
+                .transaction_with_behavior(TransactionBehavior::Immediate)
+                .map_err(db)?;
+            transaction.execute_batch(SCHEMA).map_err(db)?;
+            let id = {
+                use sha2::{Digest, Sha256};
+                let mut hash = Sha256::new();
+                hash.update(now().to_le_bytes());
+                hash.update(std::process::id().to_le_bytes());
+                hash.update(root.to_string_lossy().as_bytes());
+                hash.update(
+                    SystemTime::now()
+                        .duration_since(UNIX_EPOCH)
+                        .map_or(0, |time| time.subsec_nanos())
+                        .to_le_bytes(),
+                );
+                hash.finalize()[..4]
+                    .iter()
+                    .map(|byte| format!("{byte:02x}"))
+                    .collect::<String>()
+            };
+            for (key, value) in [
+                ("id", Some(id)),
+                ("repo", Some(repo.to_string_lossy().into_owned())),
+                ("base", Some(base.to_owned())),
+                ("check", check),
+            ] {
+                if let Some(value) = value {
+                    transaction
+                        .execute("INSERT INTO meta VALUES (?1, ?2)", params![key, value])
+                        .map_err(db)?;
+                }
             }
+            transaction
+                .execute_batch(&format!(
+                    "PRAGMA application_id={APPLICATION_ID}; PRAGMA user_version={SCHEMA_VERSION};"
+                ))
+                .map_err(db)?;
+            transaction.commit().map_err(db)
+        })();
+        if created.is_err() {
+            let _ = fs::remove_dir_all(&root);
         }
-        transaction
-            .execute_batch(&format!(
-                "PRAGMA application_id={APPLICATION_ID}; PRAGMA user_version={SCHEMA_VERSION};"
-            ))
-            .map_err(db)?;
-        transaction.commit().map_err(db)
+        created
+    }
+
+    /// Open the hub as a named agent. The reserved owner name is refused: only the owner's
+    /// own commands may act with owner authority.
+    pub fn open_agent(root: &Path, agent: &str, kind: AgentKind) -> io::Result<Self> {
+        validate_agent(agent)?;
+        Self::open(root, agent, Some(kind))
     }
 
     /// Open the hub as an agent (registering it) or as the owner.
@@ -608,7 +638,7 @@ impl Hub {
                         ))
                     }
                 }
-                None => io::Error::new(io::ErrorKind::NotFound, "No open task is ready to claim"),
+                None => io::Error::new(io::ErrorKind::NotFound, NO_READY_TASK),
             });
         };
         let branch = self.branch_name(task);
@@ -666,10 +696,11 @@ impl Hub {
             ],
         )?
         .success;
+        let base_ref = format!("refs/heads/{}", self.base);
         let args: Vec<&str> = if exists {
             vec!["worktree", "add", &path, branch]
         } else {
-            vec!["worktree", "add", "-b", branch, &path, &self.base]
+            vec!["worktree", "add", "-b", branch, &path, &base_ref]
         };
         // Agents in other processes may hold git's ref or config lock for a moment.
         let mut attempt = 1;
@@ -867,16 +898,18 @@ impl Hub {
         Ok(json!({"leased": true, "expires_at": expires, "paths": paths}))
     }
 
-    /// Release the given paths, or every lease of this agent when `paths` is empty.
+    /// Release every lease of this agent.
+    pub fn release_all(&self) -> io::Result<usize> {
+        self.touch()?;
+        self.connection
+            .execute("DELETE FROM leases WHERE agent=?1", [&self.agent])
+            .map_err(db)
+    }
+
+    /// Release exactly the given paths; an empty list releases nothing.
     pub fn release(&self, paths: &[String]) -> io::Result<usize> {
         self.touch()?;
         let mut released = 0;
-        if paths.is_empty() {
-            released = self
-                .connection
-                .execute("DELETE FROM leases WHERE agent=?1", [&self.agent])
-                .map_err(db)?;
-        }
         for path in paths {
             released += self
                 .connection
@@ -1070,7 +1103,7 @@ impl Hub {
         let branch = task
             .branch
             .ok_or_else(|| error(format!("Task {id} has no branch")))?;
-        let range = format!("{}...{branch}", self.base);
+        let range = format!("refs/heads/{}...refs/heads/{branch}", self.base);
         let stat = git::ok_prefix(&self.repo, &["diff", "--stat", &range])?;
         let patch = git::ok_prefix(&self.repo, &["diff", &range])?;
         let limit = limit.clamp(1024, 512 * 1024);
@@ -1126,9 +1159,7 @@ impl Hub {
         {
             return self.finish_landing(&task, &branch, &head);
         }
-        let transaction =
-            Transaction::new_unchecked(&self.connection, TransactionBehavior::Immediate)
-                .map_err(db)?;
+        // The slow Git checks run before the write lock is taken, so other agents keep working.
         if let Some(worktree) = task
             .worktree
             .as_ref()
@@ -1182,7 +1213,18 @@ impl Hub {
                 "The project has uncommitted changes; commit or stash them first",
             ));
         }
-        // Record the intent durably before Git moves the base, so a retry can reconcile.
+        // Record the intent durably before Git moves the base, so a retry can reconcile. The
+        // task must still be exactly what was checked above.
+        let transaction =
+            Transaction::new_unchecked(&self.connection, TransactionBehavior::Immediate)
+                .map_err(db)?;
+        if self.task(id)?.status != Status::Review
+            || git::ok(&self.repo, &["rev-parse", &format!("refs/heads/{branch}")])? != head
+        {
+            return Err(error(
+                "The task changed while it was being checked for landing; review it again",
+            ));
+        }
         self.log(Some(id), "land-intent", &head)?;
         transaction.commit().map_err(db)?;
         let message = format!("Merge task {id}: {}", task.title);

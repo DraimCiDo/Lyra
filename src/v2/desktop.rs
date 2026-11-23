@@ -341,7 +341,8 @@ impl Desktop {
                 max_tokens: (context / 4).min(1024),
                 threads: inference::default_threads(),
                 gpu_layers: self.gpu_layers,
-                timeout_secs: 300,
+                // A CPU task can take much longer than a chat answer; Cancel stays available.
+                timeout_secs: 3600,
             }
             .inference_args(),
         )
@@ -353,17 +354,18 @@ impl Desktop {
         };
         if self.screen == Screen::Chat {
             self.chat_preview.clear();
-            if self
-                .messages
-                .last()
-                .is_some_and(|message| message.role == Role::User)
-            {
-                self.messages.pop();
+            let draft = std::mem::take(&mut self.chat_draft);
+            match self.messages.last_mut() {
+                // An unanswered question (cancelled or failed send) stays part of the next
+                // turn instead of silently disappearing from the conversation.
+                Some(last) if last.role == Role::User => {
+                    last.content = format!("{}\n\n{draft}", last.content);
+                }
+                _ => self.messages.push(Message {
+                    role: Role::User,
+                    content: draft,
+                }),
             }
-            self.messages.push(Message {
-                role: Role::User,
-                content: std::mem::take(&mut self.chat_draft),
-            });
             let window = &self.messages[self.messages.len().saturating_sub(64)..];
             // Strict chat templates expect a user turn first.
             let first = window

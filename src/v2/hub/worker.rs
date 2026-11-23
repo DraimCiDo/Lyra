@@ -76,7 +76,19 @@ pub fn run_one(
     })();
     match outcome {
         Ok((TaskState::Applied, summary, state)) => {
-            hand_off(hub, task.id, &summary, cancel, &state)
+            let handed = hand_off(hub, task.id, &summary, cancel, &state);
+            if let Err(error) = &handed {
+                let message = format!(
+                    "Lyra worker committed task {} but could not hand it off ({error}); the task \
+                     stays claimed. Fix the cause (for example start Docker), then run \
+                     'hub commit --task {} --state {}'.",
+                    task.id,
+                    task.id,
+                    state.display()
+                );
+                let _ = hub.send(Some(OWNER), Some(task.id), &message);
+            }
+            handed
         }
         Err(error)
             if error
@@ -146,13 +158,19 @@ fn commit_proposal(worktree: &std::path::Path, task: &Task, report: &TaskReport)
     add.extend(&paths);
     git::ok(worktree, &add)?;
     let message = format!("Task {}: {}", task.id, task.title);
+    // A retry after a failed hand-off finds the commit already made.
+    let mut staged = vec!["diff", "--cached", "--quiet", "--"];
+    staged.extend(&paths);
+    if git::run(worktree, &staged)?.success {
+        return Ok(());
+    }
     let mut commit = vec!["commit", "-m", &message, "--"];
     commit.extend(&paths);
     git::ok(worktree, &commit).map(drop)
 }
 
 /// Move a committed task to review and record the check for the new commit.
-fn hand_off(
+pub(super) fn hand_off(
     hub: &Hub,
     task: i64,
     summary: &str,
@@ -160,10 +178,12 @@ fn hand_off(
     state: &std::path::Path,
 ) -> io::Result<Value> {
     let summary = format!("Lyra worker: {summary}");
-    hub.update(task, Status::Review, &summary)?;
+    // Check first: a task must not reach review without a record the owner can land on.
+    // If the check cannot run, the task stays claimed with its commit for a retry.
     if hub.check_request().is_some() {
         hub.check(task, cancel)?;
     }
+    hub.update(task, Status::Review, &summary)?;
     Ok(json!({"task": task, "status": "review", "summary": summary, "state": state}))
 }
 

@@ -167,7 +167,7 @@ pub fn run(args: HubArgs, output: &mut impl Write) -> io::Result<()> {
             mcp::serve(&root, &agent, kind, stdin.lock(), output)
         }
         HubCommand::Commit { agent, task, state } => {
-            let hub = Hub::open(&root, &agent, Some(AgentKind::Lyra))?;
+            let hub = Hub::open_agent(&root, &agent, AgentKind::Lyra)?;
             let cancel = std::sync::atomic::AtomicBool::new(false);
             print(
                 output,
@@ -181,13 +181,15 @@ pub fn run(args: HubArgs, output: &mut impl Write) -> io::Result<()> {
             max_calls,
             model,
         } => {
-            let mut hub = Hub::open(&root, &agent, Some(AgentKind::Lyra))?;
+            let mut hub = Hub::open_agent(&root, &agent, AgentKind::Lyra)?;
             let args = model.inference_args();
             inference::with_session(&args, |session| {
                 // Tasks this run released stay on the board for another agent or a later
                 // run; the loop must not claim them again and starve the tasks behind them.
                 let mut released = Vec::new();
                 loop {
+                    // Each task gets the full `--timeout-secs`, not what earlier tasks left.
+                    session.reset_deadline();
                     let result = worker::run_one(
                         &mut hub,
                         task,
@@ -205,7 +207,7 @@ pub fn run(args: HubArgs, output: &mut impl Write) -> io::Result<()> {
                             }
                             print(output, &value)?
                         }
-                        Err(error) if repeat && error.kind() == io::ErrorKind::NotFound => {
+                        Err(error) if repeat && super::is_queue_empty(&error) => {
                             return Ok(());
                         }
                         Err(error) => return Err(error),
