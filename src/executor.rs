@@ -507,6 +507,20 @@ pub(crate) fn checked_source_hash(
     )?))
 }
 
+#[cfg(feature = "gateway-http")]
+/// The checked candidate as one snapshot read: every file plus the proposals, and its
+/// hash. Callers that need to compare the exact bytes that were checked use this instead
+/// of reading the project twice.
+pub(crate) fn candidate_sources(
+    repo: &Path,
+    proposals: &[crate::workspace::Edit],
+) -> io::Result<(std::collections::BTreeMap<String, Vec<u8>>, String)> {
+    let workspace = crate::workspace::Workspace::for_snapshot(repo, &[])?;
+    let sources = snapshot_sources(workspace, proposals, true)?;
+    let hash = source_hash(&sources);
+    Ok((sources, hash))
+}
+
 pub(crate) fn candidate_source_hash(
     repo: &Path,
     proposals: &[crate::workspace::Edit],

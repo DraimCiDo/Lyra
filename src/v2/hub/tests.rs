@@ -37,6 +37,24 @@ fn fixture(check: Option<ExecutionRequest>) -> Fixture {
     }
 }
 
+/// Land whatever the task branch currently points to, as an owner who just reviewed it.
+trait LandCurrent {
+    fn land_current(&self, id: i64) -> io::Result<Value>;
+}
+
+impl LandCurrent for Hub {
+    fn land_current(&self, id: i64) -> io::Result<Value> {
+        let commit = git::ok(
+            &self.repo,
+            &[
+                "rev-parse",
+                &format!("refs/heads/{}", self.task(id)?.branch.unwrap()),
+            ],
+        )?;
+        self.land(id, &commit)
+    }
+}
+
 fn agent(fixture: &Fixture, name: &str) -> Hub {
     Hub::open(&fixture.hub, name, Some(AgentKind::Codex)).unwrap()
 }
@@ -98,7 +116,10 @@ fn concurrent_agents_never_claim_the_same_task_and_get_separate_worktrees() {
         (1..=6).collect::<Vec<_>>()
     );
     for (id, worktree, branch) in &all {
-        assert_eq!(branch, &format!("lyra/task-{id}"));
+        assert!(
+            branch.ends_with(&format!("/task-{id}")) && branch.starts_with("lyra/"),
+            "{branch}"
+        );
         assert_eq!(
             fs::read_to_string(worktree.join("README.md")).unwrap(),
             "demo\n"
@@ -137,8 +158,8 @@ fn dependencies_and_ownership_control_task_transitions() {
             .is_err()
     );
     codex.update(first, Status::Review, "Schema added").unwrap();
-    assert!(codex.land(first).is_err());
-    owner.land(first).unwrap();
+    assert!(codex.land_current(first).is_err());
+    owner.land_current(first).unwrap();
     assert_eq!(owner.task(first).unwrap().status, Status::Done);
     assert_eq!(claude.claim(None).unwrap().id, second);
     claude.update(second, Status::Open, "Releasing").unwrap();
@@ -227,7 +248,7 @@ fn landing_merges_only_a_clean_reviewed_branch_into_a_clean_base() {
     codex.update(id, Status::Review, "Fixed").unwrap();
     assert!(
         owner
-            .land(id)
+            .land_current(id)
             .unwrap_err()
             .to_string()
             .contains("uncommitted")
@@ -243,13 +264,13 @@ fn landing_merges_only_a_clean_reviewed_branch_into_a_clean_base() {
     fs::write(fixture.repo.join("README.md"), "local edit\n").unwrap();
     assert!(
         owner
-            .land(id)
+            .land_current(id)
             .unwrap_err()
             .to_string()
             .contains("uncommitted")
     );
     git::ok(&fixture.repo, &["checkout", "--", "README.md"]).unwrap();
-    owner.land(id).unwrap();
+    owner.land_current(id).unwrap();
     assert_eq!(
         fs::read_to_string(fixture.repo.join("maths.py")).unwrap(),
         "def add(a, b):\n    return a + b\n"
@@ -278,7 +299,7 @@ fn a_configured_check_must_pass_on_the_exact_commit_before_landing() {
     .unwrap();
     git::ok(&worktree, &["commit", "-qam", "Fix add"]).unwrap();
     codex.update(id, Status::Review, "Fixed").unwrap();
-    let error = owner.land(id).unwrap_err();
+    let error = owner.land_current(id).unwrap_err();
     assert!(
         error.to_string().contains("check has not passed"),
         "{error}"
@@ -294,7 +315,7 @@ fn a_configured_check_must_pass_on_the_exact_commit_before_landing() {
             params![id, stale.to_string()],
         )
         .unwrap();
-    assert!(owner.land(id).is_err());
+    assert!(owner.land_current(id).is_err());
     let snapshot = executor::candidate_source_hash(&worktree, &[]).unwrap();
     let current = json!({"passed": true, "head": head, "clean": true, "exit_code": 0,
         "timed_out": false, "elapsed_ms": 1, "output": "", "source_sha256": snapshot});
@@ -313,13 +334,14 @@ fn a_configured_check_must_pass_on_the_exact_commit_before_landing() {
     )
     .unwrap();
     fs::write(&source, "changed since verification\n").unwrap();
-    assert!(!git::dirty(&worktree).unwrap());
+    // Bytes hidden from `git status` still make the worktree dirty.
+    assert!(git::dirty(&worktree).unwrap());
     assert!(
         owner
-            .land(id)
+            .land_current(id)
             .unwrap_err()
             .to_string()
-            .contains("snapshot changed")
+            .contains("uncommitted")
     );
     fs::write(source, original).unwrap();
     git::ok(
@@ -334,7 +356,7 @@ fn a_configured_check_must_pass_on_the_exact_commit_before_landing() {
     .unwrap();
     assert!(
         owner
-            .land(id)
+            .land_current(id)
             .unwrap_err()
             .to_string()
             .contains("base advanced")
@@ -344,7 +366,7 @@ fn a_configured_check_must_pass_on_the_exact_commit_before_landing() {
     git::ok(&worktree, &["merge", "--no-edit", "main"]).unwrap();
     assert!(
         owner
-            .land(id)
+            .land_current(id)
             .unwrap_err()
             .to_string()
             .contains("check has not passed")
@@ -359,7 +381,7 @@ fn a_configured_check_must_pass_on_the_exact_commit_before_landing() {
             params![id, current.to_string()],
         )
         .unwrap();
-    assert_eq!(owner.land(id).unwrap()["commit"], new_head);
+    assert_eq!(owner.land_current(id).unwrap()["commit"], new_head);
 }
 
 fn rpc(fixture: &Fixture, agent: &str, requests: &[Value]) -> Vec<Value> {
@@ -472,6 +494,7 @@ fn a_local_worker_commits_its_proposal_on_the_task_branch_for_review() {
     let result = worker::run_one(
         &mut lyra,
         None,
+        &[],
         8,
         &AtomicBool::new(false),
         &mut |report, save| {
@@ -496,7 +519,7 @@ fn a_local_worker_commits_its_proposal_on_the_task_branch_for_review() {
             .unwrap()
             .contains("a - b")
     );
-    owner.land(id).unwrap();
+    owner.land_current(id).unwrap();
     assert!(
         fs::read_to_string(fixture.repo.join("maths.py"))
             .unwrap()
@@ -521,6 +544,7 @@ fn a_worker_that_finds_no_change_releases_the_task() {
     let result = worker::run_one(
         &mut lyra,
         None,
+        &[],
         4,
         &AtomicBool::new(false),
         &mut |report, save| {
@@ -535,4 +559,288 @@ fn a_worker_that_finds_no_change_releases_the_task() {
     assert_eq!(result["status"], "open");
     assert_eq!(owner.task(id).unwrap().status, Status::Open);
     assert_eq!(owner.read(10).unwrap().len(), 1);
+}
+
+#[test]
+fn mcp_rejects_malformed_arguments_and_survives_an_oversized_frame() {
+    let fixture = fixture(None);
+    let call = |id: u64, name: &str, arguments: Value| json!({"jsonrpc":"2.0","id":id,"method":"tools/call","params":{"name":name,"arguments":arguments}});
+    let huge = format!(
+        "{{\"jsonrpc\":\"2.0\",\"id\":99,\"method\":\"ping\",\"pad\":\"{}\"}}",
+        "x".repeat(2 * 1024 * 1024)
+    );
+    let mut input = String::new();
+    for request in [
+        call(1, "message_send", json!({"to": 7, "body": "hello"})),
+        call(2, "message_send", json!({"to": ["owner"], "body": "hello"})),
+        call(3, "message_read", json!({"limit": "ten"})),
+        call(4, "file_lease", json!({"paths": ["a"], "ttl_secs": "long"})),
+    ] {
+        input.push_str(&format!("{request}\n"));
+    }
+    input.push_str(&huge);
+    input.push('\n');
+    input.push_str(&format!(
+        "{}\n",
+        json!({"jsonrpc":"2.0","id":5,"method":"ping"})
+    ));
+    let mut output = Vec::new();
+    mcp::serve(
+        &fixture.hub,
+        "codex-1",
+        AgentKind::Codex,
+        Cursor::new(input),
+        &mut output,
+    )
+    .unwrap();
+    let replies: Vec<Value> = String::from_utf8(output)
+        .unwrap()
+        .lines()
+        .map(|line| serde_json::from_str(line).unwrap())
+        .collect();
+    assert_eq!(replies.len(), 6, "{replies:#?}");
+    for reply in &replies[..4] {
+        assert_eq!(reply["result"]["isError"], true, "{reply}");
+    }
+    assert_eq!(replies[4]["error"]["code"], -32600);
+    assert_eq!(replies[5]["result"], json!({}));
+    // Nothing was broadcast by the rejected calls.
+    assert!(owner(&fixture).read(10).unwrap().is_empty());
+}
+
+#[test]
+fn landing_requires_the_reviewed_commit_and_recovers_after_git_moved_the_base() {
+    let fixture = fixture(None);
+    let owner = owner(&fixture);
+    let id = owner.create_task("Fix add", "Use addition", &[]).unwrap();
+    let mut codex = agent(&fixture, "codex-1");
+    let worktree = codex.claim(None).unwrap().worktree.unwrap();
+    fs::write(
+        worktree.join("maths.py"),
+        "def add(a, b):\n    return a + b\n",
+    )
+    .unwrap();
+    git::ok(&worktree, &["commit", "-qam", "Fix add"]).unwrap();
+    codex.update(id, Status::Review, "Fixed").unwrap();
+    let reviewed = owner.diff(id, 4096).unwrap()["commit"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    // The agent resumes and commits again after the owner opened the diff.
+    codex.update(id, Status::Claimed, "").unwrap();
+    fs::write(worktree.join("README.md"), "changed after review\n").unwrap();
+    git::ok(&worktree, &["commit", "-qam", "More"]).unwrap();
+    codex.update(id, Status::Review, "More").unwrap();
+    let refused = owner.land(id, &reviewed).unwrap_err();
+    assert!(refused.to_string().contains("review it again"), "{refused}");
+    assert!(owner.land(id, "abc").is_err());
+    assert_eq!(owner.task(id).unwrap().status, Status::Review);
+    assert!(fs::read_to_string(fixture.repo.join("README.md")).unwrap() == "demo\n");
+    // Git moves the base, then the process stops before the database is updated.
+    let head = owner.diff(id, 4096).unwrap()["commit"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    owner.log(Some(id), "land-intent", &head).unwrap();
+    git::ok(&fixture.repo, &["merge", "--ff-only", &head]).unwrap();
+    git::ok(
+        &fixture.repo,
+        &["commit", "--allow-empty", "-qm", "Owner continues"],
+    )
+    .unwrap();
+    let result = owner.land(id, &head).unwrap();
+    assert_eq!(result["landed"], id);
+    assert_eq!(owner.task(id).unwrap().status, Status::Done);
+}
+
+#[test]
+fn reopen_validates_the_note_and_commits_with_its_message() {
+    let fixture = fixture(None);
+    let owner = owner(&fixture);
+    let id = owner.create_task("Fix add", "Use addition", &[]).unwrap();
+    let mut codex = agent(&fixture, "codex-1");
+    codex.claim(None).unwrap();
+    codex.update(id, Status::Review, "Done").unwrap();
+    assert!(owner.reopen(id, "   ").is_err());
+    assert_eq!(owner.task(id).unwrap().status, Status::Review);
+    owner.reopen(id, "Tests fail on Windows paths").unwrap();
+    assert_eq!(owner.task(id).unwrap().status, Status::Open);
+    let inbox = codex.read(10).unwrap();
+    assert_eq!(inbox[0]["body"], "Tests fail on Windows paths");
+}
+
+#[test]
+fn a_hub_needs_a_local_branch_and_namespaces_its_task_branches() {
+    let fixture = fixture(None);
+    git::ok(&fixture.repo, &["tag", "release"]).unwrap();
+    assert!(
+        Hub::init(
+            &fixture.hub.with_extension("tag"),
+            &fixture.repo,
+            "release",
+            None
+        )
+        .is_err()
+    );
+    let second = fixture.hub.with_extension("two");
+    Hub::init(&second, &fixture.repo, "main", None).unwrap();
+    let first = owner(&fixture);
+    let other = Hub::open(&second, OWNER, None).unwrap();
+    first.create_task("A", "first hub", &[]).unwrap();
+    other.create_task("B", "second hub", &[]).unwrap();
+    let a = agent(&fixture, "codex-1").claim(None).unwrap();
+    let b = Hub::open(&second, "codex-2", None)
+        .unwrap()
+        .claim(None)
+        .unwrap();
+    assert_ne!(a.branch, b.branch);
+    assert!(a.worktree.unwrap().exists() && b.worktree.unwrap().exists());
+}
+
+#[test]
+fn a_worker_loop_does_not_reclaim_the_task_it_just_released() {
+    let fixture = fixture(None);
+    let owner = owner(&fixture);
+    let first = owner
+        .create_task("Explain", "Nothing to change", &[])
+        .unwrap();
+    let second = owner.create_task("Second", "Also nothing", &[]).unwrap();
+    let mut lyra = Hub::open(&fixture.hub, "lyra-1", Some(AgentKind::Lyra)).unwrap();
+    let mut released = Vec::new();
+    for expected in [first, second] {
+        let result = worker::run_one(
+            &mut lyra,
+            None,
+            &released,
+            4,
+            &AtomicBool::new(false),
+            &mut |report, save| {
+                report.run(
+                    &AtomicBool::new(false),
+                    &mut |_| Ok(json!({"tool":"finish","summary":"No change"}).to_string()),
+                    save,
+                )
+            },
+        )
+        .unwrap();
+        assert_eq!(result["task"], expected);
+        released.push(expected);
+    }
+    assert_eq!(
+        worker::run_one(
+            &mut lyra,
+            None,
+            &released,
+            4,
+            &AtomicBool::new(false),
+            &mut |_, _| Ok(())
+        )
+        .unwrap_err()
+        .kind(),
+        io::ErrorKind::NotFound
+    );
+}
+
+#[test]
+fn a_failed_commit_keeps_the_applied_task_claimed_and_retryable() {
+    let fixture = fixture(None);
+    let owner = owner(&fixture);
+    let id = owner.create_task("Fix add", "Use addition", &[]).unwrap();
+    // A hook that rejects commits stands in for failing signing.
+    let hooks = fixture.repo.join(".git/hooks");
+    let hook = hooks.join("pre-commit");
+    fs::write(&hook, "#!/bin/sh\nexit 1\n").unwrap();
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        fs::set_permissions(&hook, fs::Permissions::from_mode(0o755)).unwrap();
+    }
+    let mut lyra = Hub::open(&fixture.hub, "lyra-1", Some(AgentKind::Lyra)).unwrap();
+    let mut actions = vec![
+        json!({"tool":"replace","path":"maths.py","old":"a - b","new":"a + b"}),
+        json!({"tool":"finish","summary":"Use addition"}),
+    ]
+    .into_iter();
+    let error = worker::run_one(
+        &mut lyra,
+        None,
+        &[],
+        8,
+        &AtomicBool::new(false),
+        &mut |report, save| {
+            report.run(
+                &AtomicBool::new(false),
+                &mut |_| Ok(actions.next().unwrap().to_string()),
+                save,
+            )
+        },
+    )
+    .unwrap_err()
+    .to_string();
+    let task = owner.task(id).unwrap();
+    assert_eq!(task.status, Status::Claimed);
+    assert_eq!(task.owner.as_deref(), Some("lyra-1"));
+    let state = error
+        .split("state: ")
+        .nth(1)
+        .expect(&error)
+        .trim()
+        .to_owned();
+    assert!(
+        owner.read(10).unwrap()[0]["body"]
+            .as_str()
+            .unwrap()
+            .contains("could not commit")
+    );
+    // Once the cause is fixed the commit is retried from the saved state.
+    fs::remove_file(&hook).unwrap();
+    let result =
+        worker::commit_applied(&lyra, id, Path::new(&state), &AtomicBool::new(false)).unwrap();
+    assert_eq!(result["status"], "review");
+    assert_eq!(owner.task(id).unwrap().status, Status::Review);
+    owner.land_current(id).unwrap();
+}
+
+#[test]
+fn a_worker_commit_contains_only_the_applied_proposal() {
+    let fixture = fixture(None);
+    let owner = owner(&fixture);
+    let id = owner.create_task("Fix add", "Use addition", &[]).unwrap();
+    let mut lyra = Hub::open(&fixture.hub, "lyra-1", Some(AgentKind::Lyra)).unwrap();
+    let mut actions = vec![
+        json!({"tool":"replace","path":"maths.py","old":"a - b","new":"a + b"}),
+        json!({"tool":"finish","summary":"Use addition"}),
+    ]
+    .into_iter();
+    worker::run_one(
+        &mut lyra,
+        None,
+        &[],
+        8,
+        &AtomicBool::new(false),
+        &mut |report, save| {
+            // Unrelated work already staged in the reused worktree.
+            let worktree = report.request.repo.clone();
+            fs::write(worktree.join("README.md"), "staged elsewhere\n").unwrap();
+            git::ok(&worktree, &["add", "README.md"]).unwrap();
+            report.run(
+                &AtomicBool::new(false),
+                &mut |_| Ok(actions.next().unwrap().to_string()),
+                save,
+            )
+        },
+    )
+    .unwrap();
+    let branch = owner.task(id).unwrap().branch.unwrap();
+    let committed = git::ok(
+        &fixture.repo,
+        &[
+            "show",
+            "--name-only",
+            "--format=",
+            &format!("refs/heads/{branch}"),
+        ],
+    )
+    .unwrap();
+    assert_eq!(committed, "maths.py");
 }

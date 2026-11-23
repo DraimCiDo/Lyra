@@ -149,10 +149,22 @@ pub(super) fn publish(args: GitHubPublish, output: &mut impl Write) -> io::Resul
             "A passing check and a proposal ready for review are required",
         ));
     }
-    report.check_candidate()?;
+    // One read of the project: the hash proves it is the snapshot the check passed on,
+    // and the same bytes are compared with the remote base.
+    let (sources, hash) =
+        crate::executor::candidate_sources(&report.request.repo, &report.proposals)?;
+    match &report.verification {
+        Verification::Passed { result }
+            if result.passed() && result.source_sha256.as_deref() == Some(&hash) => {}
+        _ => {
+            return Err(io::Error::other(
+                "The workspace no longer matches the checked candidate",
+            ));
+        }
+    }
     let client = GithubClient::new(github::DEFAULT_API, &args.token_env)?;
     let (base, tree) = client.base_tree(&args.repo, &args.base)?;
-    remote_matches_checked(&report, &tree)?;
+    remote_matches_checked(&report, &sources, &tree)?;
     let url = client.publish_at(
         &args.repo,
         &args.branch,
@@ -166,43 +178,46 @@ pub(super) fn publish(args: GitHubPublish, output: &mut impl Write) -> io::Resul
     writeln!(output, "{url}")
 }
 
-/// The check ran on the local snapshot plus the proposals. Publishing applies the same
-/// proposals to the remote base, so every file the check saw must be identical there,
-/// and the base must not hold indexed files the check did not see.
+/// Publishing applies the proposals to the remote base. The check validated `sources`
+/// (the project plus the proposals), so every file the proposals do not touch must match
+/// the remote base, and every proposed file must match its pre-proposal content there,
+/// whether or not the report was already applied locally. The remote base must not hold
+/// indexed files the check did not see.
 fn remote_matches_checked(
     report: &TaskReport,
+    sources: &std::collections::BTreeMap<String, Vec<u8>>,
     remote: &std::collections::BTreeMap<String, String>,
 ) -> io::Result<()> {
-    let mut workspace = crate::workspace::Workspace::for_snapshot(&report.request.repo, &[])?;
-    let created: std::collections::BTreeSet<_> = report
+    let proposed: std::collections::BTreeMap<_, _> = report
         .proposals
         .iter()
-        .filter(|edit| edit.create)
-        .map(|edit| edit.path.as_str())
+        .map(|edit| (edit.path.as_str(), edit))
         .collect();
     let mut differences = Vec::new();
-    for path in workspace.files.clone() {
-        if created.contains(path.as_str()) {
-            continue;
-        }
-        let local = workspace.read_snapshot_bytes(&path)?;
+    for (path, checked) in sources {
+        let expected: &[u8] = match proposed.get(path.as_str()) {
+            Some(edit) if edit.create => continue,
+            Some(edit) => edit.original.as_bytes(),
+            None => checked,
+        };
         // A text checkout with CRLF conversion still matches a blob stored with LF.
-        let lf = std::str::from_utf8(&local)
+        let lf = std::str::from_utf8(expected)
             .ok()
             .filter(|text| text.contains("\r\n"))
             .map(|text| text.replace("\r\n", "\n"));
-        let matches = remote.get(&path).is_some_and(|blob| {
-            *blob == github::git_blob_id(&local)
+        let matches = remote.get(path).is_some_and(|blob| {
+            *blob == github::git_blob_id(expected)
                 || lf
                     .as_ref()
                     .is_some_and(|text| *blob == github::git_blob_id(text.as_bytes()))
         });
         if !matches {
-            differences.push(path);
+            differences.push(path.clone());
         }
     }
+    let mut workspace = crate::workspace::Workspace::for_snapshot(&report.request.repo, &[])?;
     for path in remote.keys() {
-        if !workspace.files.contains(path) && workspace.would_index(path)? {
+        if !sources.contains_key(path) && workspace.would_index(path)? {
             differences.push(path.clone());
         }
     }
@@ -260,14 +275,19 @@ mod tests {
         );
         remote.insert("build/out.rs".into(), github::git_blob_id(b"ignored"));
         remote.insert(".github/ci.yml".into(), "0".repeat(40));
-        remote_matches_checked(&report, &remote).unwrap();
+        let compare = |report: &TaskReport, remote: &BTreeMap<String, String>| {
+            let (sources, _) =
+                crate::executor::candidate_sources(&report.request.repo, &report.proposals)?;
+            remote_matches_checked(report, &sources, remote)
+        };
+        compare(&report, &remote).unwrap();
 
         let mut drifted = remote.clone();
         drifted.insert(
             "src/util.rs".into(),
             github::git_blob_id(b"pub fn other() {}\n"),
         );
-        let error = remote_matches_checked(&report, &drifted).unwrap_err();
+        let error = compare(&report, &drifted).unwrap_err();
         assert!(error.to_string().contains("src/util.rs"), "{error}");
 
         let mut extra = remote;
@@ -275,8 +295,30 @@ mod tests {
             "src/extra.rs".into(),
             github::git_blob_id(b"pub fn x() {}\n"),
         );
-        let error = remote_matches_checked(&report, &extra).unwrap_err();
+        let error = compare(&report, &extra).unwrap_err();
         assert!(error.to_string().contains("src/extra.rs"), "{error}");
+
+        // After Apply the workspace holds the replacement while the remote base still
+        // holds the original: that is the expected state, not a drift.
+        let mut applied = report;
+        applied.proposals.push(Edit {
+            path: "src/util.rs".into(),
+            original: "pub fn helper() {}\n".into(),
+            replacement: "pub fn helper() { 1; }\n".into(),
+            create: false,
+        });
+        fs::write(repo.join("src/util.rs"), "pub fn helper() { 1; }\n").unwrap();
+        fs::write(repo.join("src/new.rs"), "new").unwrap();
+        let mut remote = extra;
+        remote.remove("src/extra.rs");
+        compare(&applied, &remote).unwrap();
+        // The proposed file must still equal its original on the remote base.
+        remote.insert(
+            "src/util.rs".into(),
+            github::git_blob_id(b"pub fn other() {}\n"),
+        );
+        let error = compare(&applied, &remote).unwrap_err();
+        assert!(error.to_string().contains("src/util.rs"), "{error}");
     }
 
     #[test]

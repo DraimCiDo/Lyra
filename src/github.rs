@@ -515,8 +515,10 @@ impl GithubClient {
         }
         // Verify every precondition before creating anything remotely.
         let mut shas = Vec::new();
+        let mut contents = Vec::new();
         for edit in proposals {
             if edit.create {
+                contents.push(edit.replacement.clone());
                 match self.file(repo, &edit.path, Some(base)) {
                     Err(e) if e.kind() == io::ErrorKind::NotFound => shas.push(None),
                     Ok(_) => {
@@ -529,12 +531,19 @@ impl GithubClient {
                 }
             } else {
                 let (text, sha) = self.file(repo, &edit.path, Some(base))?;
-                if text != edit.original {
+                // A Windows checkout may differ from the remote only in line endings.
+                if text != edit.original && !same_text_ignoring_line_endings(&text, &edit.original)
+                {
                     return Err(io::Error::other(format!(
                         "Conflict: {} on {base} differs from the proposal's original",
                         edit.path
                     )));
                 }
+                contents.push(in_remote_line_endings(
+                    &edit.replacement,
+                    &text,
+                    &edit.original,
+                ));
                 shas.push(Some(sha));
             }
         }
@@ -552,10 +561,10 @@ impl GithubClient {
             &json!({"ref":format!("refs/heads/{branch}"),"sha":base_sha}),
             false,
         )?;
-        for (edit, sha) in proposals.iter().zip(shas) {
+        for ((edit, sha), content) in proposals.iter().zip(shas).zip(contents) {
             let mut payload = json!({
                 "message": format!("{} {}", if edit.create { "Add" } else { "Update" }, edit.path),
-                "content": base64_encode(edit.replacement.as_bytes()),
+                "content": base64_encode(content.as_bytes()),
                 "branch": branch,
             });
             if let Some(sha) = sha {
@@ -756,6 +765,24 @@ pub fn run(args: GithubArgs, output: &mut impl Write) -> io::Result<()> {
     }
 }
 
+pub fn same_text_ignoring_line_endings(left: &str, right: &str) -> bool {
+    left.replace("\r\n", "\n") == right.replace("\r\n", "\n")
+}
+
+/// Write the proposed text with the remote file's line endings when the local original
+/// only differed from the remote in line endings; otherwise leave it unchanged.
+fn in_remote_line_endings(replacement: &str, remote: &str, original: &str) -> String {
+    if remote == original {
+        return replacement.to_owned();
+    }
+    let lf = replacement.replace("\r\n", "\n");
+    if remote.contains("\r\n") {
+        lf.replace('\n', "\r\n")
+    } else {
+        lf
+    }
+}
+
 /// Git's object id for a blob: SHA-1 over `blob <len>\0<content>`. This compares a
 /// remote tree with local files; it is not used as a security boundary.
 pub fn git_blob_id(content: &[u8]) -> String {
@@ -855,6 +882,25 @@ pub fn base64_decode(text: &str) -> io::Result<Vec<u8>> {
 mod tests {
     use super::*;
 
+    #[test]
+    fn crlf_publication_keeps_the_remote_line_endings() {
+        let original = "a\r\nb\r\n";
+        let replacement = "a\r\nc\r\n";
+        assert!(same_text_ignoring_line_endings("a\nb\n", original));
+        assert!(!same_text_ignoring_line_endings("a\nx\n", original));
+        assert_eq!(
+            in_remote_line_endings(replacement, "a\nb\n", original),
+            "a\nc\n"
+        );
+        assert_eq!(
+            in_remote_line_endings(replacement, original, original),
+            replacement
+        );
+        assert_eq!(
+            in_remote_line_endings("a\nc\n", "a\r\nb\r\n", "a\nb\n"),
+            "a\r\nc\r\n"
+        );
+    }
     #[test]
     fn git_blob_ids_match_git() {
         assert_eq!(git_blob_id(b""), "e69de29bb2d1d6434b8b29ae775ad8c2e48c5391");

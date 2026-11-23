@@ -1207,7 +1207,8 @@ impl eframe::App for Desktop {
 
     fn logic(&mut self, ctx: &egui::Context, _: &mut eframe::Frame) {
         self.collect();
-        if self.worker.is_some() {
+        self.hub.poll();
+        if self.worker.is_some() || self.hub.busy() {
             ctx.request_repaint_after(Duration::from_millis(100));
         }
     }

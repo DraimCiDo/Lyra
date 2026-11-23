@@ -1,58 +1,163 @@
 //! Owner view of an agent hub in the v2 Desktop: who is working, on what, and the
-//! decisions only the owner makes (add, land, reopen, cancel). Refreshes on demand only.
+//! decisions only the owner makes (add, land, reopen, cancel). Hub operations run on a
+//! background thread so a slow Git or database wait never freezes the window; the view
+//! refreshes after each operation and on demand, never on a timer.
 use super::{Hub, OWNER, Status, Task};
 use crate::executor;
 use crate::v2::desktop::appearance::{self, ACCENT, ERROR, SUCCESS, WARNING};
 use eframe::egui::{self, RichText};
 use serde_json::Value;
-use std::path::{Path, PathBuf};
+use std::{
+    io,
+    path::{Path, PathBuf},
+    sync::mpsc,
+};
+
+/// What a finished background operation produced.
+enum Outcome {
+    Loaded(Value, Vec<Task>),
+    Done(String),
+    Diff {
+        id: i64,
+        commit: String,
+        patch: String,
+    },
+    Inbox(Vec<Value>),
+    Created(PathBuf),
+}
+
+struct Finished {
+    /// The hub folder generation the operation was started for.
+    generation: u64,
+    outcome: Result<Outcome, String>,
+}
 
 #[derive(Default)]
 pub struct HubView {
     folder: Option<PathBuf>,
+    /// Bumped whenever the folder changes; results of older operations are dropped.
+    generation: u64,
     status: Option<Value>,
     tasks: Vec<Task>,
     inbox: Vec<Value>,
-    diff: Option<(i64, String)>,
+    /// The diff the owner is looking at: task, exact commit and patch.
+    diff: Option<(i64, String, String)>,
     notice: String,
+    pending: Option<mpsc::Receiver<Finished>>,
 }
 
 impl HubView {
-    fn hub(&self) -> Option<Result<Hub, String>> {
-        self.folder
-            .as_deref()
-            .map(|folder| Hub::open(folder, OWNER, None).map_err(|error| error.to_string()))
+    /// Whether an operation is running (the window should keep repainting).
+    pub fn busy(&self) -> bool {
+        self.pending.is_some()
     }
 
-    pub fn open(&mut self, folder: PathBuf) {
-        self.folder = Some(folder);
-        self.diff = None;
-        self.refresh();
-    }
-
-    pub fn refresh(&mut self) {
-        let Some(hub) = self.hub() else { return };
-        let loaded = hub.and_then(|hub| {
-            let status = hub.status().map_err(|e| e.to_string())?;
-            let tasks = hub.tasks(None).map_err(|e| e.to_string())?;
-            Ok((status, tasks))
-        });
-        match loaded {
-            Ok((status, tasks)) => {
+    /// Apply the result of a finished operation, if any. Call once per frame.
+    pub fn poll(&mut self) {
+        let Some(receiver) = &self.pending else {
+            return;
+        };
+        let finished = match receiver.try_recv() {
+            Ok(finished) => finished,
+            Err(mpsc::TryRecvError::Empty) => return,
+            Err(mpsc::TryRecvError::Disconnected) => Finished {
+                generation: self.generation,
+                outcome: Err("The hub operation stopped unexpectedly".into()),
+            },
+        };
+        self.pending = None;
+        if finished.generation != self.generation {
+            return;
+        }
+        match finished.outcome {
+            Ok(Outcome::Loaded(status, tasks)) => {
                 self.status = Some(status);
                 self.tasks = tasks;
             }
-            Err(error) => self.notice = error,
+            Ok(Outcome::Done(message)) => {
+                self.notice = message;
+                self.refresh();
+            }
+            Ok(Outcome::Diff { id, commit, patch }) => self.diff = Some((id, commit, patch)),
+            Ok(Outcome::Inbox(messages)) => self.inbox.extend(messages),
+            Ok(Outcome::Created(folder)) => {
+                self.notice = "Hub created".into();
+                self.switch(folder);
+            }
+            Err(error) => {
+                self.notice = error;
+                // The hub may have changed under a failed action; show what is true now.
+                if self.status.is_some() {
+                    self.refresh();
+                }
+            }
         }
     }
 
-    fn act(&mut self, action: impl FnOnce(&Hub) -> std::io::Result<String>) {
-        if let Some(hub) = self.hub() {
-            self.notice = match hub.and_then(|hub| action(&hub).map_err(|e| e.to_string())) {
-                Ok(message) | Err(message) => message,
-            };
+    /// Run `work` against the owner's hub off the render thread.
+    fn spawn(&mut self, work: impl FnOnce(&Hub) -> io::Result<Outcome> + Send + 'static) {
+        let Some(folder) = self.folder.clone() else {
+            return;
+        };
+        if self.pending.is_some() {
+            return;
         }
+        let generation = self.generation;
+        let (send, receive) = mpsc::channel();
+        self.pending = Some(receive);
+        std::thread::spawn(move || {
+            let outcome = Hub::open(&folder, OWNER, None)
+                .and_then(|hub| work(&hub))
+                .map_err(|error| error.to_string());
+            let _ = send.send(Finished {
+                generation,
+                outcome,
+            });
+        });
+    }
+
+    /// Open or create a hub: forget everything that belonged to the previous one first.
+    fn switch(&mut self, folder: PathBuf) {
+        self.folder = Some(folder);
+        self.generation += 1;
+        self.pending = None;
+        self.status = None;
+        self.tasks.clear();
+        self.inbox.clear();
+        self.diff = None;
+        self.notice.clear();
         self.refresh();
+    }
+
+    pub fn open(&mut self, folder: PathBuf) {
+        self.switch(folder);
+    }
+
+    pub fn refresh(&mut self) {
+        self.spawn(|hub| Ok(Outcome::Loaded(hub.status()?, hub.tasks(None)?)));
+    }
+
+    fn create(&mut self, repo: PathBuf, check: Option<PathBuf>, folder: PathBuf) {
+        // Creating does not need an existing hub; run it like any other operation.
+        let generation = self.generation;
+        let (send, receive) = mpsc::channel();
+        self.pending = Some(receive);
+        std::thread::spawn(move || {
+            let outcome = (|| {
+                let check = check.as_deref().map(executor::load_config).transpose()?;
+                let base =
+                    super::git::ok(&repo, &["symbolic-ref", "--short", "HEAD"]).map_err(|_| {
+                        io::Error::other("Check out a local branch in the project first")
+                    })?;
+                Hub::init(&folder, &repo, &base, check)?;
+                Ok(Outcome::Created(folder))
+            })()
+            .map_err(|error: io::Error| error.to_string());
+            let _ = send.send(Finished {
+                generation,
+                outcome,
+            });
+        });
     }
 
     pub fn controls(&mut self, ui: &mut egui::Ui, repo: Option<&Path>, checker: Option<&Path>) {
@@ -69,42 +174,30 @@ impl HubView {
             if ui.button(label).clicked()
                 && let Some(folder) = rfd::FileDialog::new().pick_folder()
             {
-                self.open(folder);
+                self.switch(folder);
             }
             if let Some(repo) = repo
+                && !self.busy()
                 && ui
                     .button("Create hub for project")
                     .on_hover_text("Uses the selected project and check config")
                     .clicked()
                 && let Some(folder) = rfd::FileDialog::new().set_file_name("lyra-hub").save_file()
             {
-                let created = checker
-                    .map(executor::load_config)
-                    .transpose()
-                    .and_then(|check| {
-                        let base = super::git::ok(repo, &["rev-parse", "--abbrev-ref", "HEAD"])?;
-                        Hub::init(&folder, repo, &base, check)
-                    });
-                match created {
-                    Ok(()) => {
-                        self.folder = Some(folder);
-                        self.notice = "Hub created".into();
-                        self.refresh();
-                    }
-                    Err(error) => self.notice = error.to_string(),
-                }
+                self.create(repo.to_owned(), checker.map(Path::to_owned), folder);
             }
             if self.folder.is_some() {
-                if ui.button("Refresh").clicked() {
+                if ui
+                    .add_enabled(!self.busy(), egui::Button::new("Refresh"))
+                    .clicked()
+                {
                     self.refresh();
                 }
-                if ui.button("Inbox").clicked()
-                    && let Some(Ok(hub)) = self.hub()
+                if ui
+                    .add_enabled(!self.busy(), egui::Button::new("Inbox"))
+                    .clicked()
                 {
-                    match hub.read(100) {
-                        Ok(messages) => self.inbox.extend(messages),
-                        Err(error) => self.notice = error.to_string(),
-                    }
+                    self.spawn(|hub| Ok(Outcome::Inbox(hub.read(100)?)));
                 }
             }
         });
@@ -121,27 +214,20 @@ impl HubView {
                 .desired_rows(3)
                 .hint_text("New task: first line is the title, then the description"),
         );
-        let ready = self.folder.is_some() && !input.trim().is_empty();
+        let ready = self.status.is_some() && !self.busy() && !input.trim().is_empty();
         if ui
             .add_enabled(ready, appearance::primary("Add task"))
             .clicked()
         {
-            let text = input.trim();
+            let text = std::mem::take(input);
+            let text = text.trim();
             let (title, rest) = text.split_once('\n').unwrap_or((text, ""));
             let description = if rest.trim().is_empty() { title } else { rest };
-            if let Some(result) = self.hub() {
-                match result.and_then(|hub| {
-                    hub.create_task(title, description, &[])
-                        .map_err(|e| e.to_string())
-                }) {
-                    Ok(id) => {
-                        input.clear();
-                        self.notice = format!("Task {id} added");
-                    }
-                    Err(error) => self.notice = error,
-                }
-                self.refresh();
-            }
+            let (title, description) = (title.to_owned(), description.to_owned());
+            self.spawn(move |hub| {
+                let id = hub.create_task(&title, &description, &[])?;
+                Ok(Outcome::Done(format!("Task {id} added")))
+            });
         }
     }
 
@@ -244,25 +330,44 @@ impl HubView {
                 if !task.summary.is_empty() {
                     ui.label(&task.summary);
                 }
+                let idle = self.pending.is_none();
+                let reviewed = self
+                    .diff
+                    .as_ref()
+                    .filter(|(id, ..)| *id == task.id)
+                    .map(|(_, commit, _)| commit.clone());
                 ui.horizontal_wrapped(|ui| match task.status {
                     Status::Review => {
-                        if ui.small_button("View diff").clicked() {
-                            action = Some(("diff", task.id));
+                        if ui
+                            .add_enabled(idle, egui::Button::new("View diff").small())
+                            .clicked()
+                        {
+                            action = Some(("diff", task.id, None));
                         }
-                        if ui.small_button("Land").clicked() {
-                            action = Some(("land", task.id));
+                        let land = ui.add_enabled(
+                            idle && reviewed.is_some(),
+                            egui::Button::new("Land reviewed commit").small(),
+                        );
+                        if reviewed.is_none() {
+                            land.clone().on_disabled_hover_text("View the diff first");
+                        }
+                        if land.clicked() {
+                            action = Some(("land", task.id, reviewed.clone()));
                         }
                         if ui
-                            .small_button("Reopen")
+                            .add_enabled(idle, egui::Button::new("Reopen").small())
                             .on_hover_text("Uses the composer text as the note")
                             .clicked()
                         {
-                            action = Some(("reopen", task.id));
+                            action = Some(("reopen", task.id, None));
                         }
                     }
                     Status::Open | Status::Claimed => {
-                        if ui.small_button("Cancel").clicked() {
-                            action = Some(("cancel", task.id));
+                        if ui
+                            .add_enabled(idle, egui::Button::new("Cancel").small())
+                            .clicked()
+                        {
+                            action = Some(("cancel", task.id, None));
                         }
                     }
                     Status::Done | Status::Cancelled => {}
@@ -270,51 +375,54 @@ impl HubView {
             });
         }
         match action {
-            Some(("diff", id)) => {
-                if let Some(Ok(hub)) = self.hub() {
-                    match hub.diff(id, 256 * 1024) {
-                        Ok(diff) => {
-                            self.diff =
-                                Some((id, diff["patch"].as_str().unwrap_or_default().into()))
-                        }
-                        Err(error) => self.notice = error.to_string(),
-                    }
-                }
-            }
-            Some(("land", id)) => self.act(|hub| hub.land(id).map(|_| format!("Task {id} landed"))),
-            Some(("reopen", id)) => {
+            Some(("diff", id, _)) => self.spawn(move |hub| {
+                let diff = hub.diff(id, 256 * 1024)?;
+                Ok(Outcome::Diff {
+                    id,
+                    commit: diff["commit"].as_str().unwrap_or_default().into(),
+                    patch: diff["patch"].as_str().unwrap_or_default().into(),
+                })
+            }),
+            Some(("land", id, Some(commit))) => self.spawn(move |hub| {
+                hub.land(id, &commit)?;
+                Ok(Outcome::Done(format!("Task {id} landed")))
+            }),
+            Some(("reopen", id, _)) => {
                 let note = if note.trim().is_empty() {
                     "Reopened by the owner"
                 } else {
                     note
                 };
                 let note = note.to_owned();
-                self.act(|hub| {
-                    hub.update(id, Status::Open, &note)?;
-                    hub.send(None, Some(id), &note)?;
-                    Ok(format!("Task {id} reopened"))
+                self.spawn(move |hub| {
+                    hub.reopen(id, &note)?;
+                    Ok(Outcome::Done(format!("Task {id} reopened")))
                 });
             }
-            Some(("cancel", id)) => {
-                self.act(|hub| hub.cancel(id).map(|_| format!("Task {id} cancelled")))
-            }
+            Some(("cancel", id, _)) => self.spawn(move |hub| {
+                hub.cancel(id)?;
+                Ok(Outcome::Done(format!("Task {id} cancelled")))
+            }),
             _ => {}
         }
-        if let Some((id, patch)) = &self.diff {
-            egui::CollapsingHeader::new(format!("Diff of task {id}"))
-                .default_open(true)
-                .show(ui, |ui| {
-                    for line in patch.lines() {
-                        let color = if line.starts_with('+') {
-                            SUCCESS
-                        } else if line.starts_with('-') {
-                            ERROR
-                        } else {
-                            ui.visuals().text_color()
-                        };
-                        ui.label(RichText::new(line).monospace().color(color));
-                    }
-                });
+        if let Some((id, commit, patch)) = &self.diff {
+            egui::CollapsingHeader::new(format!(
+                "Diff of task {id} · commit {}",
+                &commit[..commit.len().min(12)]
+            ))
+            .default_open(true)
+            .show(ui, |ui| {
+                for line in patch.lines() {
+                    let color = if line.starts_with('+') {
+                        SUCCESS
+                    } else if line.starts_with('-') {
+                        ERROR
+                    } else {
+                        ui.visuals().text_color()
+                    };
+                    ui.label(RichText::new(line).monospace().color(color));
+                }
+            });
         }
         if !self.inbox.is_empty() {
             ui.add_space(6.0);
@@ -327,5 +435,75 @@ impl HubView {
                 ));
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::v2::hub::git;
+    use std::time::{Duration, Instant};
+
+    fn hub_folder(root: &Path, name: &str) -> PathBuf {
+        let repo = root.join(format!("{name}-repo"));
+        std::fs::create_dir(&repo).unwrap();
+        for args in [
+            &["init", "-q", "-b", "main"][..],
+            &["config", "user.name", "T"],
+            &["config", "user.email", "t@example.invalid"],
+            &["config", "commit.gpgsign", "false"],
+        ] {
+            git::ok(&repo, args).unwrap();
+        }
+        std::fs::write(repo.join("a.txt"), "a\n").unwrap();
+        git::ok(&repo, &["add", "-A"]).unwrap();
+        git::ok(&repo, &["commit", "-q", "-m", "init"]).unwrap();
+        let folder = root.join(format!("{name}-hub"));
+        Hub::init(&folder, &repo, "main", None).unwrap();
+        folder
+    }
+
+    fn settle(view: &mut HubView) {
+        let deadline = Instant::now() + Duration::from_secs(20);
+        while view.busy() {
+            assert!(
+                Instant::now() < deadline,
+                "the hub operation did not finish"
+            );
+            view.poll();
+            std::thread::sleep(Duration::from_millis(10));
+        }
+    }
+
+    #[test]
+    fn switching_hubs_clears_the_previous_hubs_data_and_drops_stale_results() {
+        let root = tempfile::tempdir().unwrap();
+        let first = hub_folder(root.path(), "first");
+        let second = hub_folder(root.path(), "second");
+        Hub::open(&first, OWNER, None)
+            .unwrap()
+            .create_task("Only in the first hub", "x", &[])
+            .unwrap();
+        let mut view = HubView::default();
+        view.switch(first);
+        settle(&mut view);
+        assert_eq!(view.tasks.len(), 1);
+        view.inbox.push(serde_json::json!({"body": "old"}));
+        view.diff = Some((1, "abc".into(), "patch".into()));
+
+        // A result still in flight for the first hub must not land in the second.
+        view.refresh();
+        view.switch(second);
+        assert!(view.status.is_none() && view.tasks.is_empty());
+        assert!(view.inbox.is_empty() && view.diff.is_none());
+        settle(&mut view);
+        assert!(view.tasks.is_empty());
+        assert!(view.status.is_some());
+
+        // A folder that cannot be loaded leaves no task actions behind.
+        view.switch(root.path().join("missing-hub"));
+        settle(&mut view);
+        assert!(view.status.is_none() && view.tasks.is_empty());
+        assert!(!view.notice.is_empty());
     }
 }

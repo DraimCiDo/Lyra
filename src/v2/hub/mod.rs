@@ -180,6 +180,8 @@ pub struct Hub {
     root: PathBuf,
     repo: PathBuf,
     base: String,
+    /// Stable identifier that namespaces this hub's task branches.
+    id: Option<String>,
     check: Option<ExecutionRequest>,
     agent: String,
 }
@@ -227,11 +229,16 @@ impl Hub {
         if base.is_empty() || base.starts_with('-') || base.len() > 200 {
             return Err(error("Invalid base branch"));
         }
+        // A tag of the same name would pass a plain commit lookup but cannot be landed on.
         git::ok(
             &repo,
-            &["rev-parse", "--verify", &format!("{base}^{{commit}}")],
+            &[
+                "rev-parse",
+                "--verify",
+                &format!("refs/heads/{base}^{{commit}}"),
+            ],
         )
-        .map_err(|_| error(format!("Base branch '{base}' was not found")))?;
+        .map_err(|_| error(format!("Local branch '{base}' was not found")))?;
         if let Some(check) = &check {
             check.validate()?;
         }
@@ -264,7 +271,25 @@ impl Hub {
             .transaction_with_behavior(TransactionBehavior::Immediate)
             .map_err(db)?;
         transaction.execute_batch(SCHEMA).map_err(db)?;
+        let id = {
+            use sha2::{Digest, Sha256};
+            let mut hash = Sha256::new();
+            hash.update(now().to_le_bytes());
+            hash.update(std::process::id().to_le_bytes());
+            hash.update(root.to_string_lossy().as_bytes());
+            hash.update(
+                SystemTime::now()
+                    .duration_since(UNIX_EPOCH)
+                    .map_or(0, |time| time.subsec_nanos())
+                    .to_le_bytes(),
+            );
+            hash.finalize()[..4]
+                .iter()
+                .map(|byte| format!("{byte:02x}"))
+                .collect::<String>()
+        };
         for (key, value) in [
+            ("id", Some(id)),
             ("repo", Some(repo.to_string_lossy().into_owned())),
             ("base", Some(base.to_owned())),
             ("check", check),
@@ -318,11 +343,13 @@ impl Hub {
             .map(|text| serde_json::from_str::<ExecutionRequest>(&text))
             .transpose()
             .map_err(error)?;
+        let id = meta("id")?;
         let hub = Self {
             connection,
             root,
             repo,
             base,
+            id,
             check,
             agent: agent.to_owned(),
         };
@@ -457,9 +484,23 @@ impl Hub {
         Ok(id)
     }
 
+    /// Branch for a task. Two hubs on one repository never share a branch name.
+    fn branch_name(&self, task: i64) -> String {
+        match &self.id {
+            Some(id) => format!("lyra/{id}/task-{task}"),
+            None => format!("lyra/task-{task}"),
+        }
+    }
+
     /// Claim a specific open task, or the oldest open task whose dependencies are done.
     /// The task gets its own branch and worktree; the claim is atomic across agents.
     pub fn claim(&mut self, id: Option<i64>) -> io::Result<Task> {
+        self.claim_except(id, &[])
+    }
+
+    /// Like `claim`, but never picks one of the `skip` tasks (for example tasks this
+    /// worker already released in the same run).
+    pub fn claim_except(&mut self, id: Option<i64>, skip: &[i64]) -> io::Result<Task> {
         if self.agent == OWNER {
             return Err(error("Only an agent can claim a task"));
         }
@@ -481,6 +522,9 @@ impl Hub {
         };
         let mut chosen = None;
         for (task, depends) in candidates {
+            if skip.contains(&task) {
+                continue;
+            }
             let depends: Vec<i64> = serde_json::from_str(&depends).unwrap_or_default();
             let mut ready = true;
             for dependency in depends {
@@ -507,7 +551,7 @@ impl Hub {
                 None => io::Error::new(io::ErrorKind::NotFound, "No open task is ready to claim"),
             });
         };
-        let branch = format!("lyra/task-{task}");
+        let branch = self.branch_name(task);
         let worktree = worktrees.join(format!("task-{task}"));
         transaction
             .execute(
@@ -516,8 +560,9 @@ impl Hub {
             )
             .map_err(db)?;
         self.ensure_worktree(&branch, &worktree)?;
-        transaction.commit().map_err(db)?;
+        // The audit entry belongs to the claim: either both exist or neither does.
         self.log(Some(task), "claim", &branch)?;
+        transaction.commit().map_err(db)?;
         self.task(task)
     }
 
@@ -586,6 +631,29 @@ impl Hub {
         let transaction =
             Transaction::new_unchecked(&self.connection, TransactionBehavior::Immediate)
                 .map_err(db)?;
+        self.update_locked(id, status, summary)?;
+        transaction.commit().map_err(db)?;
+        self.task(id)
+    }
+
+    /// Owner: send a task under review back to the board and tell the agents why. The
+    /// note is validated first and the transition and the message commit together.
+    pub fn reopen(&self, id: i64, note: &str) -> io::Result<Task> {
+        if self.agent != OWNER {
+            return Err(error("Only the owner can reopen a task"));
+        }
+        bounded("A note", note, 8 * 1024)?;
+        let transaction =
+            Transaction::new_unchecked(&self.connection, TransactionBehavior::Immediate)
+                .map_err(db)?;
+        self.update_locked(id, Status::Open, note)?;
+        self.insert_message(None, Some(id), note)?;
+        transaction.commit().map_err(db)?;
+        self.task(id)
+    }
+
+    /// The state change itself; the caller holds the write transaction.
+    fn update_locked(&self, id: i64, status: Status, summary: &str) -> io::Result<()> {
         let task = self.owned_task(id)?;
         if summary.len() > 8 * 1024 || summary.contains('\0') {
             return Err(error("A summary is at most 8 KiB of text"));
@@ -623,9 +691,7 @@ impl Hub {
                 .execute("DELETE FROM leases WHERE task=?1", [id])
                 .map_err(db)?;
         }
-        self.log(Some(id), status.as_str(), summary)?;
-        transaction.commit().map_err(db)?;
-        self.task(id)
+        self.log(Some(id), status.as_str(), summary)
     }
 
     pub fn cancel(&self, id: i64) -> io::Result<Task> {
@@ -757,6 +823,10 @@ impl Hub {
 
     pub fn send(&self, to: Option<&str>, task: Option<i64>, body: &str) -> io::Result<i64> {
         self.touch()?;
+        self.insert_message(to, task, body)
+    }
+
+    fn insert_message(&self, to: Option<&str>, task: Option<i64>, body: &str) -> io::Result<i64> {
         bounded("A message", body, 8 * 1024)?;
         if let Some(to) = to
             && to != OWNER
@@ -942,21 +1012,21 @@ impl Hub {
             .map(|path| git::dirty(&path))
             .transpose()?
             .unwrap_or(false);
+        let commit = git::ok(&self.repo, &["rev-parse", &format!("refs/heads/{branch}")])?;
         Ok(json!({
-            "branch": branch, "base": self.base, "stat": stat,
+            "branch": branch, "base": self.base, "commit": commit, "stat": stat,
             "patch": &patch[..patch.floor_char_boundary(limit)],
             "truncated": patch.len() > limit, "uncommitted_changes": uncommitted,
         }))
     }
 
     /// Owner only: merge a reviewed task branch into the base branch of the project.
-    pub fn land(&self, id: i64) -> io::Result<Value> {
+    /// `expected_commit` is the commit the owner reviewed (from `diff`); if the branch
+    /// has moved since, nothing is merged.
+    pub fn land(&self, id: i64, expected_commit: &str) -> io::Result<Value> {
         if self.agent != OWNER {
             return Err(error("Only the owner can land a task"));
         }
-        let transaction =
-            Transaction::new_unchecked(&self.connection, TransactionBehavior::Immediate)
-                .map_err(db)?;
         let task = self.task(id)?;
         if task.status != Status::Review {
             return Err(error(format!("Task {id} is not waiting for review")));
@@ -966,6 +1036,31 @@ impl Hub {
             .clone()
             .ok_or_else(|| error("Task has no branch"))?;
         let head = git::ok(&self.repo, &["rev-parse", &format!("refs/heads/{branch}")])?;
+        if expected_commit.len() < 7 || !head.starts_with(expected_commit) {
+            return Err(error(format!(
+                "The task branch is at {} but {} was reviewed; review it again",
+                &head[..12],
+                &expected_commit[..expected_commit.len().min(12)]
+            )));
+        }
+        // A previous landing may have updated the base and stopped before recording it.
+        if self.landing_started(id, &head)?
+            && git::run(
+                &self.repo,
+                &[
+                    "merge-base",
+                    "--is-ancestor",
+                    &head,
+                    &format!("refs/heads/{}", self.base),
+                ],
+            )?
+            .success
+        {
+            return self.finish_landing(&task, &branch, &head);
+        }
+        let transaction =
+            Transaction::new_unchecked(&self.connection, TransactionBehavior::Immediate)
+                .map_err(db)?;
         if let Some(worktree) = task
             .worktree
             .as_ref()
@@ -977,6 +1072,7 @@ impl Hub {
         if self.check.is_some() {
             let record: Option<CheckRecord> = task
                 .check
+                .clone()
                 .and_then(|value| serde_json::from_value(value).ok());
             let worktree = task
                 .worktree
@@ -1018,6 +1114,9 @@ impl Hub {
                 "The project has uncommitted changes; commit or stash them first",
             ));
         }
+        // Record the intent durably before Git moves the base, so a retry can reconcile.
+        self.log(Some(id), "land-intent", &head)?;
+        transaction.commit().map_err(db)?;
         let message = format!("Merge task {id}: {}", task.title);
         let checked = self.check.is_some();
         let args: &[&str] = if checked {
@@ -1035,21 +1134,43 @@ impl Hub {
                 merge.stderr.trim()
             )));
         }
-        let landed = git::head(&self.repo)?;
-        if checked && landed != head {
+        if checked && git::head(&self.repo)? != head {
             return Err(error("The base does not match the checked commit"));
         }
+        self.finish_landing(&task, &branch, &head)
+    }
+
+    /// Whether a landing of exactly this commit was started (and may have reached Git).
+    fn landing_started(&self, id: i64, head: &str) -> io::Result<bool> {
+        self.connection
+            .query_row(
+                "SELECT 1 FROM events WHERE task=?1 AND kind='land-intent' AND detail=?2 LIMIT 1",
+                params![id, head],
+                |_| Ok(()),
+            )
+            .optional()
+            .map(|row| row.is_some())
+            .map_err(db)
+    }
+
+    /// Record a landing that Git has completed and clean up its worktree and branch.
+    fn finish_landing(&self, task: &Task, branch: &str, head: &str) -> io::Result<Value> {
+        let id = task.id;
+        let transaction =
+            Transaction::new_unchecked(&self.connection, TransactionBehavior::Immediate)
+                .map_err(db)?;
         self.connection
             .execute(
-                "UPDATE tasks SET status='done', updated_at=?2 WHERE id=?1",
+                "UPDATE tasks SET status='done', owner=NULL, updated_at=?2 WHERE id=?1",
                 params![id, now()],
             )
             .map_err(db)?;
         self.connection
             .execute("DELETE FROM leases WHERE task=?1", [id])
             .map_err(db)?;
-        self.log(Some(id), "land", &head)?;
+        self.log(Some(id), "land", head)?;
         transaction.commit().map_err(db)?;
+        let landed = git::head(&self.repo)?;
         let worktree_retained = task.worktree.as_ref().is_some_and(|worktree| {
             worktree.exists()
                 && git::ok(
@@ -1062,7 +1183,7 @@ impl Hub {
             && git::ok(&self.repo, &["rev-parse", &format!("refs/heads/{branch}")])
                 .is_ok_and(|current| current == head)
         {
-            let _ = git::ok(&self.repo, &["branch", "-d", &branch]);
+            let _ = git::ok(&self.repo, &["branch", "-d", branch]);
         }
         Ok(
             json!({"landed": id, "branch": branch, "commit": landed, "worktree_retained": worktree_retained}),

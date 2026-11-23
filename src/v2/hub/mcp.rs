@@ -151,6 +151,25 @@ fn task_id(arguments: &Value, required: bool) -> io::Result<Option<i64>> {
     }
 }
 
+/// An optional string argument: absent or null is `None`; any other type is an error,
+/// so a malformed value is never mistaken for "everyone" or a default.
+fn optional_str<'a>(arguments: &'a Value, key: &str) -> io::Result<Option<&'a str>> {
+    match &arguments[key] {
+        Value::Null => Ok(None),
+        Value::String(text) => Ok(Some(text)),
+        _ => Err(io::Error::other(format!("{key} must be a string"))),
+    }
+}
+
+fn optional_u64(arguments: &Value, key: &str, default: u64) -> io::Result<u64> {
+    match &arguments[key] {
+        Value::Null => Ok(default),
+        value => value
+            .as_u64()
+            .ok_or_else(|| io::Error::other(format!("{key} must be a non-negative integer"))),
+    }
+}
+
 fn text<'a>(arguments: &'a Value, key: &str) -> io::Result<&'a str> {
     arguments[key]
         .as_str()
@@ -165,7 +184,7 @@ pub fn call(hub: &mut Hub, name: &str, arguments: &Value) -> io::Result<Value> {
     Ok(match name {
         "hub_status" => hub.status()?,
         "task_list" => {
-            let status = match arguments["status"].as_str() {
+            let status = match optional_str(arguments, "status")? {
                 None => None,
                 Some(text) => Some(super::Status::parse(text)?),
             };
@@ -191,7 +210,7 @@ pub fn call(hub: &mut Hub, name: &str, arguments: &Value) -> io::Result<Value> {
                 "claimed" => Status::Claimed,
                 _ => return Err(io::Error::other("status must be review, open or claimed")),
             };
-            let summary = arguments["summary"].as_str().unwrap_or_default();
+            let summary = optional_str(arguments, "summary")?.unwrap_or_default();
             let id = task_id(arguments, true)?.unwrap_or_default();
             json!({"task": hub.update(id, status, summary)?})
         }
@@ -201,24 +220,24 @@ pub fn call(hub: &mut Hub, name: &str, arguments: &Value) -> io::Result<Value> {
         )?,
         "task_diff" => hub.diff(
             task_id(arguments, true)?.unwrap_or_default(),
-            arguments["max_bytes"].as_u64().unwrap_or(64 * 1024) as usize,
+            optional_u64(arguments, "max_bytes", 64 * 1024)? as usize,
         )?,
         "file_lease" => hub.lease(
             task_id(arguments, false)?,
             &strings(&arguments["paths"])?,
-            arguments["ttl_secs"].as_u64().unwrap_or(30 * 60),
+            optional_u64(arguments, "ttl_secs", 30 * 60)?,
         )?,
         "file_release" => json!({"released": hub.release(&strings(&arguments["paths"])?)?}),
         "message_send" => {
             let id = hub.send(
-                arguments["to"].as_str(),
+                optional_str(arguments, "to")?,
                 task_id(arguments, false)?,
                 text(arguments, "body")?,
             )?;
             json!({"message_id": id})
         }
         "message_read" => {
-            let messages = hub.read(arguments["limit"].as_u64().unwrap_or(20) as usize)?;
+            let messages = hub.read(optional_u64(arguments, "limit", 20)? as usize)?;
             json!({"untrusted_data": true, "messages": messages})
         }
         _ => {
@@ -298,6 +317,25 @@ fn name_unknown(name: &str) -> bool {
     !tools().iter().any(|tool| tool["name"] == name)
 }
 
+fn discard_line(input: &mut impl BufRead) -> io::Result<()> {
+    loop {
+        let buffer = input.fill_buf()?;
+        if buffer.is_empty() {
+            return Ok(());
+        }
+        match buffer.iter().position(|byte| *byte == b'\n') {
+            Some(index) => {
+                input.consume(index + 1);
+                return Ok(());
+            }
+            None => {
+                let length = buffer.len();
+                input.consume(length);
+            }
+        }
+    }
+}
+
 /// Serve MCP on the given streams until the client closes the input.
 pub fn serve(
     root: &Path,
@@ -316,9 +354,8 @@ pub fn serve(
             return Ok(());
         }
         let reply = if line.len() > LINE_LIMIT && !line.ends_with(b"\n") {
-            // Discard the rest of an oversized line before answering.
-            let mut rest = Vec::new();
-            input.read_until(b'\n', &mut rest)?;
+            // Skip the rest of an oversized line without buffering it.
+            discard_line(&mut input)?;
             Some(failure(&Value::Null, -32600, "Message exceeds 1 MiB"))
         } else if line.iter().all(u8::is_ascii_whitespace) {
             None

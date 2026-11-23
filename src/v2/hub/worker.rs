@@ -1,6 +1,6 @@
 //! A local Lyra agent that takes tasks from the hub, works in the task worktree with the
 //! v2 runtime and hands the committed result back for review.
-use super::{Hub, Status, git};
+use super::{Hub, OWNER, Status, Task, git};
 use crate::v2::{TaskReport, TaskRequest, TaskState, TaskStore};
 use serde_json::{Value, json};
 use std::{
@@ -24,6 +24,7 @@ fn task_text(id: i64, title: &str, description: &str) -> String {
 pub fn run_one(
     hub: &mut Hub,
     task: Option<i64>,
+    skip: &[i64],
     max_calls: u32,
     cancel: &AtomicBool,
     drive: &mut dyn FnMut(&mut TaskReport, &mut Checkpoint<'_>) -> io::Result<()>,
@@ -34,7 +35,7 @@ pub fn run_one(
             "Worker cancelled",
         ));
     }
-    let task = hub.claim(task)?;
+    let task = hub.claim_except(task, skip)?;
     let worktree = task
         .worktree
         .clone()
@@ -64,27 +65,32 @@ pub fn run_one(
         }
         let mut state = report.state;
         if state == TaskState::ReadyToApply {
-            let applied = store.apply()?;
-            state = applied.state;
-            // Stage exactly the applied proposal, not Lyra's own lock or journal files.
-            let mut add = vec!["add", "--"];
-            add.extend(applied.proposals.iter().map(|edit| edit.path.as_str()));
-            git::ok(&worktree, &add)?;
-            git::ok(
-                &worktree,
-                &["commit", "-m", &format!("Task {}: {}", task.id, task.title)],
-            )?;
+            state = store.apply()?.state;
+            // From here the proposal is in the worktree: a failed commit must stay
+            // retryable instead of releasing the task.
+            if let Err(error) = commit_proposal(&worktree, &task, &store.load()?) {
+                return Err(CommitPending { error, folder }.into_error());
+            }
         }
         Ok((state, report.summary.clone(), folder))
     })();
     match outcome {
         Ok((TaskState::Applied, summary, state)) => {
-            let summary = format!("Lyra worker: {summary}");
-            hub.update(task.id, Status::Review, &summary)?;
-            if hub.check_request().is_some() {
-                hub.check(task.id, cancel)?;
-            }
-            Ok(json!({"task": task.id, "status": "review", "summary": summary, "state": state}))
+            hand_off(hub, task.id, &summary, cancel, &state)
+        }
+        Err(error)
+            if error
+                .get_ref()
+                .is_some_and(|inner| inner.is::<CommitPending>()) =>
+        {
+            let message = format!(
+                "Lyra worker applied task {} but could not commit it; the changes are in the \
+                 task worktree. Fix the cause (for example Git signing), then run \
+                 'hub commit --task {}' with the saved state. {error}",
+                task.id, task.id
+            );
+            let _ = hub.send(Some(OWNER), Some(task.id), &message);
+            Err(error)
         }
         Ok((state, summary, folder)) => {
             let note = format!("Lyra worker released the task ({state:?}): {summary}");
@@ -99,4 +105,93 @@ pub fn run_one(
             Err(error)
         }
     }
+}
+
+/// A commit that failed after the proposal was applied; the state folder lets the
+/// owner or the worker retry it.
+#[derive(Debug)]
+struct CommitPending {
+    error: io::Error,
+    folder: std::path::PathBuf,
+}
+
+impl std::fmt::Display for CommitPending {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            formatter,
+            "commit failed ({}); state: {}",
+            self.error,
+            self.folder.display()
+        )
+    }
+}
+
+impl std::error::Error for CommitPending {}
+
+impl CommitPending {
+    fn into_error(self) -> io::Error {
+        io::Error::other(self)
+    }
+}
+
+/// Commit exactly the applied proposal paths. Other entries in the index stay staged
+/// and are not part of the commit.
+fn commit_proposal(worktree: &std::path::Path, task: &Task, report: &TaskReport) -> io::Result<()> {
+    let paths: Vec<&str> = report
+        .proposals
+        .iter()
+        .map(|edit| edit.path.as_str())
+        .collect();
+    let mut add = vec!["add", "--"];
+    add.extend(&paths);
+    git::ok(worktree, &add)?;
+    let message = format!("Task {}: {}", task.id, task.title);
+    let mut commit = vec!["commit", "-m", &message, "--"];
+    commit.extend(&paths);
+    git::ok(worktree, &commit).map(drop)
+}
+
+/// Move a committed task to review and record the check for the new commit.
+fn hand_off(
+    hub: &Hub,
+    task: i64,
+    summary: &str,
+    cancel: &AtomicBool,
+    state: &std::path::Path,
+) -> io::Result<Value> {
+    let summary = format!("Lyra worker: {summary}");
+    hub.update(task, Status::Review, &summary)?;
+    if hub.check_request().is_some() {
+        hub.check(task, cancel)?;
+    }
+    Ok(json!({"task": task, "status": "review", "summary": summary, "state": state}))
+}
+
+/// Retry the commit of an applied proposal whose first commit failed, then hand the
+/// task to review.
+pub fn commit_applied(
+    hub: &Hub,
+    task_id: i64,
+    state: &std::path::Path,
+    cancel: &AtomicBool,
+) -> io::Result<Value> {
+    let task = hub.task(task_id)?;
+    if task.status != Status::Claimed || task.owner.as_deref() != Some(hub.agent()) {
+        return Err(io::Error::other(format!(
+            "Task {task_id} is not claimed by {}",
+            hub.agent()
+        )));
+    }
+    let worktree = task
+        .worktree
+        .clone()
+        .ok_or_else(|| io::Error::other("The task has no worktree"))?;
+    let report = TaskStore::open(state)?.load()?;
+    if report.state != TaskState::Applied || report.request.repo != worktree.canonicalize()? {
+        return Err(io::Error::other(
+            "The saved state is not an applied proposal for this task worktree",
+        ));
+    }
+    commit_proposal(&worktree, &task, &report)?;
+    hand_off(hub, task_id, &report.summary, cancel, state)
 }

@@ -2,7 +2,8 @@
 use std::{
     io::{self, Read},
     path::Path,
-    process::{Command, Stdio},
+    process::{Child, Command, Stdio},
+    sync::mpsc,
     thread,
     time::{Duration, Instant},
 };
@@ -10,27 +11,63 @@ use std::{
 const OUTPUT_LIMIT: u64 = 1024 * 1024;
 const TIMEOUT: Duration = Duration::from_secs(120);
 
+#[derive(Debug)]
 pub(super) struct Output {
     pub success: bool,
     pub stdout: String,
     pub stderr: String,
 }
 
-fn drain(stream: Option<impl Read + Send + 'static>) -> thread::JoinHandle<String> {
+/// Read one pipe up to the output limit, then keep draining so the child never blocks.
+fn drain(stream: Option<impl Read + Send + 'static>) -> mpsc::Receiver<String> {
+    let (send, receive) = mpsc::channel();
     thread::spawn(move || {
         let mut text = Vec::new();
         if let Some(stream) = stream {
             let mut limited = stream.take(OUTPUT_LIMIT);
             let _ = limited.read_to_end(&mut text);
-            // Keep reading so the child never blocks on a full pipe.
+            let _ = send.send(String::from_utf8_lossy(&text).into_owned());
             let _ = io::copy(&mut limited.into_inner(), &mut io::sink());
+        } else {
+            let _ = send.send(String::new());
         }
-        String::from_utf8_lossy(&text).into_owned()
-    })
+    });
+    receive
+}
+
+/// Terminate git and every process it started (hooks, credential helpers, filters).
+fn kill_tree(child: &mut Child) {
+    #[cfg(unix)]
+    {
+        // The child leads its own process group (see `run`).
+        let _ = Command::new("kill")
+            .args(["-KILL", "--", &format!("-{}", child.id())])
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .status();
+    }
+    #[cfg(windows)]
+    {
+        let _ = Command::new("taskkill")
+            .args(["/PID", &child.id().to_string(), "/T", "/F"])
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .status();
+    }
+    let _ = child.kill();
+    let _ = child.wait();
 }
 
 pub(super) fn run(dir: &Path, args: &[&str]) -> io::Result<Output> {
-    let mut child = Command::new("git")
+    run_with_timeout(dir, args, TIMEOUT)
+}
+
+/// One deadline covers the process and the draining of its output pipes.
+fn run_with_timeout(dir: &Path, args: &[&str], timeout: Duration) -> io::Result<Output> {
+    let mut command = Command::new("git");
+    command
         .arg("-c")
         .arg("core.quotepath=false")
         .args(args)
@@ -39,33 +76,49 @@ pub(super) fn run(dir: &Path, args: &[&str]) -> io::Result<Output> {
         .env("GIT_OPTIONAL_LOCKS", "0")
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()
-        .map_err(|error| {
-            io::Error::new(
-                error.kind(),
-                format!("The agent hub needs git on PATH: {error}"),
-            )
-        })?;
+        .stderr(Stdio::piped());
+    #[cfg(unix)]
+    {
+        use std::os::unix::process::CommandExt;
+        command.process_group(0);
+    }
+    let mut child = command.spawn().map_err(|error| {
+        io::Error::new(
+            error.kind(),
+            format!("The agent hub needs git on PATH: {error}"),
+        )
+    })?;
     let stdout = drain(child.stdout.take());
     let stderr = drain(child.stderr.take());
-    let started = Instant::now();
+    let deadline = Instant::now() + timeout;
+    let timed_out = || io::Error::new(io::ErrorKind::TimedOut, "git timed out");
     let status = loop {
         if let Some(status) = child.try_wait()? {
             break status;
         }
-        if started.elapsed() >= TIMEOUT {
-            let _ = child.kill();
-            let _ = child.wait();
-            return Err(io::Error::new(io::ErrorKind::TimedOut, "git timed out"));
+        if Instant::now() >= deadline {
+            kill_tree(&mut child);
+            return Err(timed_out());
         }
         thread::sleep(Duration::from_millis(20));
     };
-    Ok(Output {
-        success: status.success(),
-        stdout: stdout.join().unwrap_or_default(),
-        stderr: stderr.join().unwrap_or_default(),
-    })
+    // A descendant may keep a pipe open after git exits; do not wait for it past the deadline.
+    let collect = |receiver: &mpsc::Receiver<String>| {
+        receiver
+            .recv_timeout(deadline.saturating_duration_since(Instant::now()))
+            .map_err(|_| ())
+    };
+    match (collect(&stdout), collect(&stderr)) {
+        (Ok(stdout), Ok(stderr)) => Ok(Output {
+            success: status.success(),
+            stdout,
+            stderr,
+        }),
+        _ => {
+            kill_tree(&mut child);
+            Err(timed_out())
+        }
+    }
 }
 
 /// Run git and return trimmed stdout, or an error with git's message.
@@ -87,12 +140,91 @@ pub(super) fn head(dir: &Path) -> io::Result<String> {
     ok(dir, &["rev-parse", "HEAD"])
 }
 
-/// Tracked changes and untracked files that are not ignored, except Lyra's own
-/// publication lock and journal folder.
+/// Whether the worktree differs from its commit: tracked changes and untracked files that
+/// are not ignored, except Lyra's own lock folder. Files hidden from `git status`
+/// (`assume-unchanged`, `skip-worktree`) count as dirty because their bytes can differ
+/// from the commit without being reported.
 pub(super) fn dirty(dir: &Path) -> io::Result<bool> {
-    Ok(!ok(
+    let status = ok(
         dir,
-        &["status", "--porcelain", "--", ".", ":(exclude).lyra"],
-    )?
-    .is_empty())
+        &[
+            "status",
+            "--porcelain",
+            "--untracked-files=normal",
+            "--",
+            ".",
+            ":(exclude).lyra",
+        ],
+    )?;
+    if !status.is_empty() {
+        return Ok(true);
+    }
+    // Tags: `H` cached, `h` assume-unchanged, `S` skip-worktree, `s` both.
+    Ok(ok(dir, &["ls-files", "-v"])?
+        .lines()
+        .any(|line| line.starts_with(|tag: char| tag != 'H')))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn repo() -> tempfile::TempDir {
+        let dir = tempfile::tempdir().unwrap();
+        for args in [
+            &["init", "-q", "-b", "main"][..],
+            &["config", "user.name", "T"],
+            &["config", "user.email", "t@example.invalid"],
+            &["config", "commit.gpgsign", "false"],
+        ] {
+            ok(dir.path(), args).unwrap();
+        }
+        std::fs::write(dir.path().join("a.txt"), "one\n").unwrap();
+        ok(dir.path(), &["add", "-A"]).unwrap();
+        ok(dir.path(), &["commit", "-q", "-m", "init"]).unwrap();
+        dir
+    }
+
+    #[test]
+    fn hidden_changes_and_untracked_files_make_a_worktree_dirty() {
+        let repo = repo();
+        assert!(!dirty(repo.path()).unwrap());
+        // A repository setting must not hide new files.
+        ok(repo.path(), &["config", "status.showUntrackedFiles", "no"]).unwrap();
+        std::fs::write(repo.path().join("new.txt"), "x").unwrap();
+        assert!(dirty(repo.path()).unwrap());
+        std::fs::remove_file(repo.path().join("new.txt")).unwrap();
+        assert!(!dirty(repo.path()).unwrap());
+        // Lyra's own lock folder is not a change.
+        std::fs::create_dir(repo.path().join(".lyra")).unwrap();
+        std::fs::write(repo.path().join(".lyra/apply.lock"), "").unwrap();
+        assert!(!dirty(repo.path()).unwrap());
+        // Modified bytes hidden with assume-unchanged are still reported.
+        ok(
+            repo.path(),
+            &["update-index", "--assume-unchanged", "a.txt"],
+        )
+        .unwrap();
+        std::fs::write(repo.path().join("a.txt"), "two\n").unwrap();
+        assert!(dirty(repo.path()).unwrap());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_descendant_holding_the_pipes_cannot_outlive_the_deadline() {
+        let repo = repo();
+        // A hook-like helper that detaches and keeps stdout open after git exits.
+        let hook = repo.path().join(".git/hooks/post-checkout");
+        std::fs::write(&hook, "#!/bin/sh\nsleep 30 &\nexit 0\n").unwrap();
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&hook, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let started = Instant::now();
+        let result = run_with_timeout(
+            repo.path(),
+            &["checkout", "-q", "-b", "other"],
+            Duration::from_secs(2),
+        );
+        assert!(started.elapsed() < Duration::from_secs(10), "{result:?}");
+        assert_eq!(result.unwrap_err().kind(), io::ErrorKind::TimedOut);
+    }
 }
