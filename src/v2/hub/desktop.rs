@@ -2,6 +2,7 @@
 //! decisions only the owner makes (add, land, reopen, cancel). Refreshes on demand only.
 use super::{Hub, OWNER, Status, Task};
 use crate::executor;
+use crate::v2::desktop::appearance::{self, ACCENT, ERROR, SUCCESS, WARNING};
 use eframe::egui::{self, RichText};
 use serde_json::Value;
 use std::path::{Path, PathBuf};
@@ -122,85 +123,130 @@ impl HubView {
         );
         let ready = self.folder.is_some() && !input.trim().is_empty();
         if ui
-            .add_enabled(ready, egui::Button::new("Add task"))
+            .add_enabled(ready, appearance::primary("Add task"))
             .clicked()
         {
-            let text = std::mem::take(input);
-            let (title, rest) = text.trim().split_once('\n').unwrap_or((text.trim(), ""));
+            let text = input.trim();
+            let (title, rest) = text.split_once('\n').unwrap_or((text, ""));
             let description = if rest.trim().is_empty() { title } else { rest };
-            let (title, description) = (title.to_owned(), description.to_owned());
-            self.act(|hub| {
-                hub.create_task(&title, &description, &[])
-                    .map(|id| format!("Task {id} added"))
-            });
+            if let Some(result) = self.hub() {
+                match result.and_then(|hub| {
+                    hub.create_task(title, description, &[])
+                        .map_err(|e| e.to_string())
+                }) {
+                    Ok(id) => {
+                        input.clear();
+                        self.notice = format!("Task {id} added");
+                    }
+                    Err(error) => self.notice = error,
+                }
+                self.refresh();
+            }
         }
     }
 
     pub fn body(&mut self, ui: &mut egui::Ui, note: &str) {
         let Some(status) = &self.status else {
-            ui.label("Open or create a hub to coordinate Codex, Claude Code and local Lyra agents. See docs/HUB.md.");
+            appearance::surface().show(ui, |ui| {
+                ui.set_min_width(ui.available_width());
+                ui.heading("Set up an agent hub");
+                appearance::muted(ui, "Open an existing hub. To create one, choose a project and select Create hub for project.");
+            });
             return;
         };
-        ui.label(format!(
-            "{} · base {} · check {}",
-            status["project"].as_str().unwrap_or_default(),
-            status["base"].as_str().unwrap_or_default(),
-            if status["check_configured"] == true {
-                "configured"
-            } else {
-                "not configured"
+        appearance::surface().show(ui, |ui| {
+            ui.set_min_width(ui.available_width());
+            ui.horizontal_wrapped(|ui| {
+                ui.strong("Connected agents");
+                let configured = status["check_configured"] == true;
+                appearance::chip(
+                    ui,
+                    if configured {
+                        "Check configured"
+                    } else {
+                        "No check configured"
+                    },
+                    if configured { SUCCESS } else { WARNING },
+                );
+            });
+            appearance::muted(
+                ui,
+                format!(
+                    "{} · base {}",
+                    status["project"].as_str().unwrap_or_default(),
+                    status["base"].as_str().unwrap_or_default()
+                ),
+            );
+            let agents = status["agents"].as_array().map_or(&[][..], Vec::as_slice);
+            if agents.is_empty() {
+                appearance::muted(ui, "No agent has connected yet.");
             }
-        ));
-        ui.add_space(6.0);
-        ui.strong("Agents");
-        let agents = status["agents"].as_array().cloned().unwrap_or_default();
-        if agents.is_empty() {
-            ui.label("No agent has connected yet.");
+            for agent in agents {
+                ui.horizontal_wrapped(|ui| {
+                    ui.label(format!(
+                        "{} · {}",
+                        agent["name"].as_str().unwrap_or_default(),
+                        agent["kind"].as_str().unwrap_or_default()
+                    ));
+                    let active = agent["active"] == true;
+                    appearance::chip(
+                        ui,
+                        if active { "Active" } else { "Idle" },
+                        if active { SUCCESS } else { ACCENT },
+                    );
+                });
+            }
+            for lease in status["leases"].as_array().into_iter().flatten() {
+                appearance::muted(
+                    ui,
+                    format!(
+                        "Lease · {} · {}",
+                        lease["path"].as_str().unwrap_or_default(),
+                        lease["agent"].as_str().unwrap_or_default()
+                    ),
+                );
+            }
+        });
+        ui.strong("Task queue");
+        if self.tasks.is_empty() {
+            appearance::muted(ui, "Add a task to the queue below.");
         }
-        for agent in agents {
-            ui.label(format!(
-                "{} · {} · {}",
-                agent["name"].as_str().unwrap_or_default(),
-                agent["kind"].as_str().unwrap_or_default(),
-                if agent["active"] == true {
-                    "active"
-                } else {
-                    "idle"
-                }
-            ));
-        }
-        for lease in status["leases"].as_array().into_iter().flatten() {
-            ui.label(format!(
-                "Lease: {} · {}",
-                lease["path"].as_str().unwrap_or_default(),
-                lease["agent"].as_str().unwrap_or_default()
-            ));
-        }
-        ui.add_space(6.0);
-        ui.strong("Tasks");
         let mut action = None;
         for task in &self.tasks {
-            ui.horizontal_wrapped(|ui| {
-                ui.label(format!(
-                    "#{} {} · {:?}{}",
-                    task.id,
-                    task.title,
-                    task.status,
-                    task.owner
-                        .as_deref()
-                        .map(|o| format!(" · {o}"))
-                        .unwrap_or_default()
-                ));
-                if let Some(check) = &task.check {
-                    ui.label(if check["passed"] == true {
-                        "check passed"
-                    } else {
-                        "check failed"
-                    });
+            appearance::surface().show(ui, |ui| {
+                ui.set_min_width(ui.available_width());
+                ui.horizontal_wrapped(|ui| {
+                    ui.strong(format!("#{} {}", task.id, task.title));
+                    let (label, color) = match task.status {
+                        Status::Open => ("Queued", ACCENT),
+                        Status::Claimed => ("In progress", ACCENT),
+                        Status::Review => ("Ready for review", WARNING),
+                        Status::Done => ("Landed", SUCCESS),
+                        Status::Cancelled => ("Cancelled", WARNING),
+                    };
+                    appearance::chip(ui, label, color);
+                    if let Some(check) = &task.check {
+                        let passed = check["passed"] == true;
+                        appearance::chip(
+                            ui,
+                            if passed {
+                                "Check passed"
+                            } else {
+                                "Check failed"
+                            },
+                            if passed { SUCCESS } else { ERROR },
+                        );
+                    }
+                });
+                if let Some(owner) = &task.owner {
+                    appearance::muted(ui, owner);
                 }
-                match task.status {
+                if !task.summary.is_empty() {
+                    ui.label(&task.summary);
+                }
+                ui.horizontal_wrapped(|ui| match task.status {
                     Status::Review => {
-                        if ui.small_button("Diff").clicked() {
+                        if ui.small_button("View diff").clicked() {
                             action = Some(("diff", task.id));
                         }
                         if ui.small_button("Land").clicked() {
@@ -220,11 +266,8 @@ impl HubView {
                         }
                     }
                     Status::Done | Status::Cancelled => {}
-                }
+                });
             });
-            if !task.summary.is_empty() {
-                ui.label(RichText::new(&task.summary).weak());
-            }
         }
         match action {
             Some(("diff", id)) => {
@@ -258,18 +301,20 @@ impl HubView {
             _ => {}
         }
         if let Some((id, patch)) = &self.diff {
-            ui.collapsing(format!("Diff of task {id}"), |ui| {
-                for line in patch.lines() {
-                    let color = if line.starts_with('+') {
-                        egui::Color32::LIGHT_GREEN
-                    } else if line.starts_with('-') {
-                        egui::Color32::LIGHT_RED
-                    } else {
-                        ui.visuals().text_color()
-                    };
-                    ui.label(RichText::new(line).monospace().color(color));
-                }
-            });
+            egui::CollapsingHeader::new(format!("Diff of task {id}"))
+                .default_open(true)
+                .show(ui, |ui| {
+                    for line in patch.lines() {
+                        let color = if line.starts_with('+') {
+                            SUCCESS
+                        } else if line.starts_with('-') {
+                            ERROR
+                        } else {
+                            ui.visuals().text_color()
+                        };
+                        ui.label(RichText::new(line).monospace().color(color));
+                    }
+                });
         }
         if !self.inbox.is_empty() {
             ui.add_space(6.0);

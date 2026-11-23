@@ -5,7 +5,7 @@ pub(crate) mod diff;
 mod dock;
 mod graph_view;
 pub(crate) mod history;
-mod icons;
+pub(crate) mod icons;
 mod job;
 mod kit;
 mod models;

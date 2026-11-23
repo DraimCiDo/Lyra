@@ -1,12 +1,16 @@
+pub(super) mod appearance;
+
 use super::migration::ImportBundle;
 use super::{TaskReport, TaskRequest, TaskState, TaskStore, Verification, cli::LocalModel};
 use crate::{
-    desktop::diff,
+    desktop::{diff, icons::Icon},
     executor, inference,
     model_gateway::{Message, Role},
 };
+use appearance::{ACCENT, Appearance, ERROR, MUTED, SUCCESS, WARNING};
 use eframe::egui::{self, RichText};
 use std::{
+    collections::BTreeMap,
     io::{self, Write},
     path::{Path, PathBuf},
     sync::{
@@ -15,40 +19,74 @@ use std::{
         mpsc,
     },
     thread::{self, JoinHandle},
-    time::{Duration, SystemTime, UNIX_EPOCH},
+    time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
+
+const STARTUP: Duration = Duration::from_millis(900);
+const STARTUP_STILL: Duration = Duration::from_millis(420);
+const TRANSITION: Duration = Duration::from_millis(180);
 
 pub fn launch(smoke: bool, hub: Option<PathBuf>) -> eframe::Result {
     let rendered = Arc::new(AtomicBool::new(false));
     let frame = Arc::clone(&rendered);
+    let appearance = if smoke {
+        Appearance::default()
+    } else {
+        data_folder()
+            .ok()
+            .map(|folder| Appearance::load(&folder))
+            .unwrap_or_default()
+    };
+    let mut viewport = egui::ViewportBuilder::default()
+        .with_inner_size([1120.0, 780.0])
+        .with_min_inner_size([760.0, 580.0])
+        .with_transparent(appearance.transparent_window);
+    if let Ok(icon) = eframe::icon_data::from_png_bytes(appearance::LOGO) {
+        viewport = viewport.with_icon(icon);
+    }
     eframe::run_native(
         "Lyra v2",
         eframe::NativeOptions {
-            viewport: egui::ViewportBuilder::default()
-                .with_inner_size([1020.0, 740.0])
-                .with_min_inner_size([710.0, 540.0]),
+            viewport,
             #[cfg(not(windows))]
             renderer: eframe::Renderer::Glow,
             #[cfg(windows)]
             renderer: eframe::Renderer::Wgpu,
+            #[cfg(windows)]
+            wgpu_options: windows_presentation(appearance.transparent_window),
             ..Default::default()
         },
         Box::new(move |context| {
-            context.egui_ctx.set_visuals(egui::Visuals::dark());
-            let mut desktop = Desktop::new(smoke.then_some(frame));
-            if let Some(folder) = hub {
-                desktop.agents = true;
-                desktop.hub.open(folder);
-            }
-            Ok(Box::new(desktop))
+            egui_extras::install_image_loaders(&context.egui_ctx);
+            appearance::configure(&context.egui_ctx, appearance.reduce_motion);
+            Ok(Box::new(Desktop::new(
+                smoke.then_some(frame),
+                appearance,
+                hub,
+            )))
         }),
     )?;
     if smoke && !rendered.load(Ordering::Relaxed) {
         return Err(eframe::Error::AppCreation(Box::new(io::Error::other(
-            "Lyra v2 window did not render",
+            "Lyra v2 startup and workspace views did not render",
         ))));
     }
     Ok(())
+}
+
+#[cfg(windows)]
+fn windows_presentation(transparent: bool) -> eframe::WgpuConfiguration {
+    let mut options = eframe::WgpuConfiguration::default();
+    if transparent && let eframe::egui_wgpu::WgpuSetup::CreateNew(setup) = &mut options.wgpu_setup {
+        // The HWND swap chain exposes only opaque alpha. DirectComposition supports
+        // premultiplied alpha through the same DX12 renderer.
+        setup
+            .instance_descriptor
+            .backend_options
+            .dx12
+            .presentation_system = wgpu::Dx12SwapchainKind::DxgiFromVisual;
+    }
+    options
 }
 
 enum Output {
@@ -84,26 +122,55 @@ struct Worker {
     thread: JoinHandle<()>,
 }
 
+#[derive(Clone, Copy, Default, Eq, PartialEq)]
+enum Screen {
+    #[default]
+    Work,
+    Chat,
+    Agents,
+}
+
+impl Screen {
+    fn label(self) -> &'static str {
+        match self {
+            Self::Work => "Work",
+            Self::Chat => "Chat",
+            Self::Agents => "Agents",
+        }
+    }
+}
+
 struct Desktop {
     model: Option<PathBuf>,
     repo: Option<PathBuf>,
     checker: Option<PathBuf>,
     state_folder: Option<PathBuf>,
     report: Option<Box<TaskReport>>,
+    diff_rows: BTreeMap<usize, Vec<(diff::Tag, String)>>,
     messages: Vec<Message>,
     chat_preview: String,
     import_preview: Option<ImportBundle>,
     imported: Option<ImportBundle>,
-    input: String,
+    task_draft: String,
+    chat_draft: String,
+    hub_draft: String,
     status: String,
-    chat: bool,
-    agents: bool,
+    status_error: bool,
+    screen: Screen,
+    screen_entered: Instant,
+    appearance: Appearance,
+    transparent_window: bool,
+    splash_started: Option<Instant>,
+    splash_finished: bool,
+    pending_hub: Option<PathBuf>,
+    settings_open: bool,
     hub: super::hub::desktop::HubView,
     reviewer: bool,
     /// Requested context window; `None` picks the model's trained window up to 8192.
     context: Option<u32>,
     gpu_layers: u32,
     smoke: Option<Arc<AtomicBool>>,
+    smoke_step: u8,
     worker: Option<Worker>,
     events: Option<mpsc::Receiver<Output>>,
 }
@@ -135,10 +202,16 @@ fn short_path(path: Option<&Path>) -> String {
     path.map_or_else(
         || "Choose…".into(),
         |path| {
-            path.file_name()
+            let name = path
+                .file_name()
                 .unwrap_or(path.as_os_str())
-                .to_string_lossy()
-                .into_owned()
+                .to_string_lossy();
+            let mut characters = name.chars();
+            let mut label: String = characters.by_ref().take(36).collect();
+            if characters.next().is_some() {
+                label.push('…');
+            }
+            label
         },
     )
 }
@@ -153,26 +226,41 @@ fn choose_path(ui: &mut egui::Ui, label: &str, path: Option<&Path>) -> bool {
 }
 
 impl Desktop {
-    fn new(smoke: Option<Arc<AtomicBool>>) -> Self {
+    fn new(smoke: Option<Arc<AtomicBool>>, appearance: Appearance, hub: Option<PathBuf>) -> Self {
         Self {
             model: None,
             repo: None,
             checker: None,
             state_folder: None,
             report: None,
+            diff_rows: BTreeMap::new(),
             messages: Vec::new(),
             chat_preview: String::new(),
             import_preview: None,
             imported: None,
-            input: String::new(),
+            task_draft: String::new(),
+            chat_draft: String::new(),
+            hub_draft: String::new(),
             status: String::new(),
-            chat: false,
-            agents: false,
+            status_error: false,
+            screen: if hub.is_some() {
+                Screen::Agents
+            } else {
+                Screen::Work
+            },
+            screen_entered: Instant::now(),
+            appearance,
+            transparent_window: appearance.transparent_window,
+            splash_started: None,
+            splash_finished: false,
+            pending_hub: hub,
+            settings_open: false,
             hub: Default::default(),
             reviewer: false,
             context: None,
             gpu_layers: 0,
             smoke,
+            smoke_step: 0,
             worker: None,
             events: None,
         }
@@ -183,6 +271,7 @@ impl Desktop {
         work: impl FnOnce(&AtomicBool, &mpsc::Sender<Output>) -> io::Result<()> + Send + 'static,
     ) {
         self.status = "Starting…".into();
+        self.status_error = false;
         let (send, receive) = mpsc::channel();
         self.events = Some(receive);
         let cancel = Arc::new(AtomicBool::new(false));
@@ -204,11 +293,19 @@ impl Desktop {
             && worker.thread.join().is_err()
         {
             self.status = "The task worker stopped unexpectedly.".into();
+            self.status_error = true;
         }
         if let Some(receiver) = &self.events {
             for output in receiver.try_iter() {
                 match output {
-                    Output::Progress(status) | Output::Error(status) => self.status = status,
+                    Output::Progress(status) => {
+                        self.status = status;
+                        self.status_error = false;
+                    }
+                    Output::Error(status) => {
+                        self.status = status;
+                        self.status_error = true;
+                    }
                     Output::ChatDelta(text) => {
                         self.chat_preview.push_str(&text);
                         self.status.clear();
@@ -222,9 +319,11 @@ impl Desktop {
                         self.status.clear();
                     }
                     Output::Task(folder, report) => {
-                        self.status = report.summary.clone();
+                        self.status.clear();
+                        self.status_error = false;
                         self.state_folder = Some(folder);
                         self.report = Some(report);
+                        self.diff_rows.clear();
                     }
                 }
             }
@@ -252,7 +351,7 @@ impl Desktop {
         let Some(model) = self.model_args() else {
             return;
         };
-        if self.chat {
+        if self.screen == Screen::Chat {
             self.chat_preview.clear();
             if self
                 .messages
@@ -263,7 +362,7 @@ impl Desktop {
             }
             self.messages.push(Message {
                 role: Role::User,
-                content: std::mem::take(&mut self.input),
+                content: std::mem::take(&mut self.chat_draft),
             });
             let messages = self.messages[self.messages.len().saturating_sub(64)..].to_vec();
             self.start(move |cancel, send| {
@@ -281,10 +380,11 @@ impl Desktop {
                 Ok(())
             });
         } else if let Some(repo) = self.repo.clone() {
-            let task = self.input.clone();
+            let task = self.task_draft.clone();
             let check = self.checker.clone();
             let reviewer = self.reviewer;
             self.report = None;
+            self.diff_rows.clear();
             self.state_folder = None;
             self.start(move |cancel, send| {
                 let check = check.as_deref().map(executor::load_config).transpose()?;
@@ -306,12 +406,14 @@ impl Desktop {
     fn open_state(&mut self, folder: PathBuf) {
         match TaskStore::open(&folder).and_then(|store| store.load()) {
             Ok(report) => {
-                self.status = report.summary.clone();
+                self.status.clear();
+                self.status_error = false;
                 self.repo = Some(report.request.repo.clone());
                 self.report = Some(Box::new(report));
+                self.diff_rows.clear();
                 self.state_folder = Some(folder);
             }
-            Err(error) => self.status = error.to_string(),
+            Err(error) => self.show_error(error),
         }
     }
 
@@ -335,13 +437,53 @@ impl Desktop {
         }
     }
 
+    fn show_error(&mut self, error: impl std::fmt::Display) {
+        self.status = error.to_string();
+        self.status_error = true;
+    }
+
+    fn select_screen(&mut self, screen: Screen) {
+        if self.screen != screen {
+            self.screen = screen;
+            self.screen_entered = Instant::now();
+            self.status.clear();
+            if screen == Screen::Agents {
+                self.hub.refresh();
+            }
+        }
+    }
+
+    fn choose_model(&mut self) {
+        if let Some(path) = rfd::FileDialog::new()
+            .add_filter("GGUF model", &["gguf"])
+            .pick_file()
+        {
+            self.model = Some(path);
+        }
+    }
+
+    fn choose_project(&mut self) {
+        if let Some(path) = rfd::FileDialog::new().pick_folder() {
+            self.repo = Some(path);
+        }
+    }
+
+    fn choose_check(&mut self) {
+        if let Some(path) = rfd::FileDialog::new()
+            .add_filter("JSON config", &["json"])
+            .pick_file()
+        {
+            self.checker = Some(path);
+        }
+    }
+
     fn import_controls(&mut self, ui: &mut egui::Ui) {
         if ui.button("Import v1 data").clicked()
             && let Some(source) = rfd::FileDialog::new().pick_folder()
         {
             match ImportBundle::preview(&source) {
                 Ok(preview) => self.import_preview = Some(preview),
-                Err(error) => self.status = error.to_string(),
+                Err(error) => self.show_error(error),
             }
         }
         if self.imported.is_none()
@@ -352,7 +494,7 @@ impl Desktop {
         {
             match ImportBundle::load(&path) {
                 Ok(import) => self.imported = Some(import),
-                Err(error) => self.status = error.to_string(),
+                Err(error) => self.show_error(error),
             }
         }
         if let Some(preview) = &self.import_preview {
@@ -374,7 +516,7 @@ impl Desktop {
                     .add_filter("Lyra import", &["json"]);
                 if let Ok(folder) = data_folder() {
                     if let Err(error) = std::fs::create_dir_all(&folder) {
-                        self.status = error.to_string();
+                        self.show_error(error);
                         return;
                     }
                     dialog = dialog.set_directory(folder);
@@ -382,7 +524,7 @@ impl Desktop {
                 if let Some(path) = dialog.save_file() {
                     match preview.install(&path) {
                         Ok(()) => self.imported = self.import_preview.take(),
-                        Err(error) => self.status = error.to_string(),
+                        Err(error) => self.show_error(error),
                     }
                 }
             }
@@ -397,7 +539,7 @@ impl Desktop {
                 self.model.clone_from(&settings.model);
                 self.repo.clone_from(&settings.project);
             }
-            if self.chat && !imported.conversations.is_empty() {
+            if self.screen == Screen::Chat && !imported.conversations.is_empty() {
                 ui.menu_button("Imported conversations", |ui| {
                     for (index, messages) in imported.conversations.iter().enumerate() {
                         let title = messages
@@ -417,75 +559,118 @@ impl Desktop {
         }
     }
 
-    fn controls(&mut self, ui: &mut egui::Ui) {
-        let idle = self.worker.is_none();
+    fn sidebar(&mut self, ui: &mut egui::Ui) {
         ui.horizontal(|ui| {
-            ui.heading("Lyra v2");
-            ui.add_space(18.0);
-            ui.add_enabled_ui(idle, |ui| {
-                if ui
-                    .selectable_label(!self.chat && !self.agents, "Work")
-                    .clicked()
-                {
-                    (self.chat, self.agents) = (false, false);
-                }
-                if ui.selectable_label(self.chat, "Chat").clicked() {
-                    (self.chat, self.agents) = (true, false);
-                }
-                if ui.selectable_label(self.agents, "Agents").clicked() {
-                    (self.chat, self.agents) = (false, true);
-                    self.hub.refresh();
-                }
-            });
+            appearance::logo(ui, 32.0);
+            ui.label(RichText::new("Lyra").size(24.0).strong());
         });
-        ui.add_space(6.0);
-        if self.agents {
-            ui.horizontal_wrapped(|ui| {
-                if choose_path(ui, "Project", self.repo.as_deref())
-                    && let Some(path) = rfd::FileDialog::new().pick_folder()
-                {
-                    self.repo = Some(path);
-                }
-                if choose_path(ui, "Check config", self.checker.as_deref())
-                    && let Some(path) = rfd::FileDialog::new()
-                        .add_filter("JSON config", &["json"])
-                        .pick_file()
-                {
-                    self.checker = Some(path);
-                }
-            });
-            self.hub
-                .controls(ui, self.repo.as_deref(), self.checker.as_deref());
+        ui.add_space(26.0);
+        for (screen, icon) in [
+            (Screen::Work, Icon::Folder),
+            (Screen::Chat, Icon::NewChat),
+            (Screen::Agents, Icon::Workers),
+        ] {
+            let active = self.screen == screen;
+            let button = egui::Button::image_and_text(
+                icon.image(if active { ACCENT } else { MUTED }),
+                RichText::new(screen.label()).strong(),
+            )
+            .selected(active)
+            .min_size(egui::vec2(ui.available_width(), 40.0));
+            if ui.add_enabled(self.worker.is_none(), button).clicked() {
+                self.select_screen(screen);
+            }
+        }
+        ui.with_layout(egui::Layout::bottom_up(egui::Align::Min), |ui| {
+            ui.label(RichText::new("Lyra v2").small().color(MUTED));
+            if ui
+                .add(egui::Button::image_and_text(
+                    Icon::Settings.image(MUTED),
+                    "Settings",
+                ))
+                .clicked()
+            {
+                self.settings_open = !self.settings_open;
+            }
+        });
+    }
+
+    fn settings(&mut self, ctx: &egui::Context) {
+        if !self.settings_open {
             return;
         }
-        ui.add_enabled_ui(idle, |ui| {
+        let mut open = self.settings_open;
+        egui::Window::new("Settings")
+            .open(&mut open)
+            .default_width(430.0)
+            .resizable(false)
+            .show(ctx, |ui| {
+                ui.strong("Appearance");
+                let motion = ui.checkbox(&mut self.appearance.reduce_motion, "Reduce motion");
+                let transparency = ui.checkbox(
+                    &mut self.appearance.transparent_window,
+                    "Transparent window background",
+                );
+                appearance::muted(ui, "Window transparency takes effect after restart and depends on desktop support.");
+                if motion.changed() {
+                    appearance::configure(ctx, self.appearance.reduce_motion);
+                }
+                if (motion.changed() || transparency.changed())
+                    && let Err(error) = data_folder().and_then(|folder| self.appearance.save(&folder))
+                {
+                    self.show_error(error);
+                }
+                ui.separator();
+                ui.strong("Import from Lyra v1");
+                ui.add_enabled_ui(self.worker.is_none(), |ui| self.import_controls(ui));
+                if self.status_error {
+                    ui.label(RichText::new(&self.status).color(ERROR));
+                }
+            });
+        self.settings_open = open;
+    }
+
+    fn controls(&mut self, ui: &mut egui::Ui) {
+        ui.heading(self.screen.label());
+        ui.add_space(4.0);
+        ui.add_enabled_ui(self.worker.is_none(), |ui| {
             ui.horizontal_wrapped(|ui| {
-                if choose_path(ui, "GGUF", self.model.as_deref())
-                    && let Some(path) = rfd::FileDialog::new()
-                        .add_filter("GGUF model", &["gguf"])
-                        .pick_file()
-                {
-                    self.model = Some(path);
+                if self.screen != Screen::Chat && choose_path(ui, "Project", self.repo.as_deref()) {
+                    self.choose_project();
                 }
+                if self.screen != Screen::Agents && choose_path(ui, "Model", self.model.as_deref())
+                {
+                    self.choose_model();
+                }
+                if self.screen == Screen::Work
+                    && ui.button("Open saved task").clicked()
+                    && let Some(folder) = rfd::FileDialog::new().pick_folder()
+                {
+                    self.open_state(folder);
+                }
+                if self.screen == Screen::Chat
+                    && !self.messages.is_empty()
+                    && ui.button("New chat").clicked()
+                {
+                    self.messages.clear();
+                    self.chat_preview.clear();
+                    self.chat_draft.clear();
+                    self.status.clear();
+                }
+            });
+            if self.screen == Screen::Agents {
+                ui.horizontal_wrapped(|ui| {
+                    if choose_path(ui, "Check config", self.checker.as_deref()) {
+                        self.choose_check();
+                    }
+                    self.hub
+                        .controls(ui, self.repo.as_deref(), self.checker.as_deref());
+                });
+                return;
+            }
+            ui.horizontal_wrapped(|ui| {
                 #[cfg(feature = "cuda")]
-                {
-                    use crate::resources::{GPU_AUTO, GPU_BALANCED};
-                    egui::ComboBox::from_id_salt("inference_device")
-                        .selected_text(match self.gpu_layers {
-                            GPU_AUTO => "NVIDIA GPU Auto",
-                            GPU_BALANCED => "NVIDIA GPU Balanced",
-                            _ => "CPU",
-                        })
-                        .show_ui(ui, |ui| {
-                            ui.selectable_value(&mut self.gpu_layers, 0, "CPU");
-                            ui.selectable_value(&mut self.gpu_layers, GPU_AUTO, "NVIDIA GPU Auto");
-                            ui.selectable_value(
-                                &mut self.gpu_layers,
-                                GPU_BALANCED,
-                                "NVIDIA GPU Balanced",
-                            );
-                        });
-                }
+                self.gpu_control(ui);
                 egui::ComboBox::from_id_salt("context")
                     .selected_text(match self.context {
                         None => "Context · Auto".to_owned(),
@@ -499,106 +684,246 @@ impl Desktop {
                     })
                     .response
                     .on_hover_text("Limited to the model's trained window");
-                if self.chat && !self.messages.is_empty() && ui.button("New chat").clicked() {
-                    self.messages.clear();
-                    self.chat_preview.clear();
-                }
-                if !self.chat {
-                    ui.checkbox(&mut self.reviewer, "Reviewer");
-                    if choose_path(ui, "Project", self.repo.as_deref())
-                        && let Some(path) = rfd::FileDialog::new().pick_folder()
-                    {
-                        self.repo = Some(path);
-                    }
-                    if choose_path(ui, "Check config", self.checker.as_deref())
-                        && let Some(path) = rfd::FileDialog::new()
-                            .add_filter("JSON config", &["json"])
-                            .pick_file()
-                    {
-                        self.checker = Some(path);
+                if self.screen == Screen::Work {
+                    if choose_path(ui, "Check config", self.checker.as_deref()) {
+                        self.choose_check();
                     }
                     if self.checker.is_some() && ui.small_button("Clear check").clicked() {
                         self.checker = None;
                     }
-                    if ui.button("Open saved task").clicked()
-                        && let Some(folder) = rfd::FileDialog::new().pick_folder()
-                    {
-                        self.open_state(folder);
-                    }
+                    ui.checkbox(&mut self.reviewer, "Reviewer").on_hover_text(
+                        "Ask the model to review the proposed changes before verification",
+                    );
                 }
             });
-            ui.horizontal_wrapped(|ui| self.import_controls(ui));
         });
     }
 
-    fn result(&self, ui: &mut egui::Ui) {
-        if self.chat {
-            for message in &self.messages {
-                ui.strong(if message.role == Role::User {
-                    "You"
-                } else {
-                    "Lyra"
-                });
-                ui.label(&message.content);
-                ui.add_space(8.0);
-            }
-            if !self.chat_preview.is_empty() {
-                ui.strong("Lyra");
-                ui.label(&self.chat_preview);
-            }
-        } else if let Some(report) = &self.report {
-            ui.label(format!(
-                "{} · {} model calls",
-                report.request.repo.display(),
-                report.calls
-            ));
-            ui.label(match report.state {
-                TaskState::Running => "Interrupted or running",
-                TaskState::ReadyToApply => "Ready for review",
-                TaskState::Complete => "Complete",
-                TaskState::Failed => "Task failed",
-                TaskState::Cancelled => "Cancelled",
-                TaskState::Applying => "Publication needs reconciliation",
-                TaskState::Applied => "Applied",
+    #[cfg(feature = "cuda")]
+    fn gpu_control(&mut self, ui: &mut egui::Ui) {
+        use crate::resources::{GPU_AUTO, GPU_BALANCED};
+        egui::ComboBox::from_id_salt("inference_device")
+            .selected_text(match self.gpu_layers {
+                GPU_AUTO => "NVIDIA GPU Auto",
+                GPU_BALANCED => "NVIDIA GPU Balanced",
+                _ => "CPU",
+            })
+            .show_ui(ui, |ui| {
+                ui.selectable_value(&mut self.gpu_layers, 0, "CPU");
+                ui.selectable_value(&mut self.gpu_layers, GPU_AUTO, "NVIDIA GPU Auto");
+                ui.selectable_value(&mut self.gpu_layers, GPU_BALANCED, "NVIDIA GPU Balanced");
             });
-            match &report.verification {
-                Verification::Skipped => {
-                    ui.label("Verification skipped");
-                }
-                Verification::Unavailable { message } => {
-                    ui.label(message);
-                }
-                Verification::Passed { result } | Verification::Failed { result } => {
-                    ui.collapsing(
-                        if result.passed() {
-                            "Verification passed"
-                        } else {
-                            "Verification failed"
-                        },
-                        |ui| {
-                            ui.monospace(&result.stdout);
-                            ui.monospace(&result.stderr);
-                        },
-                    );
-                }
-            }
-            for proposal in &report.proposals {
-                ui.collapsing(&proposal.path, |ui| {
-                    for (tag, line) in diff::lines(&proposal.original, &proposal.replacement) {
-                        let (prefix, color) = match tag {
-                            diff::Tag::Same => (" ", ui.visuals().text_color()),
-                            diff::Tag::Added => ("+", egui::Color32::LIGHT_GREEN),
-                            diff::Tag::Removed => ("-", egui::Color32::LIGHT_RED),
-                        };
-                        ui.label(
-                            RichText::new(format!("{prefix} {line}"))
-                                .monospace()
-                                .color(color),
-                        );
+    }
+
+    fn welcome(&mut self, ui: &mut egui::Ui) {
+        let chat = self.screen == Screen::Chat;
+        ui.add_space(12.0);
+        appearance::surface().show(ui, |ui| {
+            ui.set_min_width(ui.available_width());
+            appearance::logo(ui, 48.0);
+            ui.label(RichText::new(if chat { "Start a conversation" } else { "Start a coding task" })
+                .size(28.0).strong());
+            appearance::muted(ui, if chat {
+                "Ask a question or reason through a problem with your local model."
+            } else {
+                "Choose a project and a local model. Review the diff and check results before applying."
+            });
+            if self.worker.is_none() {
+                ui.add_space(8.0);
+                ui.horizontal_wrapped(|ui| {
+                    if !chat && self.repo.is_none()
+                        && ui.add(appearance::primary("Choose project")).clicked()
+                    {
+                        self.choose_project();
+                    }
+                    if self.model.is_none() && ui.button("Choose GGUF model").clicked() {
+                        self.choose_model();
+                    }
+                    if self.model.is_some() && (chat || self.repo.is_some())
+                        && ui.add(appearance::primary(if chat { "Write a message" } else { "Describe the task" })).clicked()
+                    {
+                        ui.memory_mut(|memory| memory.request_focus(composer_id(self.screen)));
                     }
                 });
             }
+        });
+    }
+
+    fn result(&mut self, ui: &mut egui::Ui) {
+        match self.screen {
+            Screen::Chat if self.messages.is_empty() => self.welcome(ui),
+            Screen::Chat => {
+                for message in &self.messages {
+                    chat_card(ui, &message.role, &message.content);
+                }
+                if !self.chat_preview.is_empty() {
+                    chat_card(ui, &Role::Assistant, &self.chat_preview);
+                }
+            }
+            Screen::Work => {
+                if let Some(report) = &self.report {
+                    if task_result(ui, report, &mut self.diff_rows, self.worker.is_none()) {
+                        self.apply();
+                    }
+                } else if self.worker.is_none() {
+                    self.welcome(ui);
+                } else {
+                    appearance::surface().show(ui, |ui| {
+                        ui.set_min_width(ui.available_width());
+                        ui.strong("Task in progress");
+                        appearance::muted(ui, "Proposals and check results will appear here.");
+                    });
+                }
+            }
+            Screen::Agents => self.hub.body(ui, &self.hub_draft),
         }
+    }
+
+    fn composer(&mut self, ui: &mut egui::Ui) {
+        if self.screen == Screen::Agents {
+            self.hub.composer(ui, &mut self.hub_draft);
+            return;
+        }
+        let chat = self.screen == Screen::Chat;
+        let ready = self.model.is_some() && (chat || self.repo.is_some());
+        let idle = self.worker.is_none();
+        if !self.status.is_empty() || !idle {
+            ui.horizontal_wrapped(|ui| {
+                if !idle {
+                    if self.appearance.reduce_motion {
+                        ui.label(RichText::new("Working").color(ACCENT));
+                    } else {
+                        ui.spinner();
+                    }
+                }
+                if !self.status.is_empty() {
+                    ui.label(RichText::new(&self.status).color(if self.status_error {
+                        ERROR
+                    } else {
+                        MUTED
+                    }));
+                }
+            });
+        }
+        let editing = if chat {
+            &mut self.chat_draft
+        } else {
+            &mut self.task_draft
+        };
+        let edit = ui.add_enabled(
+            idle,
+            egui::TextEdit::multiline(editing)
+                .id(composer_id(self.screen))
+                .desired_width(f32::INFINITY)
+                .desired_rows(3)
+                .hint_text(if chat {
+                    "Message Lyra…"
+                } else {
+                    "Describe the coding task…"
+                }),
+        );
+        let can_submit = ready && !editing.trim().is_empty() && idle;
+        let shortcut = edit.has_focus()
+            && ui.input_mut(|input| input.consume_key(egui::Modifiers::COMMAND, egui::Key::Enter));
+        ui.horizontal_wrapped(|ui| {
+            if let Some(worker) = &self.worker {
+                let cancelling = worker.cancel.load(Ordering::Relaxed);
+                if ui
+                    .add_enabled(
+                        !cancelling,
+                        egui::Button::new(if cancelling {
+                            "Cancelling…"
+                        } else {
+                            "Cancel"
+                        }),
+                    )
+                    .clicked()
+                {
+                    worker.cancel.store(true, Ordering::Relaxed);
+                }
+                return;
+            }
+            if ui
+                .add_enabled(
+                    can_submit,
+                    appearance::primary(if chat { "Send" } else { "Run task" }),
+                )
+                .clicked()
+                || (can_submit && shortcut)
+            {
+                self.submit();
+                return;
+            }
+            if !ready {
+                appearance::muted(
+                    ui,
+                    if self.model.is_none() {
+                        "Choose a GGUF model to continue."
+                    } else {
+                        "Choose a project to continue."
+                    },
+                );
+            } else {
+                appearance::muted(
+                    ui,
+                    if cfg!(target_os = "macos") {
+                        "⌘+Enter to submit"
+                    } else {
+                        "Ctrl+Enter to submit"
+                    },
+                );
+            }
+            if !chat
+                && self.model.is_some()
+                && self.report.as_ref().is_some_and(|report| {
+                    matches!(report.state, TaskState::Running | TaskState::Cancelled)
+                })
+                && ui.button("Resume task").clicked()
+            {
+                self.resume();
+            }
+        });
+    }
+
+    fn splash(&mut self, ui: &mut egui::Ui) -> bool {
+        if self.splash_finished {
+            return false;
+        }
+        let elapsed = self
+            .splash_started
+            .get_or_insert_with(Instant::now)
+            .elapsed();
+        let still = self.appearance.reduce_motion;
+        let duration = if still { STARTUP_STILL } else { STARTUP };
+        if elapsed >= duration || ui.input(|input| input.key_pressed(egui::Key::Escape)) {
+            self.splash_finished = true;
+            return false;
+        }
+        let progress = elapsed.as_secs_f32() / duration.as_secs_f32();
+        let opacity = if still {
+            1.0
+        } else {
+            (1.2 - progress * 1.2).clamp(0.0, 1.0)
+        };
+        egui::Area::new(egui::Id::unique("lyra_startup"))
+            .anchor(egui::Align2::CENTER_CENTER, egui::Vec2::ZERO)
+            .show(ui.ctx(), |ui| {
+                ui.set_opacity(opacity);
+                ui.vertical_centered(|ui| {
+                    ui.set_width(200.0);
+                    appearance::logo(ui, 98.0);
+                    ui.add_space(12.0);
+                    ui.label(RichText::new("Lyra").size(43.0).strong());
+                    ui.label(RichText::new("Opening workspace").color(MUTED));
+                });
+            });
+        let repaint = if still {
+            duration.saturating_sub(elapsed)
+        } else {
+            Duration::from_millis(16)
+        };
+        ui.ctx().request_repaint_after(repaint);
+        true
     }
 }
 
@@ -676,7 +1001,210 @@ impl Drop for Desktop {
     }
 }
 
+fn composer_id(screen: Screen) -> egui::Id {
+    egui::Id::unique(("lyra_composer", screen.label()))
+}
+
+fn chat_card(ui: &mut egui::Ui, role: &Role, text: &str) {
+    let human = *role == Role::User;
+    appearance::surface().show(ui, |ui| {
+        ui.set_min_width(ui.available_width());
+        ui.label(
+            RichText::new(if human { "You" } else { "Lyra" })
+                .strong()
+                .color(if human { ACCENT } else { SUCCESS }),
+        );
+        if human {
+            ui.add(egui::Label::new(text).selectable(true));
+        } else {
+            for (language, block) in code_blocks(text) {
+                if let Some(language) = language {
+                    egui::Frame::new()
+                        .fill(ui.visuals().extreme_bg_color)
+                        .corner_radius(8)
+                        .inner_margin(10)
+                        .show(ui, |ui| {
+                            ui.set_min_width(ui.available_width());
+                            ui.horizontal_wrapped(|ui| {
+                                appearance::muted(ui, language);
+                                if ui.small_button("Copy code").clicked() {
+                                    ui.ctx().copy_text(block.to_owned());
+                                }
+                            });
+                            ui.add(
+                                egui::Label::new(RichText::new(block).monospace()).selectable(true),
+                            );
+                        });
+                } else {
+                    ui.add(egui::Label::new(block).selectable(true));
+                }
+            }
+        }
+    });
+}
+
+fn code_blocks(mut text: &str) -> Vec<(Option<&str>, &str)> {
+    let mut blocks = Vec::new();
+    while !text.is_empty() {
+        let fence = if text.starts_with("```") {
+            Some(0)
+        } else {
+            text.find("\n```").map(|index| index + 1)
+        };
+        let Some(fence) = fence else {
+            blocks.push((None, text));
+            break;
+        };
+        if fence > 0 {
+            blocks.push((None, text[..fence].trim_end()));
+        }
+        let Some((language, code)) = text[fence + 3..].split_once('\n') else {
+            blocks.push((None, &text[fence..]));
+            break;
+        };
+        let language = language.trim();
+        let language = if language.is_empty() {
+            "Code"
+        } else {
+            language
+        };
+        let end = code
+            .split_inclusive('\n')
+            .scan(0, |position, line| {
+                let start = *position;
+                *position += line.len();
+                Some((start, *position, line))
+            })
+            .find(|(_, _, line)| line.trim_end() == "```");
+        if let Some((start, after, _)) = end {
+            blocks.push((Some(language), code[..start].trim_end_matches(['\r', '\n'])));
+            text = code[after..].trim_start_matches(['\r', '\n']);
+        } else {
+            blocks.push((Some(language), code));
+            break;
+        }
+    }
+    blocks
+}
+
+fn task_result(
+    ui: &mut egui::Ui,
+    report: &TaskReport,
+    diff_rows: &mut BTreeMap<usize, Vec<(diff::Tag, String)>>,
+    idle: bool,
+) -> bool {
+    let (state, tone) = match report.state {
+        TaskState::Running => ("Interrupted or running", WARNING),
+        TaskState::ReadyToApply => ("Ready for review", ACCENT),
+        TaskState::Complete => ("Complete", SUCCESS),
+        TaskState::Failed => ("Task failed", ERROR),
+        TaskState::Cancelled => ("Cancelled", WARNING),
+        TaskState::Applying => ("Publication needs reconciliation", WARNING),
+        TaskState::Applied => ("Applied", SUCCESS),
+    };
+    let mut apply = false;
+    appearance::surface().show(ui, |ui| {
+        ui.set_min_width(ui.available_width());
+        ui.horizontal_wrapped(|ui| {
+            ui.heading("Task result");
+            appearance::chip(ui, state, tone);
+        });
+        if !report.summary.is_empty() {
+            ui.label(&report.summary);
+        }
+        appearance::muted(
+            ui,
+            format!(
+                "{} · {} model calls",
+                report.request.repo.display(),
+                report.calls
+            ),
+        );
+        ui.separator();
+        match &report.verification {
+            Verification::Skipped => {
+                appearance::chip(ui, "Verification skipped", WARNING);
+            }
+            Verification::Unavailable { message } => {
+                ui.label(RichText::new(message).color(WARNING));
+            }
+            Verification::Passed { result } | Verification::Failed { result } => {
+                let (label, color) = if result.passed() {
+                    ("Verification passed", SUCCESS)
+                } else {
+                    ("Verification failed", ERROR)
+                };
+                ui.collapsing(RichText::new(label).color(color).strong(), |ui| {
+                    if !result.stdout.is_empty() {
+                        ui.monospace(&result.stdout);
+                    }
+                    if !result.stderr.is_empty() {
+                        ui.monospace(&result.stderr);
+                    }
+                    if result.stdout.is_empty() && result.stderr.is_empty() {
+                        appearance::muted(ui, "No output from the checker.");
+                    }
+                });
+            }
+        }
+    });
+    if !report.proposals.is_empty() {
+        appearance::surface().show(ui, |ui| {
+            ui.set_min_width(ui.available_width());
+            ui.strong(format!("Proposed files ({})", report.proposals.len()));
+            for (index, proposal) in report.proposals.iter().enumerate() {
+                ui.collapsing(&proposal.path, |ui| {
+                    let rows = diff_rows.entry(index).or_insert_with(|| {
+                        diff::lines(&proposal.original, &proposal.replacement)
+                            .into_iter()
+                            .map(|(tag, line)| {
+                                (tag, line.trim_end_matches(['\n', '\r']).to_owned())
+                            })
+                            .collect()
+                    });
+                    show_diff(ui, rows);
+                });
+            }
+            if matches!(report.state, TaskState::ReadyToApply | TaskState::Applying) {
+                ui.add_space(4.0);
+                apply = ui
+                    .add_enabled(idle, appearance::primary("Apply changes"))
+                    .clicked();
+            }
+        });
+    }
+    apply
+}
+
+fn show_diff(ui: &mut egui::Ui, rows: &[(diff::Tag, String)]) {
+    let height = ui.text_style_height(&egui::TextStyle::Monospace);
+    egui::ScrollArea::both()
+        .max_height(320.0)
+        .auto_shrink([false, true])
+        .show_rows(ui, height, rows.len(), |ui, range| {
+            for (tag, line) in &rows[range] {
+                let (prefix, color) = match tag {
+                    diff::Tag::Same => (" ", MUTED),
+                    diff::Tag::Added => ("+", SUCCESS),
+                    diff::Tag::Removed => ("-", ERROR),
+                };
+                ui.add(
+                    egui::Label::new(
+                        RichText::new(format!("{prefix} {line}"))
+                            .monospace()
+                            .color(color),
+                    )
+                    .wrap_mode(egui::TextWrapMode::Extend),
+                );
+            }
+        });
+}
+
 impl eframe::App for Desktop {
+    fn clear_color(&self, _: &egui::Visuals) -> [f32; 4] {
+        [0.0; 4]
+    }
+
     fn logic(&mut self, ctx: &egui::Context, _: &mut eframe::Frame) {
         self.collect();
         if self.worker.is_some() {
@@ -685,78 +1213,50 @@ impl eframe::App for Desktop {
     }
 
     fn ui(&mut self, ui: &mut egui::Ui, _: &mut eframe::Frame) {
-        egui::Panel::top("controls").show(ui, |ui| self.controls(ui));
-        if self.agents {
-            egui::Panel::bottom("composer").show(ui, |ui| {
-                self.hub.composer(ui, &mut self.input);
-            });
-            egui::CentralPanel::default().show(ui, |ui| {
-                egui::ScrollArea::vertical().show(ui, |ui| self.hub.body(ui, &self.input));
-            });
-            if let Some(rendered) = &self.smoke {
-                rendered.store(true, Ordering::Relaxed);
-                ui.ctx().send_viewport_cmd(egui::ViewportCommand::Close);
-            }
+        appearance::background(ui.ctx(), self.transparent_window);
+        if self.splash(ui) {
             return;
         }
-        egui::Panel::bottom("composer").show(ui, |ui| {
-            if !self.status.is_empty() {
-                ui.label(&self.status);
-            }
-            ui.add(
-                egui::TextEdit::multiline(&mut self.input)
-                    .desired_width(f32::INFINITY)
-                    .desired_rows(3)
-                    .hint_text(if self.chat {
-                        "Message Lyra"
-                    } else {
-                        "Describe the coding task"
-                    }),
-            );
-            ui.horizontal(|ui| {
-                if let Some(worker) = &self.worker {
-                    if ui.button("Cancel").clicked() {
-                        worker.cancel.store(true, Ordering::Relaxed);
-                    }
+        if let Some(folder) = self.pending_hub.take() {
+            self.hub.open(folder);
+        }
+        let edge = appearance::surface().outer_margin(egui::Margin::same(8));
+        egui::Panel::left("lyra_sidebar")
+            .exact_size(178.0)
+            .frame(edge)
+            .show(ui, |ui| self.sidebar(ui));
+        egui::Panel::top("lyra_controls")
+            .frame(egui::Frame::NONE.inner_margin(egui::Margin::symmetric(16, 12)))
+            .show(ui, |ui| self.controls(ui));
+        egui::Panel::bottom("lyra_composer")
+            .frame(edge)
+            .show(ui, |ui| self.composer(ui));
+        egui::CentralPanel::default()
+            .frame(egui::Frame::NONE.inner_margin(egui::Margin::symmetric(12, 4)))
+            .show(ui, |ui| {
+                let elapsed = self.screen_entered.elapsed();
+                if !self.appearance.reduce_motion && elapsed < TRANSITION {
+                    ui.set_opacity(0.72 + 0.28 * elapsed.as_secs_f32() / TRANSITION.as_secs_f32());
+                    ui.ctx().request_repaint_after(Duration::from_millis(16));
+                }
+                egui::ScrollArea::vertical()
+                    .id_salt(self.screen.label())
+                    .stick_to_bottom(self.screen == Screen::Chat)
+                    .show(ui, |ui| self.result(ui));
+            });
+        self.settings(ui.ctx());
+        if let Some(rendered) = &self.smoke {
+            match self.smoke_step {
+                0 => self.select_screen(Screen::Chat),
+                1 => self.select_screen(Screen::Agents),
+                _ => {
+                    rendered.store(true, Ordering::Relaxed);
+                    ui.ctx().send_viewport_cmd(egui::ViewportCommand::Close);
                     return;
                 }
-                let can_submit = self.model.is_some()
-                    && !self.input.trim().is_empty()
-                    && (self.chat || self.repo.is_some());
-                if ui
-                    .add_enabled(
-                        can_submit,
-                        egui::Button::new(if self.chat { "Send" } else { "Run task" }),
-                    )
-                    .clicked()
-                {
-                    self.submit();
-                }
-                if !self.chat
-                    && let Some(report) = &self.report
-                {
-                    match report.state {
-                        TaskState::ReadyToApply | TaskState::Applying => {
-                            if ui.button("Apply changes").clicked() {
-                                self.apply();
-                            }
-                        }
-                        TaskState::Running | TaskState::Cancelled
-                            if self.model.is_some() && ui.button("Resume task").clicked() =>
-                        {
-                            self.resume();
-                        }
-                        _ => {}
-                    }
-                }
-            });
-        });
-        egui::CentralPanel::default().show(ui, |ui| {
-            egui::ScrollArea::vertical().show(ui, |ui| self.result(ui));
-        });
-        if let Some(rendered) = &self.smoke {
-            rendered.store(true, Ordering::Relaxed);
-            ui.ctx().send_viewport_cmd(egui::ViewportCommand::Close);
+            }
+            self.smoke_step += 1;
+            ui.ctx().request_repaint();
         }
     }
 }
@@ -779,6 +1279,23 @@ mod tests {
         assert_eq!(fit_context(Some(16384), Some(131_072)), 16384);
         assert_eq!(fit_context(Some(16384), Some(2048)), 2048);
         assert_eq!(fit_context(None, None), 8192);
+    }
+
+    #[test]
+    fn assistant_code_preserves_indent_and_supports_streaming_fences() {
+        assert_eq!(
+            code_blocks("Example\n```rust\n  let x = 1;\n```\n\nExplanation"),
+            vec![
+                (None, "Example"),
+                (Some("rust"), "  let x = 1;"),
+                (None, "Explanation")
+            ]
+        );
+        assert_eq!(
+            code_blocks("```\n  partial"),
+            vec![(Some("Code"), "  partial")]
+        );
+        assert_eq!(code_blocks("```rust"), vec![(None, "```rust")]);
     }
 
     #[test]
