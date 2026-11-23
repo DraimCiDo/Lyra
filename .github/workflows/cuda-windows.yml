@@ -80,12 +80,17 @@ jobs:
           New-Item -ItemType Directory -Force -Path dist, dist/examples | Out-Null
           Copy-Item -LiteralPath target/x86_64-pc-windows-msvc/release/lyra.exe -Destination dist/
           Copy-Item -LiteralPath target/x86_64-pc-windows-msvc/release/lyra-desktop.exe -Destination dist/
+          Copy-Item -LiteralPath target/x86_64-pc-windows-msvc/release/lyra-v2.exe -Destination dist/
+          Copy-Item -LiteralPath target/x86_64-pc-windows-msvc/release/lyra-v2-desktop.exe -Destination dist/
+          Copy-Item -LiteralPath docs/V2.md -Destination dist/V2.md
           Copy-Item -LiteralPath examples/buggy-add -Destination dist/examples/buggy-add -Recurse
           Copy-Item -LiteralPath docs/LOCAL_MODELS.md -Destination dist/LOCAL_MODELS.md
           @'
           RTX 4060 test: CUDA sm_89 build. This CI runner has no NVIDIA GPU.
           Compilation does not prove actual runtime compatibility or VRAM safety.
-          Use Settings > Model and Resources > NVIDIA GPU Auto.
+          In Lyra v2 Desktop, select NVIDIA GPU Auto next to the model.
+          For lyra-v2 task, resume, or hub work, use --gpu-layers 1024.
+          In Lyra v1 Desktop, use Settings > Model and Resources > NVIDIA GPU Auto.
           Existing saved CPU settings are preserved: select GPU Auto explicitly.
           Required NVIDIA driver must be installed separately on the test PC.
           '@ | Set-Content -Encoding utf8NoBOM -LiteralPath dist/README-CUDA.txt

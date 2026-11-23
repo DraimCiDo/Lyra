@@ -262,6 +262,7 @@ fn local_model_session_accepts_the_native_loader_configuration() {
         context: 4096,
         max_tokens: 512,
         threads: 1,
+        gpu_layers: 0,
         timeout_secs: 15,
     }
     .inference_args();
@@ -471,4 +472,28 @@ fn protocol_examples_use_a_real_project_file() {
             &mut |_| Ok(()),
         )
         .unwrap();
+}
+
+#[test]
+fn the_local_cli_passes_cuda_offload_to_inference() {
+    use clap::Parser;
+
+    let cli = cli::Cli::try_parse_from([
+        "lyra-v2",
+        "resume",
+        "--state",
+        "task",
+        "--model",
+        "model.gguf",
+        "--gpu-layers",
+        "1024",
+    ])
+    .unwrap();
+    let cli::Command::Resume { model, .. } = cli.command else {
+        panic!("expected resume command");
+    };
+    assert_eq!(
+        model.inference_args().gpu_layers,
+        crate::resources::GPU_AUTO
+    );
 }

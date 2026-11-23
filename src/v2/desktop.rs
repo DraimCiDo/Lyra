@@ -102,6 +102,7 @@ struct Desktop {
     reviewer: bool,
     /// Requested context window; `None` picks the model's trained window up to 8192.
     context: Option<u32>,
+    gpu_layers: u32,
     smoke: Option<Arc<AtomicBool>>,
     worker: Option<Worker>,
     events: Option<mpsc::Receiver<Output>>,
@@ -170,6 +171,7 @@ impl Desktop {
             hub: Default::default(),
             reviewer: false,
             context: None,
+            gpu_layers: 0,
             smoke,
             worker: None,
             events: None,
@@ -239,6 +241,7 @@ impl Desktop {
                 context,
                 max_tokens: (context / 4).min(1024),
                 threads: inference::default_threads(),
+                gpu_layers: self.gpu_layers,
                 timeout_secs: 300,
             }
             .inference_args(),
@@ -463,6 +466,25 @@ impl Desktop {
                         .pick_file()
                 {
                     self.model = Some(path);
+                }
+                #[cfg(feature = "cuda")]
+                {
+                    use crate::resources::{GPU_AUTO, GPU_BALANCED};
+                    egui::ComboBox::from_id_salt("inference_device")
+                        .selected_text(match self.gpu_layers {
+                            GPU_AUTO => "NVIDIA GPU Auto",
+                            GPU_BALANCED => "NVIDIA GPU Balanced",
+                            _ => "CPU",
+                        })
+                        .show_ui(ui, |ui| {
+                            ui.selectable_value(&mut self.gpu_layers, 0, "CPU");
+                            ui.selectable_value(&mut self.gpu_layers, GPU_AUTO, "NVIDIA GPU Auto");
+                            ui.selectable_value(
+                                &mut self.gpu_layers,
+                                GPU_BALANCED,
+                                "NVIDIA GPU Balanced",
+                            );
+                        });
                 }
                 egui::ComboBox::from_id_salt("context")
                     .selected_text(match self.context {

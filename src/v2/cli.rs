@@ -147,6 +147,9 @@ pub struct LocalModel {
     pub max_tokens: u32,
     #[arg(long, default_value_t = inference::default_threads(), value_parser = clap::value_parser!(u32).range(1..=256))]
     pub threads: u32,
+    /// CPU (0), manual CUDA layers (1..1022), NVIDIA Balanced (1023), or Auto (1024).
+    #[arg(long, default_value_t = 0, value_parser = clap::value_parser!(u32).range(0..=1024))]
+    pub gpu_layers: u32,
     #[arg(long, default_value_t = 300, value_parser = clap::value_parser!(u64).range(1..=3600))]
     pub timeout_secs: u64,
 }
@@ -161,7 +164,7 @@ impl LocalModel {
             context: self.context,
             max_tokens: self.max_tokens,
             threads: self.threads,
-            gpu_layers: 0,
+            gpu_layers: self.gpu_layers,
             timeout_secs: self.timeout_secs,
             raw: false,
         }
