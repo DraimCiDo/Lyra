@@ -166,8 +166,8 @@ pub(super) fn publish(args: GitHubPublish, output: &mut impl Write) -> io::Resul
         }
     }
     let client = GithubClient::new(github::DEFAULT_API, &args.token_env)?;
-    let (base, tree) = client.base_tree(&args.repo, &args.base)?;
-    remote_matches_checked(&report, &sources, &tree)?;
+    let (base, tree, symlinks) = client.base_tree(&args.repo, &args.base)?;
+    remote_matches_checked(&report, &sources, &tree, &symlinks)?;
     let url = client.publish_at(
         &args.repo,
         &args.branch,
@@ -190,6 +190,7 @@ fn remote_matches_checked(
     report: &TaskReport,
     sources: &std::collections::BTreeMap<String, Vec<u8>>,
     remote: &std::collections::BTreeMap<String, String>,
+    symlinks: &std::collections::BTreeSet<String>,
 ) -> io::Result<()> {
     let proposed: std::collections::BTreeMap<_, _> = report
         .proposals
@@ -224,7 +225,9 @@ fn remote_matches_checked(
     }
     let mut workspace = crate::workspace::Workspace::for_snapshot(&report.request.repo, &[])?;
     for path in remote.keys() {
-        if !sources.contains_key(path) && workspace.would_index(path)? {
+        // A real symlink is never part of a local snapshot; a placeholder file is, and was
+        // compared above.
+        if !sources.contains_key(path) && !symlinks.contains(path) && workspace.would_index(path)? {
             differences.push(path.clone());
         }
     }
@@ -282,10 +285,21 @@ mod tests {
         );
         remote.insert("build/out.rs".into(), github::git_blob_id(b"ignored"));
         remote.insert(".github/ci.yml".into(), "0".repeat(40));
+        // A real symlink exists only remotely; a Windows checkout holds its target text as
+        // a regular file. Neither is a drift.
+        fs::create_dir_all(repo.join("assets")).unwrap();
+        fs::write(repo.join("assets/current.txt"), "version.txt").unwrap();
+        remote.insert(
+            "assets/current.txt".into(),
+            github::git_blob_id(b"version.txt"),
+        );
+        remote.insert("docs/latest".into(), github::git_blob_id(b"v2"));
+        let symlinks: std::collections::BTreeSet<String> =
+            ["assets/current.txt".to_owned(), "docs/latest".to_owned()].into();
         let compare = |report: &TaskReport, remote: &BTreeMap<String, String>| {
             let (sources, _) =
                 crate::executor::candidate_sources(&report.request.repo, &report.proposals)?;
-            remote_matches_checked(report, &sources, remote)
+            remote_matches_checked(report, &sources, remote, &symlinks)
         };
         compare(&report, &remote).unwrap();
 

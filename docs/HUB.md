@@ -31,8 +31,10 @@ native Windows.
   whose current snapshot passed. Integrate any newer base into the task branch and rerun the check
   first. Without a configured check, Lyra creates a merge commit and aborts conflicting merges.
   `--commit` must be the commit you reviewed; if the agent moved the branch after your review,
-  nothing is merged. If a landing stops after Git moved the base, run the same command again:
-  Lyra recognizes the commit in the base and records the task as done.
+  nothing is merged. If a landing stops after Git moved the base, run `land` again (with the
+  reviewed commit): Lyra recognizes the recorded commit in the base and marks the task done.
+  Until then the task cannot be cancelled or reopened. Commits the agent added to the branch
+  after the landed one are kept: the branch and worktree stay.
   A worktree that Git cannot remove safely is retained.
 
 Git must be on `PATH`. The hub does not use the network.

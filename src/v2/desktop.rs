@@ -95,6 +95,9 @@ enum Output {
     ChatDelta(String),
     Chat(String),
     Error(String),
+    /// The unanswered chat message alone does not fit the context: give it back to the
+    /// composer to be shortened, with the reason.
+    Rejected(String, String),
 }
 
 struct ChatWriter<'a> {
@@ -306,6 +309,18 @@ impl Desktop {
                         self.status = status;
                         self.status_error = true;
                     }
+                    Output::Rejected(draft, reason) => {
+                        if self
+                            .messages
+                            .last()
+                            .is_some_and(|message| message.role == Role::User)
+                        {
+                            self.messages.pop();
+                        }
+                        self.chat_draft = draft;
+                        self.status = reason;
+                        self.status_error = true;
+                    }
                     Output::ChatDelta(text) => {
                         self.chat_preview.push_str(&text);
                         self.status.clear();
@@ -378,13 +393,28 @@ impl Desktop {
                     sender: send,
                     content: String::new(),
                 };
-                inference::with_cancellable_session(&model, cancel, |session| {
-                    let messages = fit_history(&messages, session.input_token_limit(), |turns| {
-                        session.prompt_tokens(turns)
-                    })?;
-                    session.complete_chat_messages(messages, &mut response)
+                let draft = messages.last().map(|message| message.content.clone());
+                let answered = inference::with_cancellable_session(&model, cancel, |session| {
+                    let messages =
+                        match fit_history(&messages, session.input_token_limit(), |turns| {
+                            session.prompt_tokens(turns)
+                        }) {
+                            Ok(messages) => messages,
+                            Err(error) if error.kind() == io::ErrorKind::InvalidInput => {
+                                let _ = send.send(Output::Rejected(
+                                    draft.clone().unwrap_or_default(),
+                                    error.to_string(),
+                                ));
+                                return Ok(false);
+                            }
+                            Err(error) => return Err(error),
+                        };
+                    session.complete_chat_messages(messages, &mut response)?;
+                    Ok(true)
                 })?;
-                let _ = send.send(Output::Chat(response.content));
+                if answered {
+                    let _ = send.send(Output::Chat(response.content));
+                }
                 Ok(())
             });
         } else if let Some(repo) = self.repo.clone() {
@@ -970,7 +1000,8 @@ fn fit_history(
         match next {
             Some(next) => start = next,
             None => {
-                return Err(io::Error::other(
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidInput,
                     "The message exceeds the model context. Shorten it or choose a larger context.",
                 ));
             }

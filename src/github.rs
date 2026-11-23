@@ -4,6 +4,7 @@
 //! logged. Everything fetched from GitHub is untrusted data. Writes happen only through
 //! explicit CLI subcommands; a stale remote file is a conflict, never overwritten.
 use crate::agent::Report;
+use crate::workspace::same_text_ignoring_line_endings;
 use clap::{Args, Subcommand};
 use reqwest::blocking::{Client, RequestBuilder};
 use reqwest::header::{ACCEPT, AUTHORIZATION, USER_AGENT};
@@ -456,11 +457,7 @@ impl GithubClient {
     }
 
     /// The commit `base` points to and the git blob id of every file in its tree.
-    pub fn base_tree(
-        &self,
-        repo: &str,
-        base: &str,
-    ) -> io::Result<(String, std::collections::BTreeMap<String, String>)> {
+    pub fn base_tree(&self, repo: &str, base: &str) -> io::Result<RemoteTree> {
         validate_slug(repo)?;
         validate_branch(base)?;
         let reference = self.get(&format!("/repos/{repo}/git/ref/heads/{base}"))?;
@@ -475,7 +472,8 @@ impl GithubClient {
                 "The remote tree is too large to compare with the checked snapshot",
             ));
         }
-        Ok((commit, tree_blobs(&tree)))
+        let (blobs, symlinks) = tree_blobs(&tree);
+        Ok((commit, blobs, symlinks))
     }
 
     /// Publish only if `base` still points to `expected_base`, when one is given.
@@ -753,25 +751,39 @@ pub fn run(args: GithubArgs, output: &mut impl Write) -> io::Result<()> {
     }
 }
 
-/// Regular and executable files of a git tree listing. Symlinks (mode 120000) are
-/// skipped: a local checkout never indexes them, so they cannot be compared.
-fn tree_blobs(tree: &Value) -> std::collections::BTreeMap<String, String> {
-    tree["tree"]
+/// The commit a branch points to, the blob id of every file in its tree, and which of
+/// those paths are symlinks.
+pub type RemoteTree = (
+    String,
+    std::collections::BTreeMap<String, String>,
+    std::collections::BTreeSet<String>,
+);
+
+/// Files of a git tree listing and the paths that are symlinks (mode 120000). A symlink's
+/// blob holds its target text, so a checkout with `core.symlinks=false` (the Windows
+/// default) shows it as a regular file with the same bytes and compares equal; a real
+/// symlink is never indexed locally and is skipped by the caller.
+fn tree_blobs(
+    tree: &Value,
+) -> (
+    std::collections::BTreeMap<String, String>,
+    std::collections::BTreeSet<String>,
+) {
+    let entries = tree["tree"]
         .as_array()
         .into_iter()
         .flatten()
-        .filter(|entry| entry["type"] == "blob" && entry["mode"] != "120000")
-        .map(|entry| {
-            (
-                field(entry, "path").to_owned(),
-                field(entry, "sha").to_owned(),
-            )
-        })
-        .collect()
-}
-
-pub fn same_text_ignoring_line_endings(left: &str, right: &str) -> bool {
-    left.replace("\r\n", "\n") == right.replace("\r\n", "\n")
+        .filter(|entry| entry["type"] == "blob");
+    let mut blobs = std::collections::BTreeMap::new();
+    let mut symlinks = std::collections::BTreeSet::new();
+    for entry in entries {
+        let path = field(entry, "path").to_owned();
+        if entry["mode"] == "120000" {
+            symlinks.insert(path.clone());
+        }
+        blobs.insert(path, field(entry, "sha").to_owned());
+    }
+    (blobs, symlinks)
 }
 
 /// Write the proposed text with the remote file's line endings when the local original
@@ -896,8 +908,12 @@ mod tests {
             {"path": "vendor/lib", "type": "commit", "mode": "160000", "sha": "4"},
             {"path": "docs", "type": "tree", "mode": "040000", "sha": "5"},
         ]});
-        let blobs = tree_blobs(&tree);
-        assert_eq!(blobs.keys().collect::<Vec<_>>(), ["a.txt", "run.sh"]);
+        let (blobs, symlinks) = tree_blobs(&tree);
+        assert_eq!(
+            blobs.keys().collect::<Vec<_>>(),
+            ["a.txt", "docs/latest", "run.sh"]
+        );
+        assert_eq!(symlinks.into_iter().collect::<Vec<_>>(), ["docs/latest"]);
     }
     #[test]
     fn crlf_publication_keeps_the_remote_line_endings() {

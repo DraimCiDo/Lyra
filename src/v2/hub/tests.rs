@@ -1044,3 +1044,132 @@ fn leases_may_cover_ordinary_dot_folders_but_not_git_or_escapes() {
         assert!(codex.lease(None, &paths(&[bad]), 600).is_err(), "{bad}");
     }
 }
+
+#[test]
+fn an_interrupted_landing_settles_even_after_the_branch_moved_and_blocks_cancel_meanwhile() {
+    let fixture = fixture(None);
+    let owner = owner(&fixture);
+    let id = owner.create_task("Fix add", "Use addition", &[]).unwrap();
+    let mut codex = agent(&fixture, "codex-1");
+    let worktree = codex.claim(None).unwrap().worktree.unwrap();
+    fs::write(
+        worktree.join("maths.py"),
+        "def add(a, b):\n    return a + b\n",
+    )
+    .unwrap();
+    git::ok(&worktree, &["commit", "-qam", "Fix add"]).unwrap();
+    codex.update(id, Status::Review, "Fixed").unwrap();
+    let landed = owner.diff(id, 4096).unwrap()["commit"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    // The intent is recorded and Git moves the base, then the process stops.
+    owner.log(Some(id), "land-intent", &landed).unwrap();
+    git::ok(&fixture.repo, &["merge", "--ff-only", &landed]).unwrap();
+    // Meanwhile nothing may cancel or reopen the task, and the agent keeps committing.
+    assert!(
+        owner
+            .cancel(id)
+            .unwrap_err()
+            .to_string()
+            .contains("landing")
+    );
+    assert!(owner.reopen(id, "again").is_err());
+    assert!(codex.update(id, Status::Claimed, "").is_err());
+    git::ok(&worktree, &["commit", "--allow-empty", "-qm", "Later work"]).unwrap();
+    // Settling does not depend on the branch tip and keeps the newer commits.
+    let result = owner.land(id, &landed).unwrap();
+    assert_eq!(result["landed"], id);
+    assert_eq!(result["worktree_retained"], true);
+    assert!(worktree.exists());
+    let tip = git::ok(
+        &fixture.repo,
+        &[
+            "rev-parse",
+            &format!("refs/heads/{}", owner.task(id).unwrap().branch.unwrap()),
+        ],
+    )
+    .unwrap();
+    assert_ne!(tip, landed);
+    assert_eq!(owner.task(id).unwrap().status, Status::Done);
+}
+
+#[test]
+fn a_failed_landing_does_not_block_later_transitions() {
+    let fixture = fixture(None);
+    let owner = owner(&fixture);
+    let id = owner.create_task("Fix add", "Use addition", &[]).unwrap();
+    let mut codex = agent(&fixture, "codex-1");
+    let worktree = codex.claim(None).unwrap().worktree.unwrap();
+    fs::write(worktree.join("README.md"), "conflicting\n").unwrap();
+    git::ok(&worktree, &["commit", "-qam", "Branch change"]).unwrap();
+    codex.update(id, Status::Review, "Done").unwrap();
+    // The base changes the same line, so the merge conflicts and is aborted.
+    fs::write(fixture.repo.join("README.md"), "base side\n").unwrap();
+    git::ok(&fixture.repo, &["commit", "-qam", "Base change"]).unwrap();
+    assert!(owner.land_current(id).is_err());
+    assert_eq!(owner.task(id).unwrap().status, Status::Review);
+    owner.cancel(id).unwrap();
+}
+
+#[test]
+fn a_hand_deleted_worktree_is_restored_after_git_forgets_it() {
+    let fixture = fixture(None);
+    let owner = owner(&fixture);
+    let id = owner.create_task("Fix add", "Use addition", &[]).unwrap();
+    let mut codex = agent(&fixture, "codex-1");
+    let worktree = codex.claim(None).unwrap().worktree.unwrap();
+    // Deleting the folder directly leaves a stale registration behind.
+    fs::remove_dir_all(&worktree).unwrap();
+    assert_eq!(codex.claim(Some(id)).unwrap().id, id);
+    assert!(worktree.join("maths.py").exists());
+}
+
+#[test]
+fn a_worker_commit_matches_proposal_paths_literally() {
+    let fixture = fixture(None);
+    let owner = owner(&fixture);
+    let id = owner
+        .create_task("Fix", "Edit the bracketed file", &[])
+        .unwrap();
+    // `a[1].md` would be a glob that also matches `a1.md`.
+    fs::write(fixture.repo.join("a[1].md"), "one\n").unwrap();
+    fs::write(fixture.repo.join("a1.md"), "other\n").unwrap();
+    git::ok(&fixture.repo, &["add", "-A"]).unwrap();
+    git::ok(&fixture.repo, &["commit", "-qm", "files"]).unwrap();
+    let mut lyra = Hub::open(&fixture.hub, "lyra-1", Some(AgentKind::Lyra)).unwrap();
+    let mut actions = vec![
+        json!({"tool":"replace","path":"a[1].md","old":"one","new":"two"}),
+        json!({"tool":"finish","summary":"Edited"}),
+    ]
+    .into_iter();
+    worker::run_one(
+        &mut lyra,
+        None,
+        &[],
+        8,
+        &AtomicBool::new(false),
+        &mut |report, save| {
+            // An unrelated modified file that the glob would match.
+            fs::write(report.request.repo.join("a1.md"), "changed elsewhere\n").unwrap();
+            report.run(
+                &AtomicBool::new(false),
+                &mut |_| Ok(actions.next().unwrap().to_string()),
+                save,
+            )
+        },
+    )
+    .unwrap();
+    let branch = owner.task(id).unwrap().branch.unwrap();
+    let committed = git::ok(
+        &fixture.repo,
+        &[
+            "show",
+            "--name-only",
+            "--format=",
+            &format!("refs/heads/{branch}"),
+        ],
+    )
+    .unwrap();
+    assert_eq!(committed, "a[1].md");
+}

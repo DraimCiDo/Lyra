@@ -20,6 +20,11 @@ pub(crate) fn private_tempdir(prefix: &str) -> io::Result<tempfile::TempDir> {
     builder.tempdir()
 }
 
+/// Whether two texts differ at most in their line endings (CRLF versus LF).
+pub fn same_text_ignoring_line_endings(left: &str, right: &str) -> bool {
+    left.replace("\r\n", "\n") == right.replace("\r\n", "\n")
+}
+
 pub const MAX_PROPOSALS: usize = 32;
 pub const INDEX_LIMIT: usize = 8192;
 pub const ENTRY_LIMIT: usize = 100_000;

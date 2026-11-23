@@ -74,7 +74,11 @@ pub fn run_one(
             state = store.apply()?.state;
             // From here the proposal is in the worktree: a failed commit must stay
             // retryable instead of releasing the task.
-            if let Err(error) = commit_proposal(&worktree, &task, &store.load()?) {
+            // Reloading the checkpoint counts too: its failure must not release the task.
+            if let Err(error) = store
+                .load()
+                .and_then(|applied| commit_proposal(&worktree, &task, &applied))
+            {
                 return Err(CommitPending { error, folder }.into_error());
             }
         }
@@ -155,19 +159,38 @@ impl CommitPending {
 /// Commit exactly the applied proposal paths. Other entries in the index stay staged
 /// and are not part of the commit.
 fn commit_proposal(worktree: &std::path::Path, task: &Task, report: &TaskReport) -> io::Result<()> {
-    let paths: Vec<&str> = report
+    // Pathspecs are matched literally: `[` and `]` are valid in a project path and would
+    // otherwise be a glob that also picks up unrelated files.
+    let specs: Vec<String> = report
         .proposals
         .iter()
-        .map(|edit| edit.path.as_str())
+        .map(|edit| format!(":(literal){}", edit.path))
         .collect();
+    let paths: Vec<&str> = specs.iter().map(String::as_str).collect();
     let mut add = vec!["add", "--"];
     add.extend(&paths);
     git::ok(worktree, &add)?;
     let message = format!("Task {}: {}", task.id, task.title);
-    // A retry after a failed hand-off finds the commit already made.
+    // A retry after a failed hand-off finds the commit already made. Nothing staged only
+    // means the index equals HEAD, so also require HEAD to hold the saved proposal.
     let mut staged = vec!["diff", "--cached", "--quiet", "--"];
     staged.extend(&paths);
     if git::run(worktree, &staged)?.success {
+        for edit in &report.proposals {
+            let committed = git::run(worktree, &["show", &format!("HEAD:{}", edit.path)])?;
+            // Git may store the file with different line endings than the worktree copy.
+            if !committed.success
+                || !crate::workspace::same_text_ignoring_line_endings(
+                    &committed.stdout,
+                    &edit.replacement,
+                )
+            {
+                return Err(io::Error::other(format!(
+                    "HEAD does not contain the saved proposal for {}",
+                    edit.path
+                )));
+            }
+        }
         return Ok(());
     }
     let mut commit = vec!["commit", "-m", &message, "--"];

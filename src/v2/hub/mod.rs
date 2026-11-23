@@ -685,6 +685,8 @@ impl Hub {
             ));
         }
         fs::create_dir_all(self.root.join("worktrees"))?;
+        // A worktree folder deleted by hand leaves a registration that blocks re-adding it.
+        let _ = git::run(&self.repo, &["worktree", "prune"]);
         let path = worktree.to_string_lossy();
         let exists = git::run(
             &self.repo,
@@ -753,6 +755,7 @@ impl Hub {
 
     /// The state change itself; the caller holds the write transaction.
     fn update_locked(&self, id: i64, status: Status, summary: &str) -> io::Result<()> {
+        self.refuse_while_landing(id)?;
         let task = self.owned_task(id)?;
         if summary.chars().count() > 8 * 1024 || summary.len() > 32 * 1024 || summary.contains('\0')
         {
@@ -801,6 +804,7 @@ impl Hub {
         let transaction =
             Transaction::new_unchecked(&self.connection, TransactionBehavior::Immediate)
                 .map_err(db)?;
+        self.refuse_while_landing(id)?;
         let task = self.task(id)?;
         if matches!(task.status, Status::Done | Status::Cancelled) {
             return Err(error(format!("Task {id} is already finished")));
@@ -1184,6 +1188,23 @@ impl Hub {
             .branch
             .clone()
             .ok_or_else(|| error("Task has no branch"))?;
+        // A previous landing may have updated the base and stopped before recording it. That
+        // is settled first and independently of where the task branch is now: if the agent
+        // moved the branch afterwards, the newer commits stay on the preserved branch.
+        if let Some(pending) = self.pending_landing(id)?
+            && git::run(
+                &self.repo,
+                &[
+                    "merge-base",
+                    "--is-ancestor",
+                    &pending,
+                    &format!("refs/heads/{}", self.base),
+                ],
+            )?
+            .success
+        {
+            return self.finish_landing(&task, &branch, &pending);
+        }
         let head = git::ok(&self.repo, &["rev-parse", &format!("refs/heads/{branch}")])?;
         // The full commit id is required: a short prefix is cheap to collide on purpose.
         if expected_commit != head {
@@ -1192,21 +1213,6 @@ impl Hub {
                 &head[..12],
                 expected_commit.chars().take(12).collect::<String>()
             )));
-        }
-        // A previous landing may have updated the base and stopped before recording it.
-        if self.landing_started(id, &head)?
-            && git::run(
-                &self.repo,
-                &[
-                    "merge-base",
-                    "--is-ancestor",
-                    &head,
-                    &format!("refs/heads/{}", self.base),
-                ],
-            )?
-            .success
-        {
-            return self.finish_landing(&task, &branch, &head);
         }
         // The slow Git checks run before the write lock is taken, so other agents keep working.
         if let Some(worktree) = task
@@ -1289,6 +1295,7 @@ impl Hub {
             if !checked {
                 let _ = git::run(&self.repo, &["merge", "--abort"]);
             }
+            let _ = self.log(Some(id), "land-aborted", &head);
             return Err(match merge {
                 Ok(merge) => error(format!(
                     "Git could not land the reviewed commit: {}",
@@ -1297,23 +1304,53 @@ impl Hub {
                 Err(cause) => cause,
             });
         }
-        if checked && git::head(&self.repo)? != head {
-            return Err(error("The base does not match the checked commit"));
+        // The merge updates whatever branch is checked out; confirm it was the base branch.
+        let base_ref = format!("refs/heads/{}", self.base);
+        let on_base = if checked {
+            git::ok(&self.repo, &["rev-parse", &base_ref])? == head
+        } else {
+            git::run(
+                &self.repo,
+                &["merge-base", "--is-ancestor", &head, &base_ref],
+            )?
+            .success
+        };
+        if !on_base {
+            let _ = self.log(Some(id), "land-aborted", &head);
+            return Err(error(format!(
+                "Git did not update '{}'; the checked-out branch changed during the landing",
+                self.base
+            )));
         }
         self.finish_landing(&task, &branch, &head)
     }
 
-    /// Whether a landing of exactly this commit was started (and may have reached Git).
-    fn landing_started(&self, id: i64, head: &str) -> io::Result<bool> {
-        self.connection
+    /// The commit of a landing that was started and neither finished nor aborted: it may
+    /// have reached Git, so the task must not be cancelled or reopened until it is settled.
+    fn pending_landing(&self, id: i64) -> io::Result<Option<String>> {
+        let latest: Option<(String, String)> = self
+            .connection
             .query_row(
-                "SELECT 1 FROM events WHERE task=?1 AND kind='land-intent' AND detail=?2 LIMIT 1",
-                params![id, head],
-                |_| Ok(()),
+                "SELECT kind, detail FROM events
+                 WHERE task=?1 AND kind IN ('land-intent','land','land-aborted')
+                 ORDER BY id DESC LIMIT 1",
+                [id],
+                |row| Ok((row.get(0)?, row.get(1)?)),
             )
             .optional()
-            .map(|row| row.is_some())
-            .map_err(db)
+            .map_err(db)?;
+        Ok(latest
+            .filter(|(kind, _)| kind == "land-intent")
+            .map(|(_, commit)| commit))
+    }
+
+    fn refuse_while_landing(&self, id: i64) -> io::Result<()> {
+        if self.pending_landing(id)?.is_some() {
+            return Err(error(format!(
+                "A landing of task {id} is in progress or was interrupted; run 'hub land' again to settle it"
+            )));
+        }
+        Ok(())
     }
 
     /// Record a landing that Git has completed and clean up its worktree and branch.
@@ -1334,16 +1371,20 @@ impl Hub {
         self.log(Some(id), "land", head)?;
         transaction.commit().map_err(db)?;
         let landed = git::head(&self.repo)?;
-        let worktree_retained = task.worktree.as_ref().is_some_and(|worktree| {
-            // Lyra's own lock folder is the only thing `git worktree remove` would refuse.
-            let _ = fs::remove_dir_all(worktree.join(".lyra"));
-            worktree.exists()
-                && git::ok(
-                    &self.repo,
-                    &["worktree", "remove", &worktree.to_string_lossy()],
-                )
-                .is_err()
-        });
+        // Newer commits the agent added after the landed one stay on their branch.
+        let moved = git::ok(&self.repo, &["rev-parse", &format!("refs/heads/{branch}")])
+            .is_ok_and(|tip| tip != head);
+        let worktree_retained = moved
+            || task.worktree.as_ref().is_some_and(|worktree| {
+                // Lyra's own lock folder is the only thing `git worktree remove` would refuse.
+                let _ = fs::remove_dir_all(worktree.join(".lyra"));
+                worktree.exists()
+                    && git::ok(
+                        &self.repo,
+                        &["worktree", "remove", &worktree.to_string_lossy()],
+                    )
+                    .is_err()
+            });
         if !worktree_retained
             && git::ok(&self.repo, &["rev-parse", &format!("refs/heads/{branch}")])
                 .is_ok_and(|current| current == head)

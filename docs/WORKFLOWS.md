@@ -139,8 +139,8 @@ CRLF и SHA256. Диапазоны доступны для текста до 2 M
 Снимки для executor/сессий: до 2048 файлов, 2 MiB на файл и 16 MiB суммарно.
 Превышение/неподдерживаемое содержимое блокирует неполный snapshot. Скрытые,
 служебные и запрещенные пути исключаются; большие монорепозитории требуют отдельного
-расширения. Binary files are copied byte for byte and count toward the same file and size
-limits. Сохранение scope snapshot не означает отправку
+расширения. Isolated-check snapshots copy binary files byte for byte within the same limits; session
+snapshots keep binary files in a separate store with its own 256 MiB total. Сохранение scope snapshot не означает отправку
 всего текста модели. Отбор по имени не находит все секреты
 в исходном коде. Docker daemon/image должны быть доверенными. Preflight требует реально
 доступных memory/swap/PID/CPU limits и default seccomp: если daemon игнорирует
