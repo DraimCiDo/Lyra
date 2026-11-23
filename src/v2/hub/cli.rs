@@ -69,6 +69,11 @@ enum HubCommand {
         #[arg(long)]
         task: i64,
     },
+    /// Drop cancelled tasks from a task's dependencies so it can be claimed.
+    Unblock {
+        #[arg(long)]
+        task: i64,
+    },
     /// Send a message to one agent or to everyone.
     Send {
         #[arg(long)]
@@ -151,6 +156,7 @@ pub fn run(args: HubArgs, output: &mut impl Write) -> io::Result<()> {
         HubCommand::Land { task, commit } => print(output, &owner()?.land(task, &commit)?),
         HubCommand::Reopen { task, note } => print(output, &owner()?.reopen(task, &note)?),
         HubCommand::Cancel { task } => print(output, &owner()?.cancel(task)?),
+        HubCommand::Unblock { task } => print(output, &owner()?.unblock(task)?),
         HubCommand::Send { to, task, body } => print(
             output,
             &json!({"message_id": owner()?.send(to.as_deref(), task, &body)?}),

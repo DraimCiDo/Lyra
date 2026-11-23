@@ -21,6 +21,7 @@ enum Outcome {
         id: i64,
         commit: String,
         patch: String,
+        truncated: bool,
     },
     Inbox(Vec<Value>),
     Created(PathBuf),
@@ -40,8 +41,8 @@ pub struct HubView {
     status: Option<Value>,
     tasks: Vec<Task>,
     inbox: Vec<Value>,
-    /// The diff the owner is looking at: task, exact commit and patch.
-    diff: Option<(i64, String, String)>,
+    /// The diff the owner is looking at: task, exact commit, patch, and whether it was cut.
+    diff: Option<(i64, String, String, bool)>,
     notice: String,
     pending: Option<mpsc::Receiver<Finished>>,
 }
@@ -78,7 +79,12 @@ impl HubView {
                 self.notice = message;
                 self.refresh();
             }
-            Ok(Outcome::Diff { id, commit, patch }) => self.diff = Some((id, commit, patch)),
+            Ok(Outcome::Diff {
+                id,
+                commit,
+                patch,
+                truncated,
+            }) => self.diff = Some((id, commit, patch, truncated)),
             Ok(Outcome::Inbox(messages)) => self.inbox.extend(messages),
             Ok(Outcome::Created(folder)) => {
                 self.notice = "Hub created".into();
@@ -334,8 +340,8 @@ impl HubView {
                 let reviewed = self
                     .diff
                     .as_ref()
-                    .filter(|(id, ..)| *id == task.id)
-                    .map(|(_, commit, _)| commit.clone());
+                    .filter(|(id, _, _, truncated)| *id == task.id && !*truncated)
+                    .map(|(_, commit, ..)| commit.clone());
                 ui.horizontal_wrapped(|ui| match task.status {
                     Status::Review => {
                         if ui
@@ -349,7 +355,9 @@ impl HubView {
                             egui::Button::new("Land reviewed commit").small(),
                         );
                         if reviewed.is_none() {
-                            land.clone().on_disabled_hover_text("View the diff first");
+                            land.clone().on_disabled_hover_text(
+                                "View the whole diff first. A cut-off diff cannot be landed here; review it with 'hub diff' and land with 'hub land --commit'.",
+                            );
                         }
                         if land.clicked() {
                             action = Some(("land", task.id, reviewed.clone()));
@@ -381,6 +389,7 @@ impl HubView {
                     id,
                     commit: diff["commit"].as_str().unwrap_or_default().into(),
                     patch: diff["patch"].as_str().unwrap_or_default().into(),
+                    truncated: diff["truncated"] == true,
                 })
             }),
             Some(("land", id, Some(commit))) => self.spawn(move |hub| {
@@ -405,13 +414,19 @@ impl HubView {
             }),
             _ => {}
         }
-        if let Some((id, commit, patch)) = &self.diff {
+        if let Some((id, commit, patch, truncated)) = &self.diff {
             egui::CollapsingHeader::new(format!(
                 "Diff of task {id} · commit {}",
                 &commit[..commit.len().min(12)]
             ))
             .default_open(true)
             .show(ui, |ui| {
+                if *truncated {
+                    ui.label(
+                        RichText::new("This diff is cut off; Land is disabled for it.")
+                            .color(WARNING),
+                    );
+                }
                 for line in patch.lines() {
                     let color = if line.starts_with('+') {
                         SUCCESS
@@ -489,7 +504,7 @@ mod tests {
         settle(&mut view);
         assert_eq!(view.tasks.len(), 1);
         view.inbox.push(serde_json::json!({"body": "old"}));
-        view.diff = Some((1, "abc".into(), "patch".into()));
+        view.diff = Some((1, "abc".into(), "patch".into(), false));
 
         // A result still in flight for the first hub must not land in the second.
         view.refresh();

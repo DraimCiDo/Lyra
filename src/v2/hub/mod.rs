@@ -484,6 +484,46 @@ impl Hub {
         Ok(id)
     }
 
+    /// Dependencies of `id` that were cancelled and so can never be satisfied.
+    fn cancelled_dependencies(&self, id: i64) -> io::Result<Vec<i64>> {
+        let task = self.task(id)?;
+        task.depends_on
+            .iter()
+            .filter_map(|dependency| match self.task(*dependency) {
+                Ok(task) if task.status == Status::Cancelled => Some(Ok(*dependency)),
+                Ok(_) => None,
+                Err(error) => Some(Err(error)),
+            })
+            .collect()
+    }
+
+    /// Owner: drop the cancelled tasks a task depends on, so it can be claimed.
+    pub fn unblock(&self, id: i64) -> io::Result<Task> {
+        if self.agent != OWNER {
+            return Err(error("Only the owner can change task dependencies"));
+        }
+        let transaction =
+            Transaction::new_unchecked(&self.connection, TransactionBehavior::Immediate)
+                .map_err(db)?;
+        let dropped = self.cancelled_dependencies(id)?;
+        let task = self.task(id)?;
+        let kept: Vec<i64> = task
+            .depends_on
+            .iter()
+            .copied()
+            .filter(|dependency| !dropped.contains(dependency))
+            .collect();
+        self.connection
+            .execute(
+                "UPDATE tasks SET depends_on=?2, updated_at=?3 WHERE id=?1",
+                params![id, serde_json::to_string(&kept).map_err(error)?, now()],
+            )
+            .map_err(db)?;
+        self.log(Some(id), "unblock", &format!("dropped {dropped:?}"))?;
+        transaction.commit().map_err(db)?;
+        self.task(id)
+    }
+
     /// Branch for a task. Two hubs on one repository never share a branch name.
     fn branch_name(&self, task: i64) -> String {
         match &self.id {
@@ -507,6 +547,17 @@ impl Hub {
         self.touch()?;
         let agent = self.agent.clone();
         let worktrees = self.root.join("worktrees");
+        // An agent that claimed a task and was interrupted before its worktree existed
+        // gets the worktree back by claiming the same task again.
+        if let Some(id) = id
+            && let Ok(task) = self.task(id)
+            && task.status == Status::Claimed
+            && task.owner.as_deref() == Some(&agent)
+            && let (Some(branch), Some(worktree)) = (&task.branch, &task.worktree)
+        {
+            self.ensure_worktree(branch, worktree)?;
+            return Ok(task);
+        }
         let transaction =
             Transaction::new_unchecked(&self.connection, TransactionBehavior::Immediate)
                 .map_err(db)?;
@@ -545,9 +596,18 @@ impl Hub {
         }
         let Some(task) = chosen else {
             return Err(match id {
-                Some(id) => error(format!(
-                    "Task {id} is not open or waits for unfinished dependencies"
-                )),
+                Some(id) => {
+                    let blocked = self.cancelled_dependencies(id)?;
+                    if blocked.is_empty() {
+                        error(format!(
+                            "Task {id} is not open or waits for unfinished dependencies"
+                        ))
+                    } else {
+                        error(format!(
+                            "Task {id} depends on cancelled task(s) {blocked:?}; the owner can run 'hub unblock --task {id}'"
+                        ))
+                    }
+                }
                 None => io::Error::new(io::ErrorKind::NotFound, "No open task is ready to claim"),
             });
         };
@@ -559,10 +619,18 @@ impl Hub {
                 params![task, agent, branch, worktree.to_string_lossy(), now()],
             )
             .map_err(db)?;
-        self.ensure_worktree(&branch, &worktree)?;
         // The audit entry belongs to the claim: either both exist or neither does.
         self.log(Some(task), "claim", &branch)?;
         transaction.commit().map_err(db)?;
+        // Creating the worktree can take a while on a large repository; do it outside the
+        // write transaction so other agents are not blocked, and undo the claim if it fails.
+        if let Err(cause) = self.ensure_worktree(&branch, &worktree) {
+            let _ = self.connection.execute(
+                "UPDATE tasks SET status='open', owner=NULL, updated_at=?3 WHERE id=?1 AND status='claimed' AND owner=?2",
+                params![task, self.agent, now()],
+            );
+            return Err(cause);
+        }
         self.task(task)
     }
 
@@ -1003,8 +1071,8 @@ impl Hub {
             .branch
             .ok_or_else(|| error(format!("Task {id} has no branch")))?;
         let range = format!("{}...{branch}", self.base);
-        let stat = git::ok(&self.repo, &["diff", "--stat", &range])?;
-        let patch = git::ok(&self.repo, &["diff", &range])?;
+        let stat = git::ok_prefix(&self.repo, &["diff", "--stat", &range])?;
+        let patch = git::ok_prefix(&self.repo, &["diff", &range])?;
         let limit = limit.clamp(1024, 512 * 1024);
         let uncommitted = task
             .worktree
@@ -1040,7 +1108,7 @@ impl Hub {
             return Err(error(format!(
                 "The task branch is at {} but {} was reviewed; review it again",
                 &head[..12],
-                &expected_commit[..expected_commit.len().min(12)]
+                expected_commit.chars().take(12).collect::<String>()
             )));
         }
         // A previous landing may have updated the base and stopped before recording it.
@@ -1172,6 +1240,8 @@ impl Hub {
         transaction.commit().map_err(db)?;
         let landed = git::head(&self.repo)?;
         let worktree_retained = task.worktree.as_ref().is_some_and(|worktree| {
+            // Lyra's own lock folder is the only thing `git worktree remove` would refuse.
+            let _ = fs::remove_dir_all(worktree.join(".lyra"));
             worktree.exists()
                 && git::ok(
                     &self.repo,

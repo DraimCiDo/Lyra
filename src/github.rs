@@ -475,19 +475,7 @@ impl GithubClient {
                 "The remote tree is too large to compare with the checked snapshot",
             ));
         }
-        let blobs = tree["tree"]
-            .as_array()
-            .into_iter()
-            .flatten()
-            .filter(|entry| entry["type"] == "blob")
-            .map(|entry| {
-                (
-                    field(entry, "path").to_owned(),
-                    field(entry, "sha").to_owned(),
-                )
-            })
-            .collect();
-        Ok((commit, blobs))
+        Ok((commit, tree_blobs(&tree)))
     }
 
     /// Publish only if `base` still points to `expected_base`, when one is given.
@@ -765,6 +753,23 @@ pub fn run(args: GithubArgs, output: &mut impl Write) -> io::Result<()> {
     }
 }
 
+/// Regular and executable files of a git tree listing. Symlinks (mode 120000) are
+/// skipped: a local checkout never indexes them, so they cannot be compared.
+fn tree_blobs(tree: &Value) -> std::collections::BTreeMap<String, String> {
+    tree["tree"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter(|entry| entry["type"] == "blob" && entry["mode"] != "120000")
+        .map(|entry| {
+            (
+                field(entry, "path").to_owned(),
+                field(entry, "sha").to_owned(),
+            )
+        })
+        .collect()
+}
+
 pub fn same_text_ignoring_line_endings(left: &str, right: &str) -> bool {
     left.replace("\r\n", "\n") == right.replace("\r\n", "\n")
 }
@@ -882,6 +887,18 @@ pub fn base64_decode(text: &str) -> io::Result<Vec<u8>> {
 mod tests {
     use super::*;
 
+    #[test]
+    fn remote_symlinks_are_not_compared_with_the_local_snapshot() {
+        let tree = json!({"tree": [
+            {"path": "a.txt", "type": "blob", "mode": "100644", "sha": "1"},
+            {"path": "run.sh", "type": "blob", "mode": "100755", "sha": "2"},
+            {"path": "docs/latest", "type": "blob", "mode": "120000", "sha": "3"},
+            {"path": "vendor/lib", "type": "commit", "mode": "160000", "sha": "4"},
+            {"path": "docs", "type": "tree", "mode": "040000", "sha": "5"},
+        ]});
+        let blobs = tree_blobs(&tree);
+        assert_eq!(blobs.keys().collect::<Vec<_>>(), ["a.txt", "run.sh"]);
+    }
     #[test]
     fn crlf_publication_keeps_the_remote_line_endings() {
         let original = "a\r\nb\r\n";

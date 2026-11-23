@@ -16,7 +16,7 @@ native Windows.
   (`hub.db`). Every agent process opens it at the same time; claims are atomic.
 - **Tasks.** States: `open` → `claimed` → `review` → `done` (or `cancelled`). A task can depend
   on other tasks; it can be claimed only after they are `done`.
-- **Worktrees.** Claiming task 7 creates branch `lyra/task-7` from the base branch and a
+- **Worktrees.** Claiming task 7 creates branch `lyra/<hub-id>/task-7` from the base branch (the hub id keeps two hubs on one repository apart) and a
   worktree in `<hub>/worktrees/task-7`. The agent works and commits there.
 - **File leases.** Advisory, exclusive, case-insensitive leases on paths (a folder covers its
   contents). Use them when two tasks may touch the same files. Leases expire (default 30 min).
@@ -30,6 +30,9 @@ native Windows.
   without uncommitted changes. With a configured check, Lyra fast-forwards to the exact commit
   whose current snapshot passed. Integrate any newer base into the task branch and rerun the check
   first. Without a configured check, Lyra creates a merge commit and aborts conflicting merges.
+  `--commit` must be the commit you reviewed; if the agent moved the branch after your review,
+  nothing is merged. If a landing stops after Git moved the base, run the same command again:
+  Lyra recognizes the commit in the base and records the task as done.
   A worktree that Git cannot remove safely is retained.
 
 Git must be on `PATH`. The hub does not use the network.
@@ -42,8 +45,9 @@ lyra-v2 hub --hub C:\work\app-hub add --title "Add CSV export" --description "..
 lyra-v2 hub --hub C:\work\app-hub add --title "Document export" --description "..." --depends-on 1
 lyra-v2 hub --hub C:\work\app-hub status
 lyra-v2 hub --hub C:\work\app-hub tasks --status review
-lyra-v2 hub --hub C:\work\app-hub diff --task 1
-lyra-v2 hub --hub C:\work\app-hub land --task 1
+lyra-v2 hub --hub C:\work\app-hub diff --task 1        # prints the branch commit to review
+lyra-v2 hub --hub C:\work\app-hub land --task 1 --commit <commit from diff>
+lyra-v2 hub --hub C:\work\app-hub unblock --task 2      # drop cancelled dependencies
 lyra-v2 hub --hub C:\work\app-hub reopen --task 2 --note "Tests fail on Windows paths"
 lyra-v2 hub --hub C:\work\app-hub send --to codex-1 --body "Please also cover empty files"
 lyra-v2 hub --hub C:\work\app-hub inbox
@@ -54,7 +58,9 @@ All commands print JSON.
 
 The same owner actions are available in `lyra-v2-desktop` under **Agents**: open or create a
 hub, see agents, leases and tasks, add a task from the composer (first line is the title),
-show a diff, land, reopen (the composer text is the note) or cancel, and read the inbox. The
+show a diff, land, reopen (the composer text is the note) or cancel, and read the inbox. Land
+is enabled only for the commit whose complete diff is on screen (a cut-off diff cannot be landed
+from the window; use the CLI). The
 view refreshes when you act or press Refresh; there is no background polling. Start it on a
 hub directly with `lyra-v2-desktop --hub <folder>`.
 
@@ -119,5 +125,9 @@ lyra-v2 hub --hub C:\work\app-hub work --agent lyra-1 --model C:\models\coder.gg
 The worker claims a ready task, runs the v2 runtime in the task worktree (with the hub check,
 if configured), applies the checked proposal to the worktree, commits it on the task branch and
 moves the task to `review`. If it cannot finish, it releases the task with a message. The
-commit uses the git identity configured for the project. Several workers can run at once; each
+commit contains only the applied proposal files and uses the git identity configured for the project.
+If the commit fails (for example Git signing), the task stays claimed with the changes in its
+worktree and the owner gets a message with the saved state folder; after fixing the cause run
+`lyra-v2 hub --hub <hub> commit --agent lyra-1 --task N --state <folder>`.
+`--loop` does not claim again a task it released in the same run. Several workers can run at once; each
 loads its own model.

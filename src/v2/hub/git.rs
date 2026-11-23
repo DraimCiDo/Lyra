@@ -16,20 +16,26 @@ pub(super) struct Output {
     pub success: bool,
     pub stdout: String,
     pub stderr: String,
+    /// Stdout was cut at the output limit.
+    pub truncated: bool,
 }
 
 /// Read one pipe up to the output limit, then keep draining so the child never blocks.
-fn drain(stream: Option<impl Read + Send + 'static>) -> mpsc::Receiver<String> {
+fn drain(stream: Option<impl Read + Send + 'static>) -> mpsc::Receiver<(String, bool)> {
     let (send, receive) = mpsc::channel();
     thread::spawn(move || {
         let mut text = Vec::new();
         if let Some(stream) = stream {
             let mut limited = stream.take(OUTPUT_LIMIT);
             let _ = limited.read_to_end(&mut text);
-            let _ = send.send(String::from_utf8_lossy(&text).into_owned());
-            let _ = io::copy(&mut limited.into_inner(), &mut io::sink());
+            let mut rest = limited.into_inner();
+            // Anything left after the limit means the output was cut.
+            let mut probe = [0u8; 1];
+            let cut = rest.read(&mut probe).unwrap_or(0) > 0;
+            let _ = send.send((String::from_utf8_lossy(&text).into_owned(), cut));
+            let _ = io::copy(&mut rest, &mut io::sink());
         } else {
-            let _ = send.send(String::new());
+            let _ = send.send((String::new(), false));
         }
     });
     receive
@@ -103,16 +109,17 @@ fn run_with_timeout(dir: &Path, args: &[&str], timeout: Duration) -> io::Result<
         thread::sleep(Duration::from_millis(20));
     };
     // A descendant may keep a pipe open after git exits; do not wait for it past the deadline.
-    let collect = |receiver: &mpsc::Receiver<String>| {
+    let collect = |receiver: &mpsc::Receiver<(String, bool)>| {
         receiver
             .recv_timeout(deadline.saturating_duration_since(Instant::now()))
             .map_err(|_| ())
     };
     match (collect(&stdout), collect(&stderr)) {
-        (Ok(stdout), Ok(stderr)) => Ok(Output {
+        (Ok((stdout, truncated)), Ok((stderr, _))) => Ok(Output {
             success: status.success(),
             stdout,
             stderr,
+            truncated,
         }),
         _ => {
             kill_tree(&mut child);
@@ -121,11 +128,28 @@ fn run_with_timeout(dir: &Path, args: &[&str], timeout: Duration) -> io::Result<
     }
 }
 
-/// Run git and return trimmed stdout, or an error with git's message.
+/// Run git and return trimmed stdout, or an error with git's message. Output that hit the
+/// limit is an error: callers that decide from complete output must never see a prefix.
 pub(super) fn ok(dir: &Path, args: &[&str]) -> io::Result<String> {
+    let output = checked(dir, args)?;
+    if output.truncated {
+        return Err(io::Error::other(format!(
+            "git {} produced more than 1 MiB of output",
+            args.first().copied().unwrap_or_default()
+        )));
+    }
+    Ok(output.stdout.trim_end().to_owned())
+}
+
+/// Like `ok`, but a cut-off prefix is acceptable (for patches shown to a person).
+pub(super) fn ok_prefix(dir: &Path, args: &[&str]) -> io::Result<String> {
+    Ok(checked(dir, args)?.stdout.trim_end().to_owned())
+}
+
+fn checked(dir: &Path, args: &[&str]) -> io::Result<Output> {
     let output = run(dir, args)?;
     if output.success {
-        Ok(output.stdout.trim_end().to_owned())
+        Ok(output)
     } else {
         let message = output.stderr.trim();
         Err(io::Error::other(format!(
@@ -207,6 +231,22 @@ mod tests {
         .unwrap();
         std::fs::write(repo.path().join("a.txt"), "two\n").unwrap();
         assert!(dirty(repo.path()).unwrap());
+    }
+
+    #[test]
+    fn truncated_output_is_an_error_for_decisions_and_allowed_for_patches() {
+        let repo = repo();
+        // More than 1 MiB of listing output: 30k tracked files with long names.
+        let folder = repo.path().join("d");
+        std::fs::create_dir(&folder).unwrap();
+        for index in 0..20_000 {
+            std::fs::write(folder.join(format!("{index:05}-{}", "n".repeat(60))), "").unwrap();
+        }
+        ok(repo.path(), &["add", "-A"]).unwrap();
+        let error = ok(repo.path(), &["ls-files", "-v"]).unwrap_err();
+        assert!(error.to_string().contains("more than 1 MiB"), "{error}");
+        assert!(ok_prefix(repo.path(), &["ls-files", "-v"]).unwrap().len() <= 1 << 20);
+        assert!(dirty(repo.path()).is_err());
     }
 
     #[cfg(unix)]

@@ -844,3 +844,109 @@ fn a_worker_commit_contains_only_the_applied_proposal() {
     .unwrap();
     assert_eq!(committed, "maths.py");
 }
+
+#[test]
+fn a_failed_worktree_reverts_the_claim_and_a_claimed_task_gets_its_worktree_back() {
+    let fixture = fixture(None);
+    let owner = owner(&fixture);
+    let id = owner.create_task("Fix add", "Use addition", &[]).unwrap();
+    let mut codex = agent(&fixture, "codex-1");
+    // A file where the worktrees folder should be makes the checkout fail.
+    let blocker = fixture.hub.join("worktrees");
+    fs::write(&blocker, "not a folder").unwrap();
+    assert!(codex.claim(None).is_err());
+    let task = owner.task(id).unwrap();
+    assert_eq!((task.status, task.owner), (Status::Open, None));
+    fs::remove_file(&blocker).unwrap();
+    let task = codex.claim(None).unwrap();
+    let worktree = task.worktree.unwrap();
+    // An interrupted agent claims the same task again to recover a missing worktree.
+    git::ok(
+        &fixture.repo,
+        &["worktree", "remove", "--force", &worktree.to_string_lossy()],
+    )
+    .unwrap();
+    assert!(!worktree.exists());
+    assert_eq!(codex.claim(Some(id)).unwrap().id, id);
+    assert!(worktree.join("maths.py").exists());
+}
+
+#[test]
+fn cancelled_dependencies_block_a_task_until_the_owner_unblocks_it() {
+    let fixture = fixture(None);
+    let owner = owner(&fixture);
+    let first = owner.create_task("Schema", "Add the schema", &[]).unwrap();
+    let second = owner
+        .create_task("API", "Use the schema", &[first])
+        .unwrap();
+    owner.cancel(first).unwrap();
+    let mut codex = agent(&fixture, "codex-1");
+    let error = codex.claim(Some(second)).unwrap_err().to_string();
+    assert!(
+        error.contains("cancelled") && error.contains("unblock"),
+        "{error}"
+    );
+    assert!(codex.unblock(second).is_err());
+    assert_eq!(owner.unblock(second).unwrap().depends_on, Vec::<i64>::new());
+    assert_eq!(codex.claim(Some(second)).unwrap().id, second);
+}
+
+#[test]
+fn a_malformed_reviewed_commit_is_an_error_not_a_panic() {
+    let fixture = fixture(None);
+    let owner = owner(&fixture);
+    let id = owner.create_task("Fix add", "Use addition", &[]).unwrap();
+    let mut codex = agent(&fixture, "codex-1");
+    codex.claim(None).unwrap();
+    codex.update(id, Status::Review, "Done").unwrap();
+    let error = owner.land(id, "ааааааа").unwrap_err();
+    assert!(error.to_string().contains("review it again"), "{error}");
+}
+
+#[test]
+fn landing_a_worker_task_removes_its_worktree_and_branch() {
+    let fixture = fixture(None);
+    let owner = owner(&fixture);
+    let id = owner.create_task("Fix add", "Use addition", &[]).unwrap();
+    let mut lyra = Hub::open(&fixture.hub, "lyra-1", Some(AgentKind::Lyra)).unwrap();
+    let mut actions = vec![
+        json!({"tool":"replace","path":"maths.py","old":"a - b","new":"a + b"}),
+        json!({"tool":"finish","summary":"Use addition"}),
+    ]
+    .into_iter();
+    worker::run_one(
+        &mut lyra,
+        None,
+        &[],
+        8,
+        &AtomicBool::new(false),
+        &mut |report, save| {
+            report.run(
+                &AtomicBool::new(false),
+                &mut |_| Ok(actions.next().unwrap().to_string()),
+                save,
+            )
+        },
+    )
+    .unwrap();
+    let task = owner.task(id).unwrap();
+    let worktree = task.worktree.clone().unwrap();
+    assert!(worktree.join(".lyra").exists());
+    let result = owner.land_current(id).unwrap();
+    assert_eq!(result["worktree_retained"], false);
+    assert!(!worktree.exists());
+    let branch = task.branch.unwrap();
+    assert!(
+        !git::run(
+            &fixture.repo,
+            &[
+                "rev-parse",
+                "--verify",
+                "--quiet",
+                &format!("refs/heads/{branch}")
+            ]
+        )
+        .unwrap()
+        .success
+    );
+}

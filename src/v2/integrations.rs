@@ -61,7 +61,7 @@ pub(super) fn run_http(
     let cancel = Arc::new(AtomicBool::new(false));
     let signal = Arc::clone(&cancel);
     ctrlc::set_handler(move || signal.store(true, Ordering::Relaxed)).map_err(io::Error::other)?;
-    report.run(
+    let run = report.run(
         &cancel,
         &mut |prompt| {
             let response = backend.complete(&Request {
@@ -75,8 +75,11 @@ pub(super) fn run_http(
             cancellable(response.map(|response| response.text), &cancel)
         },
         &mut |report| store.save(report),
-    )?;
+    );
+    // Print the saved state before the error, as the local runner does, so callers that
+    // parse stdout see a failed task too.
     cli::write_report(output, &report)?;
+    run?;
     cli::exit_status(report)
 }
 

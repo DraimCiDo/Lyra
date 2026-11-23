@@ -364,7 +364,13 @@ impl Desktop {
                 role: Role::User,
                 content: std::mem::take(&mut self.chat_draft),
             });
-            let messages = self.messages[self.messages.len().saturating_sub(64)..].to_vec();
+            let window = &self.messages[self.messages.len().saturating_sub(64)..];
+            // Strict chat templates expect a user turn first.
+            let first = window
+                .iter()
+                .position(|message| message.role == Role::User)
+                .unwrap_or(0);
+            let messages = window[first..].to_vec();
             self.start(move |cancel, send| {
                 let mut response = ChatWriter {
                     sender: send,
