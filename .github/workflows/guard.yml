@@ -8,7 +8,9 @@ permissions:
   contents: read
   pull-requests: read
 env:
-  OWNER_EMAIL: 53317146+DraimCiDo@users.noreply.github.com
+  # The owner's noreply address plus any further verified owner addresses, space-separated,
+  # from the repository variable GUARD_OWNER_EMAILS. Any other address is still rejected.
+  OWNER_EMAILS: 53317146+DraimCiDo@users.noreply.github.com ${{ vars.GUARD_OWNER_EMAILS }}
   FORBIDDEN: 'co-authored-by|generated (with|by)[^.]*claude|claude-session|claude\.ai/code'
 jobs:
   guard:
@@ -55,15 +57,21 @@ jobs:
             echo "::error::Could not list the commits of this pull request"
             exit 1
           fi
+          owner() {
+            for allowed in $OWNER_EMAILS; do
+              [ "$1" = "$allowed" ] && return 0
+            done
+            return 1
+          }
           for sha in $commits; do
             author=$(git show -s --format=%ae "$sha")
             committer=$(git show -s --format=%ce "$sha")
-            case "$author" in
-              "$OWNER_EMAIL" | *'[bot]@users.noreply.github.com') ;;
+            owner "$author" || case "$author" in
+              *'[bot]@users.noreply.github.com') ;;
               *) echo "::error::${sha:0:7} has author $author; commits must come from the owner"; fail=1 ;;
             esac
-            case "$committer" in
-              "$OWNER_EMAIL" | noreply@github.com | *'[bot]@users.noreply.github.com') ;;
+            owner "$committer" || case "$committer" in
+              noreply@github.com | *'[bot]@users.noreply.github.com') ;;
               *) echo "::error::${sha:0:7} has committer $committer; commits must come from the owner"; fail=1 ;;
             esac
             if git show -s --format=%B "$sha" | grep -qiE "$FORBIDDEN"; then
