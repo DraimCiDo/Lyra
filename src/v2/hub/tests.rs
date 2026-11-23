@@ -979,3 +979,43 @@ fn a_task_whose_check_cannot_run_stays_claimed_with_its_commit() {
     assert_eq!(task.status, Status::Claimed);
     assert!(task.check.is_none());
 }
+
+#[test]
+fn landing_needs_the_full_reviewed_commit_and_the_inbox_view_keeps_messages_unread() {
+    let fixture = fixture(None);
+    let owner = owner(&fixture);
+    let id = owner.create_task("Fix add", "Use addition", &[]).unwrap();
+    let mut codex = agent(&fixture, "codex-1");
+    codex.claim(None).unwrap();
+    codex.update(id, Status::Review, "Done").unwrap();
+    let commit = owner.diff(id, 4096).unwrap()["commit"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    // A prefix of the right commit is not enough.
+    assert!(owner.land(id, &commit[..12]).is_err());
+    assert_eq!(owner.task(id).unwrap().status, Status::Review);
+    // Viewing the inbox does not mark messages read.
+    codex.send(Some(OWNER), None, "ping").unwrap();
+    assert_eq!(owner.recent_messages(10).unwrap().len(), 1);
+    assert_eq!(owner.recent_messages(10).unwrap().len(), 1);
+    assert_eq!(owner.read(10).unwrap().len(), 1);
+    assert!(owner.read(10).unwrap().is_empty());
+    assert_eq!(owner.recent_messages(10).unwrap().len(), 1);
+}
+
+#[test]
+fn text_limits_count_characters_like_the_mcp_schema() {
+    let fixture = fixture(None);
+    let owner = owner(&fixture);
+    // 150 Cyrillic characters are 300 bytes: valid for a 200-character title.
+    let title = "ж".repeat(150);
+    let id = owner.create_task(&title, "ok", &[]).unwrap();
+    assert!(owner.create_task(&"ж".repeat(201), "ok", &[]).is_err());
+    let mut codex = agent(&fixture, "codex-1");
+    codex.claim(None).unwrap();
+    // 5000 characters (10 KB) fit an 8192-character summary and note.
+    let summary = "я".repeat(5000);
+    codex.update(id, Status::Review, &summary).unwrap();
+    owner.reopen(id, &summary).unwrap();
+}

@@ -367,26 +367,26 @@ impl Workspace {
     fn read_bounded(&self, path: &str, limit: usize) -> io::Result<String> {
         let bytes = self.read_bounded_bytes(path, limit)?;
         if bytes.contains(&0) {
-            return Err(error("Файл превышает лимит чтения или содержит NUL."));
+            return Err(error("The file contains NUL bytes and is not text."));
         }
-        String::from_utf8(bytes).map_err(|_| error("Файл не является UTF-8."))
+        String::from_utf8(bytes).map_err(|_| error("The file is not valid UTF-8."))
     }
     fn read_bounded_bytes(&self, path: &str, limit: usize) -> io::Result<Vec<u8>> {
         if !self.files.contains(path) {
-            return Err(error("Файл не входит в выбранный контекст."));
+            return Err(error("The file is not part of the selected context."));
         }
         self.safe_path(path)?;
         if !self.dir.symlink_metadata(path)?.is_file() {
-            return Err(error("Ожидается обычный файл."));
+            return Err(error("A regular file is required."));
         }
         let file = self.dir.open(path)?;
         if !file.metadata()?.is_file() {
-            return Err(error("Ожидается обычный файл."));
+            return Err(error("A regular file is required."));
         }
         let mut bytes = Vec::new();
         file.take((limit + 1) as u64).read_to_end(&mut bytes)?;
         if bytes.len() > limit {
-            return Err(error("Файл превышает лимит чтения или содержит NUL."));
+            return Err(error("The file exceeds the read limit."));
         }
         Ok(bytes)
     }

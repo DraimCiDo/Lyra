@@ -544,8 +544,13 @@ impl Desktop {
             if let Some(settings) = &imported.preferences
                 && ui.button("Use imported model and project").clicked()
             {
-                self.model.clone_from(&settings.model);
-                self.repo.clone_from(&settings.project);
+                // Only fill what the import has; never clear a choice already made.
+                if settings.model.is_some() {
+                    self.model.clone_from(&settings.model);
+                }
+                if settings.project.is_some() {
+                    self.repo.clone_from(&settings.project);
+                }
             }
             if self.screen == Screen::Chat && !imported.conversations.is_empty() {
                 ui.menu_button("Imported conversations", |ui| {

@@ -754,8 +754,9 @@ impl Hub {
     /// The state change itself; the caller holds the write transaction.
     fn update_locked(&self, id: i64, status: Status, summary: &str) -> io::Result<()> {
         let task = self.owned_task(id)?;
-        if summary.len() > 8 * 1024 || summary.contains('\0') {
-            return Err(error("A summary is at most 8 KiB of text"));
+        if summary.chars().count() > 8 * 1024 || summary.len() > 32 * 1024 || summary.contains('\0')
+        {
+            return Err(error("A summary is at most 8192 characters of text"));
         }
         let allowed = matches!(
             (task.status, status),
@@ -950,6 +951,33 @@ impl Hub {
         Ok(id)
     }
 
+    /// The latest messages addressed to this agent or to everyone, without marking them
+    /// read (for a view that may be closed before the person has read them).
+    pub fn recent_messages(&self, limit: usize) -> io::Result<Vec<Value>> {
+        self.touch()?;
+        let mut statement = self
+            .connection
+            .prepare(
+                "SELECT id, sender, recipient, task, body, created_at FROM (
+                     SELECT * FROM messages
+                     WHERE sender<>?1 AND (recipient IS NULL OR recipient=?1)
+                     ORDER BY id DESC LIMIT ?2
+                 ) ORDER BY id",
+            )
+            .map_err(db)?;
+        statement
+            .query_map(params![self.agent, limit.clamp(1, 100) as i64], |row| {
+                Ok(json!({
+                    "id": row.get::<_, i64>(0)?, "from": row.get::<_, String>(1)?,
+                    "to": row.get::<_, Option<String>>(2)?, "task": row.get::<_, Option<i64>>(3)?,
+                    "body": row.get::<_, String>(4)?, "at": row.get::<_, i64>(5)?,
+                }))
+            })
+            .map_err(db)?
+            .collect::<rusqlite::Result<_>>()
+            .map_err(db)
+    }
+
     /// Unread messages addressed to this agent or to everyone, oldest first.
     pub fn read(&self, limit: usize) -> io::Result<Vec<Value>> {
         self.touch()?;
@@ -1103,7 +1131,10 @@ impl Hub {
         let branch = task
             .branch
             .ok_or_else(|| error(format!("Task {id} has no branch")))?;
-        let range = format!("refs/heads/{}...refs/heads/{branch}", self.base);
+        // One commit id for the stat, the patch and the answer, so what the owner reviews is
+        // exactly what `land` is later asked to merge.
+        let commit = git::ok(&self.repo, &["rev-parse", &format!("refs/heads/{branch}")])?;
+        let range = format!("refs/heads/{}...{commit}", self.base);
         let stat = git::ok_prefix(&self.repo, &["diff", "--stat", &range])?;
         let patch = git::ok_prefix(&self.repo, &["diff", &range])?;
         let limit = limit.clamp(1024, 512 * 1024);
@@ -1113,7 +1144,6 @@ impl Hub {
             .map(|path| git::dirty(&path))
             .transpose()?
             .unwrap_or(false);
-        let commit = git::ok(&self.repo, &["rev-parse", &format!("refs/heads/{branch}")])?;
         Ok(json!({
             "branch": branch, "base": self.base, "commit": commit, "stat": stat,
             "patch": &patch[..patch.floor_char_boundary(limit)],
@@ -1137,7 +1167,8 @@ impl Hub {
             .clone()
             .ok_or_else(|| error("Task has no branch"))?;
         let head = git::ok(&self.repo, &["rev-parse", &format!("refs/heads/{branch}")])?;
-        if expected_commit.len() < 7 || !head.starts_with(expected_commit) {
+        // The full commit id is required: a short prefix is cheap to collide on purpose.
+        if expected_commit != head {
             return Err(error(format!(
                 "The task branch is at {} but {} was reviewed; review it again",
                 &head[..12],
@@ -1234,15 +1265,19 @@ impl Hub {
         } else {
             &["merge", "--no-ff", "-m", &message, &head]
         };
-        let merge = git::run(&self.repo, args)?;
-        if !merge.success {
+        let merge = git::run(&self.repo, args);
+        if !merge.as_ref().is_ok_and(|merge| merge.success) {
+            // A failure or a timeout must not leave the owner's checkout mid-merge.
             if !checked {
                 let _ = git::run(&self.repo, &["merge", "--abort"]);
             }
-            return Err(error(format!(
-                "Git could not land the reviewed commit: {}",
-                merge.stderr.trim()
-            )));
+            return Err(match merge {
+                Ok(merge) => error(format!(
+                    "Git could not land the reviewed commit: {}",
+                    merge.stderr.trim()
+                )),
+                Err(cause) => cause,
+            });
         }
         if checked && git::head(&self.repo)? != head {
             return Err(error("The base does not match the checked commit"));

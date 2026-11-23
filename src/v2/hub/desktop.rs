@@ -85,10 +85,10 @@ impl HubView {
                 patch,
                 truncated,
             }) => self.diff = Some((id, commit, patch, truncated)),
-            Ok(Outcome::Inbox(messages)) => self.inbox.extend(messages),
+            Ok(Outcome::Inbox(messages)) => self.inbox = messages,
             Ok(Outcome::Created(folder)) => {
-                self.notice = "Hub created".into();
                 self.switch(folder);
+                self.notice = "Hub created".into();
             }
             Err(error) => {
                 self.notice = error;
@@ -203,7 +203,7 @@ impl HubView {
                     .add_enabled(!self.busy(), egui::Button::new("Inbox"))
                     .clicked()
                 {
-                    self.spawn(|hub| Ok(Outcome::Inbox(hub.read(100)?)));
+                    self.spawn(|hub| Ok(Outcome::Inbox(hub.recent_messages(100)?)));
                 }
             }
         });

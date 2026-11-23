@@ -34,13 +34,13 @@
       "hash": "703be946fd9ecb66832ae2fc54aa1731be2ad57e1a26b3d145e7623d4a05d0c1"
     },
     ".github/workflows/guard.yml": {
-      "hash": "09b2202bbc1cbcb21ad185669635e1d02e2686591dd817d868440da63528b7ff"
+      "hash": "f518400df078642886d4a2ba2a71e5c807a5a21d78af14c6d8dd33094b52a5cf"
     },
     ".github/workflows/labeler.yml": {
-      "hash": "53a92868f8df418d5c7a1c9aec1d6f9d26e2f6fdcc1007087f7c384e80c093a9"
+      "hash": "c0c5fc9fb5ca4d182b71b57d7672ec674a6db66941cd72604b757828186e0b58"
     },
     ".github/workflows/secrets.yml": {
-      "hash": "e3ee9ea951e802fe7bb4bf28972bcf41a997ae0a3eb98596b93caebcf6f92ce5"
+      "hash": "a6d50e714f443518427f01f3d883f30c9c56df24416a00acb8791fbaed194aea"
     },
     "AGENTS.md": {
       "existed": true,
