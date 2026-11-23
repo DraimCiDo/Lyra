@@ -403,6 +403,7 @@ fn truncated_search_results_are_marked_incomplete() {
         Action::Search {
             query: "needle".into(),
             offset: 0,
+            prefix: String::new(),
         },
         &mut workspace,
     );
@@ -496,4 +497,61 @@ fn the_local_cli_passes_cuda_offload_to_inference() {
         model.inference_args().gpu_layers,
         crate::resources::GPU_AUTO
     );
+}
+
+#[test]
+fn scoped_search_reaches_the_target_module_without_scanning_unrelated_files() {
+    let root = tempfile::tempdir().unwrap();
+    for folder in ["assets", "server", "server-legacy"] {
+        fs::create_dir(root.path().join(folder)).unwrap();
+    }
+    for index in 0..1100 {
+        fs::write(
+            root.path().join(format!("assets/{index:04}.txt")),
+            "irrelevant",
+        )
+        .unwrap();
+    }
+    let padding = "// generated registry entry with a descriptive comment\n".repeat(9000);
+    let last_line = padding.lines().count() + 1;
+    fs::write(
+        root.path().join("server/registry.rs"),
+        format!("{padding}fn register_mod() {{}}\n"),
+    )
+    .unwrap();
+    fs::write(
+        root.path().join("server-legacy/registry.rs"),
+        "fn register_mod() {}",
+    )
+    .unwrap();
+    let mut workspace = Workspace::open(root.path(), &[]).unwrap();
+    let broad = retrieval::search(&mut workspace, &[], "register_mod", 0).unwrap();
+    assert_eq!(broad["matches"].as_array().unwrap().len(), 0);
+
+    let mut report = TaskReport::new(TaskRequest {
+        repo: root.path().into(),
+        task: "Find the mod registration".into(),
+        files: vec![],
+        check: None,
+        max_calls: 2,
+        reviewer: false,
+    })
+    .unwrap();
+    let action = serde_json::from_str(
+        r#"{"tool":"search","query":"register_mod","offset":0,"prefix":"server/"}"#,
+    )
+    .unwrap();
+    let (_, result) = report.action(action, &mut workspace);
+    let result = result.unwrap();
+    assert_eq!(result["files_scanned"], 1);
+    assert_eq!(result["matches"][0]["path"], "server/registry.rs");
+    assert_eq!(result["matches"][0]["line"], last_line);
+    assert_eq!(
+        report
+            .read(&mut workspace, "server/registry.rs", last_line, 0)
+            .unwrap()["text"],
+        "fn register_mod() {}\n"
+    );
+    assert!(result["next_offset"].is_null());
+    assert!(retrieval::search_scoped(&mut workspace, &[], "register_mod", 0, "../").is_err());
 }
