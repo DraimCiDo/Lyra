@@ -167,6 +167,8 @@ def _run_case(args, root, case, iteration):
         if protocol == "v2":
             # The v2 checker hashes the full candidate, including new files.
             command.extend(["--state", str(state)])
+            if args.gpu_layers:
+                command.extend(["--gpu-layers", str(args.gpu_layers)])
         else:
             command.extend(["--gpu-layers", str(args.gpu_layers), *selected])
         result["model_run_attempted"] = True
@@ -276,8 +278,8 @@ def main():
         parser.error("Output already exists; choose a new run file or use --resume")
     if not (128 <= args.context <= 32768 and 1 <= args.tokens < args.context and args.tokens <= 8192 and 1 <= args.calls <= 256 and 1 <= args.timeout <= 3600 and 1 <= args.threads <= 256 and 0 <= args.gpu_layers <= 1024):
         parser.error("Resource settings exceed CLI bounds")
-    if args.protocol == "v2" and not (args.context >= 512 and args.tokens >= 32 and args.calls <= 64 and args.gpu_layers == 0):
-        parser.error("v2 evaluation requires CPU, context >= 512, tokens >= 32 and calls <= 64")
+    if args.protocol == "v2" and not (args.context >= 512 and args.tokens >= 32 and args.calls <= 64):
+        parser.error("v2 evaluation requires context >= 512, tokens >= 32 and calls <= 64")
     suite = load_suite(args.suite)
     if not args.binary.is_file() or not args.model.is_file():
         parser.error("Binary and explicit local GGUF must exist")

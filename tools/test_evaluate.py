@@ -76,7 +76,7 @@ class SuiteIntegrity(unittest.TestCase):
         case = evaluate.load_suite(self.root / "suite.json")["cases"][0]
         args = Namespace(protocol="v2", binary=Path("lyra-v2"), model=Path("code.gguf"),
                          context=4096, tokens=512, calls=16, timeout=30, threads=2,
-                         measure_resources=False)
+                         gpu_layers=1024, measure_resources=False)
         check = dict(cleanup_confirmed=True, timed_out=False, cancelled=False)
         calls = []
 
@@ -98,17 +98,19 @@ class SuiteIntegrity(unittest.TestCase):
         self.assertTrue(result["passed"], result)
         self.assertEqual([c[1] for c in calls], ["verify", "task", "apply", "verify"])
         self.assertEqual(calls[1][calls[1].index("--state") + 1], calls[2][-1])
+        self.assertEqual(calls[1][calls[1].index("--gpu-layers") + 1], "1024")
 
     def test_v2_complete_without_proposals_reaches_the_no_change_allowance(self):
         case = dict(evaluate.load_suite(self.root / "suite.json")["cases"][0])
         args = Namespace(protocol="v2", binary=Path("lyra-v2"), model=Path("code.gguf"),
                          context=4096, tokens=512, calls=16, timeout=30, threads=2,
-                         measure_resources=False)
+                         gpu_layers=0, measure_resources=False)
         check = dict(cleanup_confirmed=True, timed_out=False, cancelled=False)
 
         def invoke(argv, timeout, measure_resources=False):
             if argv[1] == "verify":
                 return dict(exit_code=1, timed_out=False, body=dict(check, exit_code=1))
+            self.assertNotIn("--gpu-layers", argv)
             return dict(exit_code=0, peak_ram_bytes=None, peak_vram_bytes=None,
                         resource_measurement=None, body={"state": "complete", "proposals": []})
 
