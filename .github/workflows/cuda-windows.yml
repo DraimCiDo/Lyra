@@ -1,4 +1,4 @@
-name: Windows NVIDIA CUDA build (RTX 4060)
+name: Windows NVIDIA CUDA builds (RTX 2060 and RTX 4060)
 
 on:
   workflow_dispatch:
@@ -28,14 +28,24 @@ concurrency:
 
 jobs:
   cuda:
-    name: Windows 2022 / CUDA 12.9 / sm_89
+    name: Windows 2022 / CUDA 12.9 / ${{ matrix.gpu }} (sm_${{ matrix.arch }})
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - gpu: RTX 2060
+            arch: '75'
+            artifact: lyra-windows-cuda-rtx2060-sm75
+          - gpu: RTX 4060
+            arch: '89'
+            artifact: lyra-windows-cuda-rtx4060-sm89
     runs-on: windows-2022
     timeout-minutes: 95
     defaults:
       run:
         shell: pwsh
     env:
-      CMAKE_CUDA_ARCHITECTURES: '89'
+      CMAKE_CUDA_ARCHITECTURES: '${{ matrix.arch }}'
       GGML_NATIVE: 'OFF'
       LIBCLANG_PATH: 'C:\Program Files\LLVM\bin'
     steps:
@@ -53,7 +63,7 @@ jobs:
             target/release/build
             target/x86_64-pc-windows-msvc/release/build
           # CUDA objects must never share a CPU cache or another SDK/architecture.
-          key: lyra-cuda-native-v1-${{ runner.os }}-12.9-sm89-${{ hashFiles('rust-toolchain.toml', '.github/workflows/cuda-windows.yml') }}-${{ hashFiles('Cargo.lock', 'Cargo.toml') }}
+          key: lyra-cuda-native-v1-${{ runner.os }}-12.9-sm${{ matrix.arch }}-${{ hashFiles('rust-toolchain.toml', '.github/workflows/cuda-windows.yml') }}-${{ hashFiles('Cargo.lock', 'Cargo.toml') }}
       - name: Install CUDA Toolkit 12.9
         uses: Jimver/cuda-toolkit@3d45d157f327c09c04b50ee6ccdea2d9d017ec76 # v0.2.35
         with:
@@ -86,7 +96,7 @@ jobs:
           Copy-Item -LiteralPath examples/buggy-add -Destination dist/examples/buggy-add -Recurse
           Copy-Item -LiteralPath docs/LOCAL_MODELS.md -Destination dist/LOCAL_MODELS.md
           @'
-          RTX 4060 test: CUDA sm_89 build. This CI runner has no NVIDIA GPU.
+          ${{ matrix.gpu }} test: CUDA sm_${{ matrix.arch }} build. This CI runner has no NVIDIA GPU.
           Compilation does not prove actual runtime compatibility or VRAM safety.
           In Lyra v2 Desktop, select NVIDIA GPU Auto next to the model.
           For lyra-v2 task, resume, or hub work, use --gpu-layers 1024.
@@ -115,7 +125,7 @@ jobs:
       - name: Upload CUDA test package
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
-          name: lyra-windows-cuda-rtx4060-sm89
+          name: ${{ matrix.artifact }}
           path: dist/
           retention-days: 14
           if-no-files-found: error
