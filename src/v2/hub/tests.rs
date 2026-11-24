@@ -1173,3 +1173,46 @@ fn a_worker_commit_matches_proposal_paths_literally() {
     .unwrap();
     assert_eq!(committed, "a[1].md");
 }
+
+#[test]
+fn managed_local_recovery_refuses_changed_edits_then_retries_the_saved_proposal() {
+    let fixture = fixture(None);
+    let owner = owner(&fixture);
+    let id = owner.create_task("Fix add", "Use addition", &[]).unwrap();
+    let hook = fixture.repo.join(".git/hooks/pre-commit");
+    fs::write(&hook, "#!/bin/sh\nexit 1\n").unwrap();
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        fs::set_permissions(&hook, fs::Permissions::from_mode(0o755)).unwrap();
+    }
+    let mut lyra = Hub::open_agent(&fixture.hub, "managed-local", AgentKind::Lyra).unwrap();
+    let task = lyra.claim(Some(id)).unwrap();
+    let mut actions = vec![
+        json!({"tool":"replace","path":"maths.py","old":"a - b","new":"a + b"}),
+        json!({"tool":"finish","summary":"Use addition"}),
+    ]
+    .into_iter();
+    let cancel = AtomicBool::new(false);
+    assert!(
+        worker::run_claimed(&lyra, task, 8, &cancel, &mut |report, save| {
+            report.run(
+                &cancel,
+                &mut |_| Ok(actions.next().unwrap().to_string()),
+                save,
+            )
+        })
+        .is_err()
+    );
+    fs::remove_file(hook).unwrap();
+    let task = lyra.task(id).unwrap();
+    let path = task.worktree.as_ref().unwrap().join("maths.py");
+    let applied = fs::read_to_string(&path).unwrap();
+    fs::write(&path, "externally changed\n").unwrap();
+    assert!(team::recover_local(&lyra, &task, &cancel).is_err());
+    assert_eq!(lyra.task(id).unwrap().status, Status::Claimed);
+    assert_eq!(fs::read_to_string(&path).unwrap(), "externally changed\n");
+    fs::write(&path, applied).unwrap();
+    assert!(team::recover_local(&lyra, &task, &cancel).unwrap());
+    assert_eq!(lyra.task(id).unwrap().status, Status::Review);
+}

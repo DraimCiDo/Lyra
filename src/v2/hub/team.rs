@@ -472,6 +472,96 @@ fn external_command(root: &Path, member: &Member, config: &Config, lyra: &Path) 
     command
 }
 
+fn local_review(hub: &Hub, id: i64) -> io::Result<()> {
+    let task = hub.task(id)?;
+    if task.status != Status::Review {
+        return Err(io::Error::other(
+            "Local worker did not produce a reviewable change",
+        ));
+    }
+    if hub.check_request().is_some()
+        && !task
+            .check
+            .as_ref()
+            .is_some_and(|check| check["passed"] == true && check["clean"] == true)
+    {
+        hub.update(
+            id,
+            Status::Claimed,
+            "Managed check did not produce a clean passing commit; retry after fixing the cause",
+        )?;
+        return Err(io::Error::other(
+            "Local worker check did not produce a clean passing commit",
+        ));
+    }
+    Ok(())
+}
+
+pub(super) fn recover_local(hub: &Hub, task: &Task, cancel: &AtomicBool) -> io::Result<bool> {
+    let states = hub.root().join("states");
+    let entries = match fs::read_dir(states) {
+        Ok(entries) => entries,
+        Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(false),
+        Err(error) => return Err(error),
+    };
+    let prefix = format!("task-{}-", task.id);
+    let mut latest = None;
+    for (count, entry) in entries.enumerate() {
+        if count >= 10000 {
+            return Err(io::Error::other(
+                "Too many hub states to select a recovery checkpoint",
+            ));
+        }
+        let entry = entry?;
+        let name = entry.file_name();
+        if entry.file_type()?.is_dir()
+            && let Some(stamp) = name
+                .to_str()
+                .and_then(|name| name.strip_prefix(&prefix))
+                .and_then(|stamp| stamp.parse::<u128>().ok())
+            && latest
+                .as_ref()
+                .is_none_or(|(previous, _)| stamp > *previous)
+        {
+            latest = Some((stamp, entry.path()));
+        }
+    }
+    let Some((_, folder)) = latest else {
+        return Ok(false);
+    };
+    let report = crate::v2::TaskStore::open(&folder)?.load()?;
+    if report.state != crate::v2::TaskState::Applied {
+        return Ok(false);
+    }
+    let worktree = task
+        .worktree
+        .as_deref()
+        .ok_or_else(|| io::Error::other("Missing recovery worktree"))?;
+    if report.request.repo != worktree.canonicalize()? {
+        return Err(io::Error::other(
+            "Recovery checkpoint belongs to a different worktree",
+        ));
+    }
+    let paths = report
+        .proposals
+        .iter()
+        .map(|edit| edit.path.clone())
+        .collect::<Vec<_>>();
+    let workspace = crate::workspace::Workspace::open(worktree, &paths)?;
+    for edit in &report.proposals {
+        if !crate::workspace::same_text_ignoring_line_endings(
+            &workspace.read_tool(&edit.path)?,
+            &edit.replacement,
+        ) {
+            return Err(io::Error::other(
+                "Recovery proposal no longer matches worktree contents; inspect retained edits",
+            ));
+        }
+    }
+    super::worker::commit_applied(hub, task.id, &folder, cancel)?;
+    Ok(true)
+}
+
 fn execute(
     root: &Path,
     config: &Config,
@@ -493,6 +583,15 @@ fn execute(
     let mut command;
     let prompt;
     if member.provider == Provider::Local {
+        let hub = Hub::open_agent(root, &member.name, AgentKind::Lyra)?;
+        if recover_local(&hub, task, cancel)? {
+            return local_review(&hub, task.id);
+        }
+        if git::dirty(worktree)? {
+            return Err(io::Error::other(
+                "Local worker has retained edits without an applied checkpoint; inspect its worktree before restarting",
+            ));
+        }
         command = Command::new(lyra);
         command.args(["hub", "--hub"]).arg(root).args([
             "work",
@@ -531,12 +630,7 @@ fn execute(
     )?;
     let hub = Hub::open_agent(root, &member.name, kind(member))?;
     if member.provider == Provider::Local {
-        if hub.task(task.id)?.status != Status::Review {
-            return Err(io::Error::other(
-                "Local worker did not produce a reviewable change",
-            ));
-        }
-        return Ok(());
+        return local_review(&hub, task.id);
     }
     if cancel.load(Ordering::Relaxed) {
         return Err(io::Error::new(io::ErrorKind::Interrupted, "Team stopped"));
@@ -578,8 +672,12 @@ fn execute(
                 "Managed publication refuses symlink edits; worktree preserved",
             ));
         }
+        let specs: Vec<String> = paths
+            .into_iter()
+            .map(|path| format!(":(literal){path}"))
+            .collect();
         let mut args = vec!["add", "--all", "--"];
-        args.extend(paths);
+        args.extend(specs.iter().map(String::as_str));
         git::ok(worktree, &args)?;
         git::ok(
             worktree,

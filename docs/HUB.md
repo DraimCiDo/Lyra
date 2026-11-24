@@ -146,7 +146,9 @@ checkbox. No provider or model fallback is performed.
 
 Lyra claims a task before launching each worker in that task's worktree, injects its
 named hub MCP configuration without editing global client settings, and passes the
-bounded task on stdin. External agents edit; Lyra commits their work and runs the
+bounded task on stdin. External agents edit; Lyra commits their work (up to 32 paths under the existing
+workspace publication rules; hidden, secret, service and symlink paths are refused)
+and runs the
 owner's configured check before handing off to review. Local agents reuse the v2
 runtime and its checked publication. Nothing lands automatically. If the base moved,
 update the task branch and repeat the owner's check before landing as described above.
@@ -163,7 +165,10 @@ shows assignments, selected models, completion and process errors; raw CLI outpu
 not kept in Lyra's activity or saved as logs. **Stop team** and closing Desktop stop
 managed processes and their descendants. Unfinished worktrees remain. An explicit
 new Start retries retained claimed work for the same agent name before taking new
-tasks. A failed task is never automatically retried in the same run. Do not rename
+tasks. A failed slot pauses until the next explicit Start; a failed task is never
+automatically retried in the same run. Applied local proposals resume from their
+saved checkpoint without another model call, provided their content still matches.
+Other retained local edits require inspection before restarting. Do not rename
 a slot until you have handled its retained tasks. CLI authentication, model access,
 unsupported CLI flags and Git signing failures are reported as worker failures.
 
