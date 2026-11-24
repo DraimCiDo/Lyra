@@ -153,7 +153,7 @@ struct Desktop {
     diff_rows: BTreeMap<usize, Vec<(diff::Tag, String)>>,
     messages: Vec<Message>,
     chat_preview: String,
-    web_search: bool,
+    web_search: super::web_search::Mode,
     web_sources: BTreeMap<usize, Vec<super::web_search::Source>>,
     import_preview: Option<ImportBundle>,
     imported: Option<ImportBundle>,
@@ -242,7 +242,7 @@ impl Desktop {
             diff_rows: BTreeMap::new(),
             messages: Vec::new(),
             chat_preview: String::new(),
-            web_search: false,
+            web_search: super::web_search::Mode::default(),
             web_sources: BTreeMap::new(),
             import_preview: None,
             imported: None,
@@ -409,84 +409,17 @@ impl Desktop {
                 .position(|message| message.role == Role::User)
                 .unwrap_or(0);
             let messages = window[first..].to_vec();
-            let web_search = self.web_search;
+            let mode = self.web_search;
             self.start(move |cancel, send| {
-                if web_search {
-                    let question = search_question.as_str();
-                    if super::web_search::reuses_evidence(question) {
-                        let _ = send.send(Output::Web(super::web_search::reuse_answer(
-                            question,
-                            &previous_sources,
-                        )));
-                        return Ok(());
-                    }
-                    let _ = send.send(Output::Progress(
-                        "Searching DuckDuckGo (current question only)…".into(),
-                    ));
-                    let sources = match super::web_search::search(question, cancel) {
-                        Ok(sources) => sources,
-                        Err(error) if error.kind() == io::ErrorKind::Interrupted => {
-                            return Err(error);
-                        }
-                        Err(_) => Vec::new(),
-                    };
-                    let mut answer = super::web_search::Answer::unavailable(question);
-                    if !sources.is_empty() {
-                        let _ = send.send(Output::Progress(
-                            "Selecting relevant source excerpts…".into(),
-                        ));
-                        let prompt = super::web_search::selection_prompt(question, &sources);
-                        let selected =
-                            inference::with_cancellable_session(&model, cancel, |session| {
-                                let mut output = Vec::new();
-                                session.complete_with_system(
-                                    &prompt,
-                                    Some(super::web_search::SELECTION_POLICY),
-                                    Some(super::web_search::SELECTION_GRAMMAR),
-                                    &mut output,
-                                )?;
-                                Ok(output)
-                            });
-                        if cancel.load(Ordering::Relaxed) {
-                            return Err(io::Error::new(
-                                io::ErrorKind::Interrupted,
-                                "Search cancelled",
-                            ));
-                        }
-                        if let Ok(selected) = selected {
-                            answer = super::web_search::answer(question, &sources, &selected);
-                        }
-                    }
-                    let _ = send.send(Output::Web(answer));
-                    return Ok(());
-                }
-                let mut response = ChatWriter {
-                    sender: send,
-                    content: String::new(),
-                };
-                let draft = messages.last().map(|message| message.content.clone());
-                let answered = inference::with_cancellable_session(&model, cancel, |session| {
-                    let messages =
-                        match fit_history(&messages, session.input_token_limit(), |turns| {
-                            session.prompt_tokens(&offline_messages(turns))
-                        }) {
-                            Ok(messages) => messages,
-                            Err(error) if error.kind() == io::ErrorKind::InvalidInput => {
-                                let _ = send.send(Output::Rejected(
-                                    draft.clone().unwrap_or_default(),
-                                    error.to_string(),
-                                ));
-                                return Ok(false);
-                            }
-                            Err(error) => return Err(error),
-                        };
-                    session.complete_chat_messages(&offline_messages(messages), &mut response)?;
-                    Ok(true)
-                })?;
-                if answered {
-                    let _ = send.send(Output::Chat(response.content));
-                }
-                Ok(())
+                run_chat(
+                    &model,
+                    &messages,
+                    &search_question,
+                    &previous_sources,
+                    mode,
+                    cancel,
+                    send,
+                )
             });
         } else if let Some(repo) = self.repo.clone() {
             let task = self.task_draft.clone();
@@ -812,13 +745,18 @@ impl Desktop {
                     );
                 }
                 if self.screen == Screen::Chat {
-                    ui.checkbox(&mut self.web_search, "Web search").on_hover_text(
-                        "Sends only your current question to DuckDuckGo. Shows exact search excerpts and source links; source pages are not fetched.",
-                    );
-                    appearance::muted(ui, if self.web_search {
-                        "Online · current question sent to DuckDuckGo"
-                    } else {
-                        "Offline · answers are not checked online"
+                    use super::web_search::Mode;
+                    egui::ComboBox::from_id_salt("chat_web_mode")
+                        .selected_text(self.web_search.label())
+                        .show_ui(ui, |ui| {
+                            for mode in [Mode::Auto, Mode::Always, Mode::Off] {
+                                ui.selectable_value(&mut self.web_search, mode, mode.label());
+                            }
+                        }).response.on_hover_text("Auto uses the local model to decide when web evidence is needed. Search sends only the current question to DuckDuckGo, never chat history or project files.");
+                    appearance::muted(ui, match self.web_search {
+                        Mode::Auto => "Searches online when needed · current question only",
+                        Mode::Always => "Searches online for each new question",
+                        Mode::Off => "Offline · no new web searches",
                     });
                 }
             });
@@ -1061,6 +999,109 @@ impl Desktop {
         ui.ctx().request_repaint_after(repaint);
         true
     }
+}
+
+fn run_chat(
+    model: &inference::GenerateArgs,
+    messages: &[Message],
+    question: &str,
+    previous_sources: &[super::web_search::Source],
+    mode: super::web_search::Mode,
+    cancel: &AtomicBool,
+    send: &mpsc::Sender<Output>,
+) -> io::Result<()> {
+    use super::web_search::{self, Mode, Route};
+    let _ = send.send(Output::Progress(
+        if mode == Mode::Auto {
+            "Deciding whether web evidence is needed locally…"
+        } else {
+            "Loading local model…"
+        }
+        .into(),
+    ));
+    inference::with_cancellable_session(model, cancel, |session| {
+        let route = web_search::route(mode, question, !previous_sources.is_empty(), || {
+            let mut decision = Vec::new();
+            session.complete_with_system(
+                &serde_json::json!({"question":question}).to_string(),
+                Some(web_search::ROUTE_POLICY),
+                Some(web_search::ROUTE_GRAMMAR),
+                &mut decision,
+            )?;
+            Ok(decision)
+        })?;
+        if cancel.load(Ordering::Relaxed) {
+            return Err(io::Error::new(io::ErrorKind::Interrupted, "Chat cancelled"));
+        }
+        match route {
+            Route::Reuse => {
+                let _ = send.send(Output::Web(web_search::reuse_answer(
+                    question,
+                    previous_sources,
+                )));
+            }
+            Route::Unavailable => {
+                let _ = send.send(Output::Web(web_search::Answer::unavailable(question)));
+            }
+            Route::Search => {
+                let _ = send.send(Output::Progress(
+                    "Searching DuckDuckGo (current question only)…".into(),
+                ));
+                let sources = match web_search::search(question, cancel) {
+                    Ok(sources) => sources,
+                    Err(error) if error.kind() == io::ErrorKind::Interrupted => return Err(error),
+                    Err(_) => Vec::new(),
+                };
+                let mut answer = web_search::Answer::unavailable(question);
+                if !sources.is_empty() {
+                    let _ = send.send(Output::Progress(
+                        "Selecting relevant source excerpts…".into(),
+                    ));
+                    let mut selected = Vec::new();
+                    if session
+                        .complete_with_system(
+                            &web_search::selection_prompt(question, &sources),
+                            Some(web_search::SELECTION_POLICY),
+                            Some(web_search::SELECTION_GRAMMAR),
+                            &mut selected,
+                        )
+                        .is_ok()
+                    {
+                        answer = web_search::answer(question, &sources, &selected);
+                    }
+                }
+                if cancel.load(Ordering::Relaxed) {
+                    return Err(io::Error::new(
+                        io::ErrorKind::Interrupted,
+                        "Search cancelled",
+                    ));
+                }
+                let _ = send.send(Output::Web(answer));
+            }
+            Route::Local => {
+                let _ = send.send(Output::Progress(
+                    "Answering locally (no web search)…".into(),
+                ));
+                let messages = match fit_history(messages, session.input_token_limit(), |turns| {
+                    session.prompt_tokens(&offline_messages(turns))
+                }) {
+                    Ok(messages) => messages,
+                    Err(error) if error.kind() == io::ErrorKind::InvalidInput => {
+                        let _ = send.send(Output::Rejected(question.into(), error.to_string()));
+                        return Ok(());
+                    }
+                    Err(error) => return Err(error),
+                };
+                let mut response = ChatWriter {
+                    sender: send,
+                    content: String::new(),
+                };
+                session.complete_chat_messages(&offline_messages(messages), &mut response)?;
+                let _ = send.send(Output::Chat(response.content));
+            }
+        }
+        Ok(())
+    })
 }
 
 fn offline_messages(messages: &[Message]) -> Vec<Message> {
