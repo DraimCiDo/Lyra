@@ -33,6 +33,47 @@ fn russian(question: &str) -> bool {
         .any(|c| ('\u{0400}'..='\u{04ff}').contains(&c))
 }
 
+/// Formatting requests refer to the last cited answer, not a new search topic.
+pub(super) fn reuses_evidence(question: &str) -> bool {
+    let normalized = question
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ")
+        .to_lowercase();
+    let normalized = normalized.trim_end_matches(['?', '!', '.', ' ']);
+    [
+        "а если своими словами",
+        "своими словами",
+        "объясни своими словами",
+        "кратко",
+        "короче",
+        "кратко по источникам",
+        "подведи итог",
+        "in your own words",
+        "summarize",
+        "summarise",
+        "make it shorter",
+    ]
+    .contains(&normalized)
+}
+
+pub(super) fn reuse_answer(question: &str, sources: &[Source]) -> Answer {
+    if sources.is_empty() {
+        return Answer::unavailable(question);
+    }
+    let selection = serde_json::json!({"sources": (1..=sources.len().min(5)).collect::<Vec<_>>()});
+    let mut answer = answer(question, sources, selection.to_string().as_bytes());
+    let introduction = if russian(question) {
+        "Использую источники из предыдущего ответа, без нового поиска. Этот режим показывает выдержки, а не свободный пересказ: неподтверждённые детали я не добавляю."
+    } else {
+        "Using the previous answer's sources without another search. This mode shows excerpts rather than a free-form paraphrase; I will not add unsupported details."
+    };
+    if let Some((_, excerpts)) = answer.text.split_once("\n\n") {
+        answer.text = format!("{introduction}\n\n{excerpts}");
+    }
+    answer
+}
+
 impl Answer {
     pub fn unavailable(question: &str) -> Self {
         Self {
@@ -296,6 +337,23 @@ pub(super) fn answer(question: &str, sources: &[Source], selection: &[u8]) -> An
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn formatting_followups_reuse_sources_without_searching_the_literal_request() {
+        assert!(reuses_evidence("А если своими словами?"));
+        assert!(reuses_evidence("Summarize!"));
+        assert!(!reuses_evidence("Что такое сервер DraimCiDo?"));
+        assert!(!reuses_evidence("Summarize Rust memory safety"));
+        let sources = vec![Source {
+            title: "Known source".into(),
+            url: "https://example.org/fact".into(),
+            excerpt: "Evidence from the previous answer".into(),
+        }];
+        let result = reuse_answer("А если своими словами?", &sources);
+        assert!(result.text.contains("без нового поиска"));
+        assert!(result.text.contains(&sources[0].excerpt));
+        assert_eq!(result.sources[0].url, sources[0].url);
+        assert!(reuse_answer("Кратко?", &[]).sources.is_empty());
+    }
     #[test]
     fn extracts_real_links_and_visible_evidence_without_following_results() {
         let html = r#"<a rel="nofollow" class="result__a" href="//duckduckgo.com/l/?uddg=https%3A%2F%2Fexample.org%2Ffact&amp;rut=x">A &amp; B</a><a class="result__snippet">The <b>documented</b> fact.</a>"#;

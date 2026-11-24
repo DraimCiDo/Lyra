@@ -384,6 +384,13 @@ impl Desktop {
             self.chat_preview.clear();
             let draft = std::mem::take(&mut self.chat_draft);
             let search_question = draft.clone();
+            let previous_sources = self
+                .messages
+                .len()
+                .checked_sub(1)
+                .and_then(|index| self.web_sources.get(&index))
+                .cloned()
+                .unwrap_or_default();
             match self.messages.last_mut() {
                 // An unanswered question (cancelled or failed send) stays part of the next
                 // turn instead of silently disappearing from the conversation.
@@ -406,6 +413,13 @@ impl Desktop {
             self.start(move |cancel, send| {
                 if web_search {
                     let question = search_question.as_str();
+                    if super::web_search::reuses_evidence(question) {
+                        let _ = send.send(Output::Web(super::web_search::reuse_answer(
+                            question,
+                            &previous_sources,
+                        )));
+                        return Ok(());
+                    }
                     let _ = send.send(Output::Progress(
                         "Searching DuckDuckGo (current question only)…".into(),
                     ));
