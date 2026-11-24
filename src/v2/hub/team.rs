@@ -115,6 +115,11 @@ impl Config {
                     "Each worker needs a unique name, executable and explicit model",
                 ));
             }
+            if !member.executable.is_absolute() && member.executable.components().count() != 1 {
+                return Err(io::Error::other(
+                    "Use an executable name on PATH or an absolute executable path",
+                ));
+            }
             match member.provider {
                 Provider::Local => {
                     if !Path::new(&member.model).is_absolute()
@@ -188,6 +193,7 @@ pub struct Team {
 impl Team {
     pub fn start(root: PathBuf, config: Config, lyra: PathBuf) -> io::Result<Self> {
         config.validate()?;
+        let root = super::canonical(&root)?;
         Hub::open(&root, OWNER, None)?;
         // Only one managed team can own a hub. The lock is held by the supervisor,
         // including while a stopped team is still reaping processes.
@@ -881,6 +887,9 @@ mod tests {
         c.members[1].name = "CODEX-1".into();
         assert!(c.validate().is_err());
         c.members[1].name = "codex-2".into();
+        c.members[0].executable = "relative/cli".into();
+        assert!(c.validate().is_err());
+        c.members[0].executable = "codex".into();
         c.max_tasks = 0;
         assert!(c.validate().is_err());
         assert!(Config::parse(br#"{"version":999}"#).is_err());
