@@ -8,6 +8,8 @@ pub mod integrations;
 #[cfg(feature = "desktop")]
 mod migration;
 mod store;
+#[cfg(feature = "desktop")]
+mod web_search;
 
 use crate::{
     executor::{self, ExecutionRequest, VerificationResult},

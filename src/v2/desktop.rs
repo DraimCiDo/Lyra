@@ -94,6 +94,7 @@ enum Output {
     Task(PathBuf, Box<TaskReport>),
     ChatDelta(String),
     Chat(String),
+    Web(super::web_search::Answer),
     Error(String),
     /// The unanswered chat message alone does not fit the context: give it back to the
     /// composer to be shortened, with the reason.
@@ -152,6 +153,8 @@ struct Desktop {
     diff_rows: BTreeMap<usize, Vec<(diff::Tag, String)>>,
     messages: Vec<Message>,
     chat_preview: String,
+    web_search: bool,
+    web_sources: BTreeMap<usize, Vec<super::web_search::Source>>,
     import_preview: Option<ImportBundle>,
     imported: Option<ImportBundle>,
     task_draft: String,
@@ -239,6 +242,8 @@ impl Desktop {
             diff_rows: BTreeMap::new(),
             messages: Vec::new(),
             chat_preview: String::new(),
+            web_search: false,
+            web_sources: BTreeMap::new(),
             import_preview: None,
             imported: None,
             task_draft: String::new(),
@@ -325,6 +330,14 @@ impl Desktop {
                         self.chat_preview.push_str(&text);
                         self.status.clear();
                     }
+                    Output::Web(answer) => {
+                        self.web_sources.insert(self.messages.len(), answer.sources);
+                        self.messages.push(Message {
+                            role: Role::Assistant,
+                            content: answer.text,
+                        });
+                        self.status.clear();
+                    }
                     Output::Chat(content) => {
                         self.chat_preview.clear();
                         self.messages.push(Message {
@@ -370,6 +383,7 @@ impl Desktop {
         if self.screen == Screen::Chat {
             self.chat_preview.clear();
             let draft = std::mem::take(&mut self.chat_draft);
+            let search_question = draft.clone();
             match self.messages.last_mut() {
                 // An unanswered question (cancelled or failed send) stays part of the next
                 // turn instead of silently disappearing from the conversation.
@@ -388,7 +402,50 @@ impl Desktop {
                 .position(|message| message.role == Role::User)
                 .unwrap_or(0);
             let messages = window[first..].to_vec();
+            let web_search = self.web_search;
             self.start(move |cancel, send| {
+                if web_search {
+                    let question = search_question.as_str();
+                    let _ = send.send(Output::Progress(
+                        "Searching DuckDuckGo (current question only)…".into(),
+                    ));
+                    let sources = match super::web_search::search(question, cancel) {
+                        Ok(sources) => sources,
+                        Err(error) if error.kind() == io::ErrorKind::Interrupted => {
+                            return Err(error);
+                        }
+                        Err(_) => Vec::new(),
+                    };
+                    let mut answer = super::web_search::Answer::unavailable(question);
+                    if !sources.is_empty() {
+                        let _ = send.send(Output::Progress(
+                            "Selecting relevant source excerpts…".into(),
+                        ));
+                        let prompt = super::web_search::selection_prompt(question, &sources);
+                        let selected =
+                            inference::with_cancellable_session(&model, cancel, |session| {
+                                let mut output = Vec::new();
+                                session.complete_with_system(
+                                    &prompt,
+                                    Some(super::web_search::SELECTION_POLICY),
+                                    Some(super::web_search::SELECTION_GRAMMAR),
+                                    &mut output,
+                                )?;
+                                Ok(output)
+                            });
+                        if cancel.load(Ordering::Relaxed) {
+                            return Err(io::Error::new(
+                                io::ErrorKind::Interrupted,
+                                "Search cancelled",
+                            ));
+                        }
+                        if let Ok(selected) = selected {
+                            answer = super::web_search::answer(question, &sources, &selected);
+                        }
+                    }
+                    let _ = send.send(Output::Web(answer));
+                    return Ok(());
+                }
                 let mut response = ChatWriter {
                     sender: send,
                     content: String::new(),
@@ -397,7 +454,7 @@ impl Desktop {
                 let answered = inference::with_cancellable_session(&model, cancel, |session| {
                     let messages =
                         match fit_history(&messages, session.input_token_limit(), |turns| {
-                            session.prompt_tokens(turns)
+                            session.prompt_tokens(&offline_messages(turns))
                         }) {
                             Ok(messages) => messages,
                             Err(error) if error.kind() == io::ErrorKind::InvalidInput => {
@@ -409,7 +466,7 @@ impl Desktop {
                             }
                             Err(error) => return Err(error),
                         };
-                    session.complete_chat_messages(messages, &mut response)?;
+                    session.complete_chat_messages(&offline_messages(messages), &mut response)?;
                     Ok(true)
                 })?;
                 if answered {
@@ -593,6 +650,7 @@ impl Desktop {
                             .unwrap_or_else(|| format!("Conversation {}", index + 1));
                         if ui.button(title).clicked() {
                             self.messages.clone_from(messages);
+                            self.web_sources.clear();
                             self.chat_preview.clear();
                             ui.close();
                         }
@@ -696,6 +754,7 @@ impl Desktop {
                     && ui.button("New chat").clicked()
                 {
                     self.messages.clear();
+                    self.web_sources.clear();
                     self.chat_preview.clear();
                     self.chat_draft.clear();
                     self.status.clear();
@@ -737,6 +796,16 @@ impl Desktop {
                     ui.checkbox(&mut self.reviewer, "Reviewer").on_hover_text(
                         "Ask the model to review the proposed changes before verification",
                     );
+                }
+                if self.screen == Screen::Chat {
+                    ui.checkbox(&mut self.web_search, "Web search").on_hover_text(
+                        "Sends only your current question to DuckDuckGo. Shows exact search excerpts and source links; source pages are not fetched.",
+                    );
+                    appearance::muted(ui, if self.web_search {
+                        "Online · current question sent to DuckDuckGo"
+                    } else {
+                        "Offline · answers are not checked online"
+                    });
                 }
             });
         });
@@ -796,8 +865,18 @@ impl Desktop {
         match self.screen {
             Screen::Chat if self.messages.is_empty() => self.welcome(ui),
             Screen::Chat => {
-                for message in &self.messages {
+                for (index, message) in self.messages.iter().enumerate() {
                     chat_card(ui, &message.role, &message.content);
+                    if let Some(sources) = self.web_sources.get(&index) {
+                        ui.horizontal_wrapped(|ui| {
+                            for (index, source) in sources.iter().enumerate() {
+                                ui.hyperlink_to(
+                                    format!("[{}] {}", index + 1, source.title),
+                                    &source.url,
+                                );
+                            }
+                        });
+                    }
                 }
                 if !self.chat_preview.is_empty() {
                     chat_card(ui, &Role::Assistant, &self.chat_preview);
@@ -968,6 +1047,15 @@ impl Desktop {
         ui.ctx().request_repaint_after(repaint);
         true
     }
+}
+
+fn offline_messages(messages: &[Message]) -> Vec<Message> {
+    let mut result = vec![Message {
+        role: Role::System,
+        content: "You are Lyra. Answer in the user's language. This is offline chat: no web search, URLs, or project files have been opened. Never claim to have searched or verified. Assistant history is not a verified source. Do not guess descriptions of unfamiliar named projects, people or servers. If evidence is missing, say you do not know and ask for context or suggest enabling Web search. Do not invent facts or sources.".into(),
+    }];
+    result.extend_from_slice(messages);
+    result
 }
 
 /// Keep larger windows available, but never exceed the trained context of the model.
