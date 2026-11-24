@@ -2,16 +2,20 @@
 //! decisions only the owner makes (add, land, reopen, cancel). Hub operations run on a
 //! background thread so a slow Git or database wait never freezes the window; the view
 //! refreshes after each operation and on demand, never on a timer.
-use super::{Hub, OWNER, Status, Task, team, plan};
-use crate::inference;
+use super::{Hub, OWNER, Status, Task, plan, team};
 use crate::executor;
+use crate::inference;
 use crate::v2::desktop::appearance::{self, ACCENT, ERROR, SUCCESS, WARNING};
 use eframe::egui::{self, RichText};
 use serde_json::Value;
 use std::{
     io,
     path::{Path, PathBuf},
-    sync::{mpsc, Arc, atomic::{AtomicBool, Ordering}},
+    sync::{
+        Arc,
+        atomic::{AtomicBool, Ordering},
+        mpsc,
+    },
     time::{Duration, Instant},
 };
 
@@ -69,8 +73,10 @@ impl HubView {
     pub fn poll(&mut self) {
         if let Some(team) = &self.team {
             self.team_events = team.events();
-            if team.running() && self.pending.is_none()
-                && self.next_refresh.is_none_or(|at| Instant::now() >= at) {
+            if team.running()
+                && self.pending.is_none()
+                && self.next_refresh.is_none_or(|at| Instant::now() >= at)
+            {
                 self.next_refresh = Some(Instant::now() + Duration::from_secs(1));
                 self.refresh();
             }
@@ -101,7 +107,9 @@ impl HubView {
                 self.tasks = tasks;
             }
             Ok(Outcome::Done(message)) => {
-                if message.starts_with("Approved ") { self.plan_text.clear(); }
+                if message.starts_with("Approved ") {
+                    self.plan_text.clear();
+                }
                 self.notice = message;
                 self.refresh();
             }
@@ -153,7 +161,9 @@ impl HubView {
 
     /// Open or create a hub: forget everything that belonged to the previous one first.
     fn switch(&mut self, folder: PathBuf) {
-        if let Some(team) = &self.team { team.stop(); }
+        if let Some(team) = &self.team {
+            team.stop();
+        }
         self.team = None;
         self.team_events.clear();
         self.plan_cancel.store(true, Ordering::Relaxed);
@@ -256,7 +266,12 @@ impl HubView {
         });
     }
 
-    fn team_controls(&mut self, ui: &mut egui::Ui, goal: &str, model: Option<inference::GenerateArgs>) {
+    fn team_controls(
+        &mut self,
+        ui: &mut egui::Ui,
+        goal: &str,
+        model: Option<inference::GenerateArgs>,
+    ) {
         let running = self.team.as_ref().is_some_and(team::Team::running);
         let idle = self.pending.is_none() && !running;
         appearance::surface().show(ui, |ui| {
@@ -404,7 +419,9 @@ impl HubView {
     }
 
     pub fn body(&mut self, ui: &mut egui::Ui, note: &str, model: Option<inference::GenerateArgs>) {
-        if self.status.is_some() { self.team_controls(ui, note, model); }
+        if self.status.is_some() {
+            self.team_controls(ui, note, model);
+        }
         let Some(status) = &self.status else {
             appearance::surface().show(ui, |ui| {
                 ui.set_min_width(ui.available_width());
@@ -621,7 +638,9 @@ impl HubView {
 }
 
 impl Drop for HubView {
-    fn drop(&mut self) { self.plan_cancel.store(true, Ordering::Relaxed); }
+    fn drop(&mut self) {
+        self.plan_cancel.store(true, Ordering::Relaxed);
+    }
 }
 
 #[cfg(test)]
