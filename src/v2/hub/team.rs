@@ -478,6 +478,32 @@ fn external_command(root: &Path, member: &Member, config: &Config, lyra: &Path) 
     command
 }
 
+fn completed(provider: &Provider, output: &str) -> io::Result<()> {
+    let success = match provider {
+        Provider::Local => true,
+        Provider::Claude => serde_json::from_str::<serde_json::Value>(output).is_ok_and(|value| {
+            value["type"] == "result" && value["subtype"] == "success" && value["is_error"] == false
+        }),
+        Provider::Codex => {
+            let events: Vec<serde_json::Value> = output
+                .lines()
+                .filter_map(|line| serde_json::from_str(line).ok())
+                .collect();
+            events.iter().any(|event| event["type"] == "turn.completed")
+                && !events
+                    .iter()
+                    .any(|event| event["type"] == "turn.failed" || event["type"] == "error")
+        }
+    };
+    if success {
+        Ok(())
+    } else {
+        Err(io::Error::other(
+            "Worker did not report a successful completed turn; retained edits require inspection before retrying",
+        ))
+    }
+}
+
 fn local_review(hub: &Hub, id: i64) -> io::Result<()> {
     let task = hub.task(id)?;
     if task.status != Status::Review {
@@ -628,12 +654,13 @@ fn execute(
         );
     }
     command.current_dir(worktree);
-    run_process(
+    let output = run_process(
         &mut command,
         &prompt,
         Duration::from_secs(config.timeout_secs),
         cancel,
     )?;
+    completed(&member.provider, &output)?;
     let hub = Hub::open_agent(root, &member.name, kind(member))?;
     if member.provider == Provider::Local {
         return local_review(&hub, task.id);
@@ -719,16 +746,23 @@ fn execute(
     Ok(())
 }
 
-/// Drain output without retaining CLI text (which may contain source or credentials).
-/// Only process metadata is exposed to the UI. Both output and input remain bounded.
-fn drain(pipe: impl Read + Send + 'static) -> mpsc::Receiver<io::Result<()>> {
+/// Capture bounded stdout only for completion validation, never for logs or UI.
+/// Stderr is counted and discarded; neither stream can grow without a limit.
+fn drain(pipe: impl Read + Send + 'static, capture: bool) -> mpsc::Receiver<io::Result<Vec<u8>>> {
     let (send, receive) = mpsc::channel();
     thread::spawn(move || {
-        let result = io::copy(&mut pipe.take(8 * 1024 * 1024 + 1), &mut io::sink()).and_then(|n| {
+        let mut limited = pipe.take(8 * 1024 * 1024 + 1);
+        let mut bytes = Vec::new();
+        let count = if capture {
+            limited.read_to_end(&mut bytes).map(|n| n as u64)
+        } else {
+            io::copy(&mut limited, &mut io::sink())
+        };
+        let result = count.and_then(|n| {
             if n > 8 * 1024 * 1024 {
                 Err(io::Error::other("Worker output exceeded 8 MiB"))
             } else {
-                Ok(())
+                Ok(bytes)
             }
         });
         let _ = send.send(result);
@@ -741,7 +775,7 @@ fn run_process(
     prompt: &str,
     timeout: Duration,
     cancel: &AtomicBool,
-) -> io::Result<()> {
+) -> io::Result<String> {
     if cancel.load(Ordering::Relaxed) {
         return Err(io::Error::new(io::ErrorKind::Interrupted, "Team stopped"));
     }
@@ -766,12 +800,14 @@ fn run_process(
             .stdout
             .take()
             .ok_or_else(|| io::Error::other("Missing worker stdout"))?,
+        true,
     );
     let stderr = drain(
         child
             .stderr
             .take()
             .ok_or_else(|| io::Error::other("Missing worker stderr"))?,
+        false,
     );
     let input = child.stdin.take();
     let prompt = prompt.as_bytes().to_vec();
@@ -783,16 +819,17 @@ fn run_process(
         let _ = send.send(result);
     });
     let result = (|| {
-        let mut out_done = false;
-        let mut err_done = false;
+        let mut out_done = None;
+        let mut err_done = None;
         let mut pipes = || -> io::Result<bool> {
             for (receiver, done) in [(&stdout, &mut out_done), (&stderr, &mut err_done)] {
-                if !*done && let Ok(result) = receiver.try_recv() {
-                    result?;
-                    *done = true;
+                if done.is_none()
+                    && let Ok(result) = receiver.try_recv()
+                {
+                    *done = Some(result?);
                 }
             }
-            Ok(out_done && err_done)
+            Ok(out_done.is_some() && err_done.is_some())
         };
         let status = loop {
             pipes()?;
@@ -830,7 +867,7 @@ fn run_process(
                 "Worker exited with {status}; check CLI installation, authentication and model access"
             )));
         }
-        Ok(())
+        Ok(String::from_utf8_lossy(&out_done.unwrap_or_default()).into_owned())
     })();
     // Also terminate descendants after a successful parent exit.
     git::kill_tree(&mut child);
@@ -919,6 +956,27 @@ mod tests {
         );
         assert!(!args.iter().any(|arg| arg.contains("dangerously")));
         assert!(args.iter().any(|arg| arg.contains("hub with spaces")));
+    }
+
+    #[test]
+    fn failed_or_incomplete_cli_turns_never_become_reviewable() {
+        assert!(completed(&Provider::Codex, r#"{"type":"turn.completed"}"#).is_ok());
+        assert!(completed(&Provider::Codex, r#"{"type":"turn.failed"}"#).is_err());
+        assert!(completed(&Provider::Codex, "").is_err());
+        assert!(
+            completed(
+                &Provider::Claude,
+                r#"{"type":"result","subtype":"success","is_error":false}"#
+            )
+            .is_ok()
+        );
+        assert!(
+            completed(
+                &Provider::Claude,
+                r#"{"type":"result","subtype":"error_max_turns","is_error":true}"#
+            )
+            .is_err()
+        );
     }
 
     #[cfg(unix)]
@@ -1072,7 +1130,7 @@ mod tests {
         let fake = script(
             root.path(),
             "fake cli",
-            "cat >/dev/null; printf 'changed\\n' > change.txt",
+            r#"cat >/dev/null; printf 'changed\n' > change.txt; printf '{"type":"turn.completed"}\n'"#,
         );
         let mut c = config();
         c.members.truncate(2);
