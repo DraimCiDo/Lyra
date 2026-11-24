@@ -298,8 +298,11 @@ fn supervise(
         "Team enabled; waiting for ready tasks",
     );
     while !stop.load(Ordering::Relaxed) {
-        while let Ok(name) = receive.try_recv() {
+        while let Ok((name, failed)) = receive.try_recv() {
             busy.remove(&name);
+            if failed {
+                disabled.insert(name);
+            }
         }
         let mut index = 0;
         while index < workers.len() {
@@ -363,6 +366,7 @@ fn supervise(
             );
             workers.push(thread::spawn(move || {
                 let result = execute(&root, &config, &member, &lyra, &task, &stop);
+                let failed = result.is_err();
                 match result {
                     Ok(()) => event(&feed, &member.name, Some(task.id), "review", "Changes ready for owner review"),
                     Err(error) => {
@@ -374,7 +378,7 @@ fn supervise(
                         }
                     }
                 }
-                let _ = send.send(member.name);
+                let _ = send.send((member.name, failed));
             }));
         }
         if disabled.len() == config.members.len() && busy.is_empty() {
@@ -455,7 +459,7 @@ fn external_command(root: &Path, member: &Member, config: &Config, lyra: &Path) 
                 "--mcp-config",
                 &mcp.to_string(),
                 "--tools",
-                "Read,Edit,Write,Glob,Grep,mcp__lyra-hub",
+                "Read,Edit,Write,Glob,Grep",
                 "--allowedTools",
                 "Read,Edit,Write,Glob,Grep,mcp__lyra-hub",
             ]);
@@ -480,6 +484,12 @@ fn execute(
         .worktree
         .as_deref()
         .ok_or_else(|| io::Error::other("Missing task worktree"))?;
+    let branch = git::ok(worktree, &["symbolic-ref", "--short", "HEAD"])?;
+    if task.branch.as_deref() != Some(&branch) {
+        return Err(io::Error::other(
+            "Assigned worktree is on a different branch",
+        ));
+    }
     let mut command;
     let prompt;
     if member.provider == Provider::Local {
@@ -719,8 +729,10 @@ pub fn cli_executable() -> io::Result<PathBuf> {
 mod tests {
     use super::*;
     fn config() -> Config {
-        let mut config = Config::default();
-        config.allow_external = true;
+        let mut config = Config {
+            allow_external: true,
+            ..Config::default()
+        };
         for member in &mut config.members {
             member.model = "owner-selected-model".into();
         }
@@ -867,6 +879,15 @@ mod tests {
         Hub::init(&folder, &repo, "main", None).unwrap();
         let hub = Hub::open(&folder, OWNER, None).unwrap();
         let plan = super::super::plan::Plan::parse(r#"{"tasks":[{"title":"One","description":"x","depends_on":[]},{"title":"Two","description":"y","depends_on":[]},{"title":"Dependent","description":"z","depends_on":[1]}]}"#).unwrap();
+        hub.connection.execute_batch("CREATE TRIGGER reject_second BEFORE INSERT ON tasks WHEN NEW.title='Two' BEGIN SELECT RAISE(ABORT, 'test insertion failure'); END;").unwrap();
+        assert!(plan.enqueue(&hub).is_err());
+        assert!(
+            hub.tasks(None).unwrap().is_empty(),
+            "A failed plan must roll back all tasks"
+        );
+        hub.connection
+            .execute_batch("DROP TRIGGER reject_second;")
+            .unwrap();
         let ids = plan.enqueue(&hub).unwrap();
         assert_eq!(hub.task(ids[2]).unwrap().depends_on, vec![ids[0]]);
         let fake = script(
@@ -902,5 +923,73 @@ mod tests {
         assert_eq!(git::head(&repo).unwrap(), initial);
         assert!(!repo.join("change.txt").exists());
         assert!(!folder.join("team.lock").exists());
+
+        // A failed slot pauses after one attempt and preserves its task. Explicit
+        // restart resumes that same work instead of consuming another queued task.
+        let failed_id = hub.create_task("Fail once", "x", &[]).unwrap();
+        let untouched_id = hub.create_task("Keep queued", "x", &[]).unwrap();
+        let fail = script(
+            root.path(),
+            "broken cli",
+            "cat >/dev/null; printf x >> attempts.txt; exit 3",
+        );
+        let mut retry_config = config();
+        retry_config.members.truncate(1);
+        retry_config.members[0].name = "retry-slot".into();
+        retry_config.members[0].executable = fail;
+        let mut failed_team =
+            Team::start(folder.clone(), retry_config.clone(), "unused".into()).unwrap();
+        let start = Instant::now();
+        while failed_team.running() {
+            assert!(start.elapsed() < Duration::from_secs(30));
+            thread::sleep(Duration::from_millis(25));
+        }
+        failed_team.join();
+        let retained = hub.task(failed_id).unwrap();
+        assert_eq!(retained.status, Status::Claimed);
+        assert_eq!(
+            fs::read(retained.worktree.unwrap().join("attempts.txt")).unwrap(),
+            b"x"
+        );
+        assert_eq!(hub.task(untouched_id).unwrap().status, Status::Open);
+        retry_config.members[0].executable = fake;
+        retry_config.max_tasks = 1;
+        let mut retried =
+            Team::start(folder.clone(), retry_config.clone(), "unused".into()).unwrap();
+        let start = Instant::now();
+        while retried.running() {
+            assert!(start.elapsed() < Duration::from_secs(30));
+            thread::sleep(Duration::from_millis(25));
+        }
+        retried.join();
+        assert_eq!(
+            hub.task(failed_id).unwrap().status,
+            Status::Review,
+            "{:?}",
+            retried.events()
+        );
+        assert_eq!(hub.task(untouched_id).unwrap().status, Status::Open);
+
+        // Manually connected clients using a colliding name are never adopted.
+        let mut manual = Hub::open_agent(&folder, "retry-slot", AgentKind::Codex).unwrap();
+        let manual_task = manual.claim(Some(untouched_id)).unwrap();
+        let manual_head = git::head(manual_task.worktree.as_ref().unwrap()).unwrap();
+        let mut colliding = Team::start(folder.clone(), retry_config, "unused".into()).unwrap();
+        let start = Instant::now();
+        while colliding.running() {
+            assert!(start.elapsed() < Duration::from_secs(30));
+            thread::sleep(Duration::from_millis(25));
+        }
+        colliding.join();
+        assert!(
+            colliding
+                .events()
+                .iter()
+                .any(|event| event.detail.contains("unmanaged task"))
+        );
+        assert_eq!(
+            git::head(manual_task.worktree.as_ref().unwrap()).unwrap(),
+            manual_head
+        );
     }
 }
