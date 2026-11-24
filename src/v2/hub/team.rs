@@ -985,6 +985,50 @@ mod tests {
 
     #[cfg(unix)]
     #[test]
+    fn stopping_a_running_worker_terminates_descendants_without_retaining_output() {
+        let root = tempfile::tempdir().unwrap();
+        let slow = script(
+            root.path(),
+            "descendant",
+            "cat >/dev/null; (sleep 1; printf bad > escaped.txt) & wait",
+        );
+        let cancel = Arc::new(AtomicBool::new(false));
+        let signal = cancel.clone();
+        let cwd = root.path().to_owned();
+        let running = thread::spawn(move || {
+            run_process(
+                Command::new(slow).current_dir(cwd),
+                "task",
+                Duration::from_secs(10),
+                &signal,
+            )
+        });
+        thread::sleep(Duration::from_millis(150));
+        cancel.store(true, Ordering::Relaxed);
+        assert_eq!(
+            running.join().unwrap().unwrap_err().kind(),
+            io::ErrorKind::Interrupted
+        );
+        thread::sleep(Duration::from_millis(1100));
+        assert!(!root.path().join("escaped.txt").exists());
+        cancel.store(false, Ordering::Relaxed);
+        let noisy = script(
+            root.path(),
+            "noisy",
+            "cat >/dev/null; printf PRIVATE_CLI_OUTPUT >&2; exit 2",
+        );
+        let error = run_process(
+            &mut Command::new(noisy),
+            "task",
+            Duration::from_secs(2),
+            &cancel,
+        )
+        .unwrap_err();
+        assert!(!error.to_string().contains("PRIVATE_CLI_OUTPUT"));
+    }
+
+    #[cfg(unix)]
+    #[test]
     fn supervisor_isolates_tasks_hands_off_review_and_does_not_land() {
         let root = tempfile::tempdir().unwrap();
         let repo = root.path().join("repo space Кириллица");
