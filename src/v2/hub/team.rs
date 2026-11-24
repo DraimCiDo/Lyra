@@ -485,14 +485,16 @@ fn completed(provider: &Provider, output: &str) -> io::Result<()> {
             value["type"] == "result" && value["subtype"] == "success" && value["is_error"] == false
         }),
         Provider::Codex => {
-            let events: Vec<serde_json::Value> = output
+            let mut finished = false;
+            let mut failed = false;
+            for event in output
                 .lines()
-                .filter_map(|line| serde_json::from_str(line).ok())
-                .collect();
-            events.iter().any(|event| event["type"] == "turn.completed")
-                && !events
-                    .iter()
-                    .any(|event| event["type"] == "turn.failed" || event["type"] == "error")
+                .filter_map(|line| serde_json::from_str::<serde_json::Value>(line).ok())
+            {
+                finished |= event["type"] == "turn.completed";
+                failed |= event["type"] == "turn.failed" || event["type"] == "error";
+            }
+            finished && !failed
         }
     };
     if success {
