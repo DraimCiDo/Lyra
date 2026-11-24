@@ -187,6 +187,7 @@ jobs:
             Copy-Item -LiteralPath "./target/${{ matrix.target }}/release/$binary" -Destination dist-v2
           }
           Copy-Item -LiteralPath docs/V2.md -Destination dist-v2/README.md
+          Copy-Item -LiteralPath docs/HUB.md -Destination dist-v2/HUB.md
           Copy-Item -LiteralPath dist/THIRD_PARTY_NOTICES.txt -Destination dist-v2
           Compress-Archive -Path dist-v2/* -DestinationPath release-v2/lyra-v2-windows-x64.zip
           $sha = (Get-FileHash -Algorithm SHA256 release-v2/lyra-v2-windows-x64.zip).Hash.ToLowerInvariant()

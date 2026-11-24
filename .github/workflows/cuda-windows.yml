@@ -93,6 +93,7 @@ jobs:
           Copy-Item -LiteralPath target/x86_64-pc-windows-msvc/release/lyra-v2.exe -Destination dist/
           Copy-Item -LiteralPath target/x86_64-pc-windows-msvc/release/lyra-v2-desktop.exe -Destination dist/
           Copy-Item -LiteralPath docs/V2.md -Destination dist/V2.md
+          Copy-Item -LiteralPath docs/HUB.md -Destination dist/HUB.md
           Copy-Item -LiteralPath examples/buggy-add -Destination dist/examples/buggy-add -Recurse
           Copy-Item -LiteralPath docs/LOCAL_MODELS.md -Destination dist/LOCAL_MODELS.md
           @'
