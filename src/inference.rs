@@ -7,7 +7,7 @@ use llama_cpp_2::{
     sampling::LlamaSampler,
 };
 use std::{
-    cell::RefCell,
+    cell::{Cell, RefCell},
     fs::File,
     io::{self, Read, Write},
     num::NonZeroU32,
@@ -144,13 +144,24 @@ pub fn with_session<T>(
     args: &GenerateArgs,
     work: impl FnOnce(&Session<'_>) -> io::Result<T>,
 ) -> io::Result<T> {
+    // Validate first: a rejected argument must not leave a process-wide handler behind.
     validate(args)?;
     let cancelled = Arc::new(AtomicBool::new(false));
     let signal = cancelled.clone();
     ctrlc::set_handler(move || signal.store(true, Ordering::Relaxed))
         .map_err(|e| fail(e.to_string()))?;
+    with_cancellable_session(args, &cancelled, work)
+}
+
+pub(crate) fn with_cancellable_session<T>(
+    args: &GenerateArgs,
+    cancelled: &AtomicBool,
+    work: impl FnOnce(&Session<'_>) -> io::Result<T>,
+) -> io::Result<T> {
+    validate(args)?;
     let started = Instant::now();
     let timeout = Duration::from_secs(args.timeout_secs);
+    check(cancelled, started, timeout)?;
     let backend = LlamaBackend::init().map_err(|e| fail(e.to_string()))?;
     let model_bytes = std::fs::metadata(&args.model)?.len();
     let free_ram = sysinfo::System::new_with_specifics(
@@ -203,7 +214,7 @@ pub fn with_session<T>(
     let params = LlamaModelParams::default().with_n_gpu_layers(gpu_layers);
     let model = LlamaModel::load_from_file(&backend, &args.model, &params)
         .map_err(|e| fail(format!("Не удалось загрузить GGUF: {e}")))?;
-    check(&cancelled, started, timeout)?;
+    check(cancelled, started, timeout)?;
     progress_event("context");
     if args.context > model.n_ctx_train() {
         return Err(fail(format!(
@@ -217,8 +228,8 @@ pub fn with_session<T>(
         model: &model,
         backend: &backend,
         args,
-        cancelled: &cancelled,
-        started,
+        cancelled,
+        started: Rc::new(Cell::new(started)),
         timeout,
     })
 }
@@ -230,7 +241,8 @@ pub struct Session<'a> {
     backend: &'a LlamaBackend,
     args: &'a GenerateArgs,
     cancelled: &'a AtomicBool,
-    started: Instant,
+    /// Start of the current timeout window; `reset_deadline` begins a new one.
+    started: Rc<Cell<Instant>>,
     timeout: Duration,
 }
 
@@ -261,6 +273,11 @@ fn native_chat_messages(
 }
 
 impl Session<'_> {
+    /// Start a new timeout window. A session shared by several tasks (a worker loop)
+    /// must not let the first tasks use up the time of the later ones.
+    pub(crate) fn reset_deadline(&self) {
+        self.started.set(Instant::now());
+    }
     pub(crate) fn cancellation(&self) -> &AtomicBool {
         self.cancelled
     }
@@ -279,7 +296,13 @@ impl Session<'_> {
                 content: prompt.into(),
             },
         ];
-        let rendered = self.rendered_prompt(&messages)?;
+        self.prompt_tokens(&messages)
+    }
+    pub(crate) fn prompt_tokens(
+        &self,
+        messages: &[crate::model_gateway::Message],
+    ) -> io::Result<usize> {
+        let rendered = self.rendered_prompt(messages)?;
         Ok(self
             .model
             .vocab()
@@ -347,7 +370,17 @@ impl Session<'_> {
         grammar: Option<&str>,
         output: &mut impl Write,
     ) -> io::Result<()> {
-        self.complete_messages_with_sampling(messages, grammar, false, output)
+        self.complete_messages_with_sampling(messages, grammar, false, output, |_| false)
+    }
+
+    pub(crate) fn complete_messages_until<W: Write>(
+        &self,
+        messages: &[crate::model_gateway::Message],
+        grammar: &str,
+        output: &mut W,
+        complete: impl FnMut(&W) -> bool,
+    ) -> io::Result<()> {
+        self.complete_messages_with_sampling(messages, Some(grammar), false, output, complete)
     }
 
     /// Natural conversation uses repetition control; constrained tool/plan JSON
@@ -357,15 +390,16 @@ impl Session<'_> {
         messages: &[crate::model_gateway::Message],
         output: &mut impl Write,
     ) -> io::Result<()> {
-        self.complete_messages_with_sampling(messages, None, !self.args.raw, output)
+        self.complete_messages_with_sampling(messages, None, !self.args.raw, output, |_| false)
     }
 
-    fn complete_messages_with_sampling(
+    fn complete_messages_with_sampling<W: Write>(
         &self,
         messages: &[crate::model_gateway::Message],
         grammar: Option<&str>,
         sample_chat: bool,
-        output: &mut impl Write,
+        output: &mut W,
+        mut complete: impl FnMut(&W) -> bool,
     ) -> io::Result<()> {
         if messages.is_empty()
             || messages.iter().all(|m| m.content.is_empty())
@@ -382,6 +416,7 @@ impl Session<'_> {
             started,
             timeout,
         } = self.clone();
+        let started = started.get();
         check(cancelled, started, timeout)?;
         let prompt = self.rendered_prompt(messages)?;
         let vocab = model.vocab();
@@ -464,6 +499,9 @@ impl Session<'_> {
             if count == 1 || count % 8 == 0 {
                 progress_tokens(count);
             }
+            if complete(output) {
+                break;
+            }
             if index + 1 < args.max_tokens {
                 batch.clear();
                 batch
@@ -496,6 +534,25 @@ impl Session<'_> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn an_invalid_model_path_can_be_retried_in_the_same_process() {
+        let args = GenerateArgs {
+            model: std::path::PathBuf::from("missing-model.gguf"),
+            prompt: "hello".into(),
+            skills: None,
+            selected_skills: Vec::new(),
+            context: 512,
+            max_tokens: 32,
+            threads: 1,
+            gpu_layers: 0,
+            timeout_secs: 5,
+            raw: false,
+        };
+        for _ in 0..2 {
+            let error = with_session(&args, |_| Ok(())).unwrap_err();
+            assert_eq!(error.kind(), io::ErrorKind::NotFound, "{error}");
+        }
+    }
     #[test]
     fn native_chat_template_input_preserves_turns_and_literal_role_labels() {
         use crate::model_gateway::{Message, Role};

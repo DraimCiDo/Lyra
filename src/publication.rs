@@ -34,6 +34,26 @@ struct Journal {
     schema_version: u32,
     root: PathBuf,
     edits: Vec<Edit>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    checked: Option<CheckedSource>,
+}
+/// Evidence of the verified candidate. Recovery may complete an interrupted checked
+/// publication only while the sources still hash to the checked value.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct CheckedSource {
+    /// `None` means the discovered project snapshot, otherwise an explicit file scope.
+    pub(crate) scope: Option<Vec<String>>,
+    pub(crate) sha256: String,
+}
+impl CheckedSource {
+    fn matches(&self, repo: &Path, edits: &[Edit]) -> io::Result<bool> {
+        let actual = match &self.scope {
+            Some(scope) => crate::executor::checked_source_hash(repo, scope, edits, true)?,
+            None => crate::executor::candidate_source_hash(repo, edits)?,
+        };
+        Ok(actual == self.sha256)
+    }
 }
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "snake_case")]
@@ -43,7 +63,15 @@ enum FileState {
 }
 pub(crate) struct State {
     pub(crate) dir: Dir,
-    _lock: std::fs::File,
+    lock: std::fs::File,
+}
+
+impl Drop for State {
+    fn drop(&mut self) {
+        // On Unix, a concurrent fork can keep this open file description alive
+        // until the child calls exec. Release the lock before closing our handle.
+        let _ = self.lock.unlock();
+    }
 }
 fn error(message: impl std::fmt::Display) -> io::Error {
     io::Error::other(message.to_string())
@@ -111,7 +139,7 @@ impl State {
         .into_std();
         lock.try_lock()
             .map_err(|e| error(format!("Another publication/recovery is active: {e}")))?;
-        Ok(Self { dir, _lock: lock })
+        Ok(Self { dir, lock })
     }
     pub(crate) fn pending(&self) -> io::Result<bool> {
         Ok(checked_exists(&self.dir, JOURNAL)?
@@ -119,7 +147,7 @@ impl State {
             || checked_exists(&self.dir, "artifact-journal.json")?
             || checked_exists(&self.dir, "artifact-journal.tmp")?)
     }
-    fn begin(&self, root: &Path, edits: &[Edit]) -> io::Result<()> {
+    fn begin(&self, root: &Path, edits: &[Edit], checked: Option<CheckedSource>) -> io::Result<()> {
         if self.pending()? {
             return Err(error(
                 "Unfinished publication: run lyra recover --repo <project> first",
@@ -129,6 +157,7 @@ impl State {
             schema_version: 1,
             root: root.to_owned(),
             edits: edits.to_vec(),
+            checked,
         })
         .map_err(error)?;
         if bytes.len() as u64 > JOURNAL_LIMIT {
@@ -170,7 +199,7 @@ impl State {
     }
 }
 
-fn validate_set(edits: &[Edit]) -> io::Result<()> {
+pub(crate) fn validate_set(edits: &[Edit]) -> io::Result<()> {
     if edits.is_empty() || edits.len() > crate::workspace::MAX_PROPOSALS {
         return Err(error("Publication requires 1..32 proposals"));
     }
@@ -310,15 +339,41 @@ fn ensure_final(
     Ok(())
 }
 
+pub(crate) fn is_applied(repo: &Path, edits: &[Edit]) -> io::Result<bool> {
+    validate_set(edits)?;
+    let mut workspace = open_workspace(repo, edits)?;
+    let publication = State::open(&workspace)?;
+    if publication.pending()? {
+        return Err(error(
+            "Resolve the pending publication journal before retrying",
+        ));
+    }
+    let current = states(&mut workspace, edits)?;
+    if current.iter().all(|state| *state == FileState::Applied) {
+        Ok(true)
+    } else if current.iter().all(|state| *state == FileState::Original) {
+        Ok(false)
+    } else {
+        Err(error("The interrupted publication has mixed file states"))
+    }
+}
+
 pub fn apply(repo: &Path, edits: &[Edit]) -> io::Result<()> {
-    apply_checked(repo, edits, || Ok(()))
+    apply_checked(repo, edits, None, || Ok(()))
 }
 pub(crate) fn apply_checked(
     repo: &Path,
     edits: &[Edit],
+    checked: Option<CheckedSource>,
     guard: impl FnMut() -> io::Result<()>,
 ) -> io::Result<()> {
-    apply_controlled(repo, edits, |workspace, edit| workspace.apply(edit), guard)
+    apply_controlled(
+        repo,
+        edits,
+        checked,
+        |workspace, edit| workspace.apply(edit),
+        guard,
+    )
 }
 #[cfg(test)]
 fn apply_with(
@@ -326,11 +381,12 @@ fn apply_with(
     edits: &[Edit],
     publish: impl FnMut(&mut Workspace, &Edit) -> io::Result<()>,
 ) -> io::Result<()> {
-    apply_controlled(repo, edits, publish, || Ok(()))
+    apply_controlled(repo, edits, None, publish, || Ok(()))
 }
 fn apply_controlled(
     repo: &Path,
     edits: &[Edit],
+    checked: Option<CheckedSource>,
     mut publish: impl FnMut(&mut Workspace, &Edit) -> io::Result<()>,
     mut guard: impl FnMut() -> io::Result<()>,
 ) -> io::Result<()> {
@@ -346,7 +402,7 @@ fn apply_controlled(
         workspace.validate_edit(edit)?;
     }
     guard()?;
-    state.begin(&workspace.root, edits)?;
+    state.begin(&workspace.root, edits, checked)?;
     let result = edits
         .iter()
         .try_for_each(|edit| publish(&mut workspace, edit))
@@ -389,6 +445,14 @@ pub fn recover(args: RecoveryArgs, output: &mut impl Write) -> io::Result<()> {
     let journal = state.read(&workspace.root)?;
     let mut workspace = open_workspace(&args.repo, &journal.edits)?;
     let current = states(&mut workspace, &journal.edits)?;
+    if args.action == RecoveryAction::Complete
+        && let Some(checked) = &journal.checked
+        && !checked.matches(&workspace.root, &journal.edits)?
+    {
+        return Err(error(
+            "The sources no longer match the checked candidate; only rollback is available",
+        ));
+    }
     if args.action != RecoveryAction::Status {
         restore(&mut workspace, &journal.edits, args.action)?;
         state.clear()?;
@@ -446,7 +510,7 @@ mod tests {
         for edit in &edits {
             workspace.validate_edit(edit).unwrap();
         }
-        state.begin(&workspace.root, &edits).unwrap();
+        state.begin(&workspace.root, &edits, None).unwrap();
         for edit in edits.iter().take(count) {
             workspace.apply(edit).unwrap();
         }
@@ -602,6 +666,19 @@ mod tests {
         assert_original(repo.path());
         drop(lock);
         apply(repo.path(), &edits()).unwrap();
+    }
+    #[cfg(unix)]
+    #[test]
+    fn release_does_not_wait_for_an_inherited_descriptor_to_close() {
+        let repo = fixture();
+        let workspace = open_workspace(repo.path(), &edits()).unwrap();
+        let state = State::open(&workspace).unwrap();
+        let inherited = state.lock.try_clone().unwrap();
+        drop(state);
+        let next = State::open(&workspace).unwrap();
+        drop(inherited);
+        assert!(State::open(&workspace).is_err());
+        drop(next);
     }
     #[test]
     fn readonly_late_file_is_rejected_before_first_write() {
@@ -763,7 +840,7 @@ mod tests {
     fn source_guard_runs_under_the_repository_lock_and_rolls_back_on_drift() {
         let repo = fixture();
         let mut checks = 0;
-        let result = apply_checked(repo.path(), &edits(), || {
+        let result = apply_checked(repo.path(), &edits(), None, || {
             checks += 1;
             if checks == 1 {
                 let workspace = open_workspace(repo.path(), &edits()).unwrap();
@@ -781,6 +858,38 @@ mod tests {
         );
         assert_eq!(checks, 2);
         assert_original(repo.path());
+    }
+    #[test]
+    fn interrupted_checked_publication_completes_only_while_sources_match_the_check() {
+        let repo = fixture();
+        std::fs::write(repo.path().join("dep.txt"), "checked dependency\n").unwrap();
+        let checked = CheckedSource {
+            scope: None,
+            sha256: crate::executor::candidate_source_hash(repo.path(), &edits()).unwrap(),
+        };
+        let journaled = |checked: CheckedSource| {
+            let edits = edits();
+            let mut workspace = open_workspace(repo.path(), &edits).unwrap();
+            let state = State::open(&workspace).unwrap();
+            state.begin(&workspace.root, &edits, Some(checked)).unwrap();
+            workspace.apply(&edits[0]).unwrap();
+        };
+        journaled(checked.clone());
+        std::fs::write(repo.path().join("dep.txt"), "changed after check\n").unwrap();
+        let refused = recovery(repo.path(), RecoveryAction::Complete).unwrap_err();
+        assert!(refused.to_string().contains("only rollback"), "{refused}");
+        recovery(repo.path(), RecoveryAction::Rollback).unwrap();
+        assert_original(repo.path());
+
+        std::fs::write(repo.path().join("dep.txt"), "checked dependency\n").unwrap();
+        journaled(checked);
+        recovery(repo.path(), RecoveryAction::Complete).unwrap();
+        for edit in edits() {
+            assert_eq!(
+                std::fs::read_to_string(repo.path().join(&edit.path)).unwrap(),
+                edit.replacement
+            );
+        }
     }
     #[test]
     fn crash_child() {

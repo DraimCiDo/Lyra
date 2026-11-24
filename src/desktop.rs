@@ -1,15 +1,15 @@
 //! Native shell around the same CLI contracts. No inference or filesystem policy in widgets.
 mod chat;
 mod chat_policy;
-mod diff;
+pub(crate) mod diff;
 mod dock;
 mod graph_view;
-mod history;
-mod icons;
+pub(crate) mod history;
+pub(crate) mod icons;
 mod job;
 mod kit;
 mod models;
-mod preferences;
+pub(crate) mod preferences;
 mod projects;
 mod settings;
 mod settings_ui;

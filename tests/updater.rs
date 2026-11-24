@@ -345,7 +345,20 @@ fn version_probe_accepts_both_real_entry_points() {
         ("lyra-desktop.exe", env!("CARGO_BIN_EXE_lyra-desktop")),
     ] {
         fs::copy(source, t.path().join(name)).unwrap();
-        install::probe(&t.path().join(name), &v).unwrap();
+        // Another test thread may fork while this file is still open for writing; Linux
+        // then reports "text file busy" until that child has exec'd. Retry briefly.
+        let mut attempts = 0;
+        loop {
+            match install::probe(&t.path().join(name), &v) {
+                Err(error)
+                    if error.kind() == std::io::ErrorKind::ExecutableFileBusy && attempts < 40 =>
+                {
+                    attempts += 1;
+                    std::thread::sleep(std::time::Duration::from_millis(50));
+                }
+                result => break result.unwrap(),
+            }
+        }
         assert!(install::probe(&t.path().join(name), &Version::parse("0.0.0").unwrap()).is_err());
     }
 }

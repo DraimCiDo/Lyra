@@ -87,6 +87,16 @@ pub fn read(workspace: &mut Workspace, proposals: &[Edit], path: &str) -> io::Re
         None => workspace.read_tool(path),
     }
 }
+pub(crate) fn read_paged(
+    workspace: &mut Workspace,
+    proposals: &[Edit],
+    path: &str,
+) -> io::Result<String> {
+    match proposals.iter().find(|p| p.path == path) {
+        Some(pending) => workspace.read_pending(pending),
+        None => workspace.read_snapshot(path),
+    }
+}
 pub fn range(
     workspace: &mut Workspace,
     proposals: &[Edit],
@@ -99,11 +109,7 @@ pub fn range(
             "read_range needs line >=1 and 1..200 lines",
         ));
     }
-    let text = if proposals.iter().any(|p| p.path == path) {
-        read(workspace, proposals, path)?
-    } else {
-        workspace.read_snapshot(path)?
-    };
+    let text = read_paged(workspace, proposals, path)?;
     let lines: Vec<_> = text.split_inclusive('\n').collect();
     if start_line > lines.len().saturating_add(1) {
         return Err(io::Error::other("Line exceeds file"));
@@ -134,10 +140,33 @@ pub fn search(
     query: &str,
     offset: usize,
 ) -> io::Result<Value> {
+    search_scoped(workspace, proposals, query, offset, "")
+}
+
+pub fn search_scoped(
+    workspace: &mut Workspace,
+    proposals: &[Edit],
+    query: &str,
+    offset: usize,
+    prefix: &str,
+) -> io::Result<Value> {
+    let directory = prefix.strip_suffix('/').unwrap_or(prefix);
+    if !prefix.is_empty() {
+        crate::project::validate_path(directory, false)?;
+    }
     if query.is_empty() || query.len() > 256 {
         return Err(io::Error::other("Запрос поиска: 1–256 байт."));
     }
-    let paths: Vec<_> = visible(workspace, proposals).into_iter().collect();
+    let paths: Vec<_> = visible(workspace, proposals)
+        .into_iter()
+        .filter(|path| {
+            directory.is_empty()
+                || path == directory
+                || path
+                    .strip_prefix(directory)
+                    .is_some_and(|tail| tail.starts_with('/'))
+        })
+        .collect();
     if offset > paths.len() {
         return Err(io::Error::other("Search offset exceeds index"));
     }
@@ -146,7 +175,12 @@ pub fn search(
     let mut skipped = 0;
     let mut omitted = 0;
     for path in &paths[offset..end] {
-        match read(workspace, proposals, path) {
+        let text = if directory.is_empty() {
+            read(workspace, proposals, path)
+        } else {
+            read_paged(workspace, proposals, path)
+        };
+        match text {
             Ok(text) => {
                 let digest = sha256(text.as_bytes());
                 for (line, text) in text

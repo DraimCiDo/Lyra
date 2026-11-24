@@ -18,6 +18,8 @@ alpha добавляет task/предложения/apply и ограничен
 | Диагностика/JSON железа | [src/doctor.rs](../src/doctor.rs) | Тесты внутри модуля, [модели и память](LOCAL_MODELS.md) |
 | Нативная Windows/Linux сборка | [CI](../.github/workflows/ci.yml) | [Cargo.toml](../Cargo.toml), [toolchain](../rust-toolchain.toml) |
 | Тексты лицензий в артефакте | [Упаковка](../tools/collect_licenses.py) | Cargo.lock, CI |
+| Lyra v2 (runtime, CLI, Desktop) | [src/v2/mod.rs](../src/v2/mod.rs), [src/v2/cli.rs](../src/v2/cli.rs) | [V2](V2.md), [plan](plans/0020-lyra-v2.md) |
+| Several agents (Codex, Claude Code, Lyra) on one project | [src/v2/hub/](../src/v2/hub/mod.rs) | [Agent hub](HUB.md), [plan](plans/0021-agent-hub.md) |
 
 Минимальный маршрут новой сессии: `AGENTS.md` → эта карта → Git status/diff →
 план текущей задачи → затронутые файлы и зависимости. Другие документы читать

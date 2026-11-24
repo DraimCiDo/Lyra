@@ -20,6 +20,11 @@ pub(crate) fn private_tempdir(prefix: &str) -> io::Result<tempfile::TempDir> {
     builder.tempdir()
 }
 
+/// Whether two texts differ at most in their line endings (CRLF versus LF).
+pub fn same_text_ignoring_line_endings(left: &str, right: &str) -> bool {
+    left.replace("\r\n", "\n") == right.replace("\r\n", "\n")
+}
+
 pub const MAX_PROPOSALS: usize = 32;
 pub const INDEX_LIMIT: usize = 8192;
 pub const ENTRY_LIMIT: usize = 100_000;
@@ -59,7 +64,7 @@ fn error(message: &str) -> io::Error {
     io::Error::other(message)
 }
 
-fn permitted(path: &str) -> bool {
+pub(crate) fn permitted(path: &str) -> bool {
     !path.is_empty()
         && path.len() <= 1024
         && !path.chars().any(char::is_control)
@@ -217,6 +222,27 @@ impl Workspace {
         Ok(workspace)
     }
 
+    #[cfg(feature = "gateway-http")]
+    /// Whether discovery would index `path` if it existed locally. Used to compare a
+    /// remote tree with the checked snapshot.
+    pub(crate) fn would_index(&mut self, path: &str) -> io::Result<bool> {
+        if !permitted(path) {
+            return Ok(false);
+        }
+        let mut folders = Vec::new();
+        let mut parent = Path::new(path).parent();
+        while let Some(folder) = parent.filter(|p| !p.as_os_str().is_empty()) {
+            folders.push(folder.to_string_lossy().replace('\\', "/"));
+            parent = folder.parent();
+        }
+        for folder in folders.iter().rev() {
+            if self.dir.symlink_metadata(folder).is_ok_and(|m| m.is_dir()) {
+                self.load_ignore(folder)?;
+            }
+        }
+        Ok(!self.ignored(path, false))
+    }
+
     fn load_ignore(&mut self, folder: &str) -> io::Result<()> {
         if !self.ignore_dirs.insert(folder.into()) {
             return Ok(());
@@ -339,24 +365,35 @@ impl Workspace {
     pub(crate) fn read_snapshot(&self, path: &str) -> io::Result<String> {
         self.read_bounded(path, SNAPSHOT_FILE_LIMIT)
     }
+    /// Raw bytes for an isolated check snapshot; binary files are allowed.
+    pub(crate) fn read_snapshot_bytes(&self, path: &str) -> io::Result<Vec<u8>> {
+        self.read_bounded_bytes(path, SNAPSHOT_FILE_LIMIT)
+    }
     fn read_bounded(&self, path: &str, limit: usize) -> io::Result<String> {
+        let bytes = self.read_bounded_bytes(path, limit)?;
+        if bytes.contains(&0) {
+            return Err(error("The file contains NUL bytes and is not text."));
+        }
+        String::from_utf8(bytes).map_err(|_| error("The file is not valid UTF-8."))
+    }
+    fn read_bounded_bytes(&self, path: &str, limit: usize) -> io::Result<Vec<u8>> {
         if !self.files.contains(path) {
-            return Err(error("Файл не входит в выбранный контекст."));
+            return Err(error("The file is not part of the selected context."));
         }
         self.safe_path(path)?;
         if !self.dir.symlink_metadata(path)?.is_file() {
-            return Err(error("Ожидается обычный файл."));
+            return Err(error("A regular file is required."));
         }
         let file = self.dir.open(path)?;
         if !file.metadata()?.is_file() {
-            return Err(error("Ожидается обычный файл."));
+            return Err(error("A regular file is required."));
         }
         let mut bytes = Vec::new();
         file.take((limit + 1) as u64).read_to_end(&mut bytes)?;
-        if bytes.len() > limit || bytes.contains(&0) {
-            return Err(error("Файл превышает лимит чтения или содержит NUL."));
+        if bytes.len() > limit {
+            return Err(error("The file exceeds the read limit."));
         }
-        String::from_utf8(bytes).map_err(|_| error("Файл не является UTF-8."))
+        Ok(bytes)
     }
 
     pub fn scoped_instructions(&self, path: &str) -> io::Result<Vec<serde_json::Value>> {

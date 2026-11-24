@@ -15,14 +15,14 @@ The complete feature inventory/SBOM in P00 remains pending; see
 | --- | --- | --- | --- | --- |
 | ECC | Sequential researcher/coder/reviewer roles and proposal/apply | src/agent.rs | implemented before integration | Existing agent tests; not worktree orchestration |
 | Lyra | GitHub connector (issues, PR, files, comment, publish PR) | src/github.rs | implemented | Loopback stub tests; live GitHub not exercised |
-| ECC | Worktrees, checkpoints and extended orchestration | Agent Runtime | planned | P07 |
+| ECC | Worktrees, checkpoints and extended orchestration | src/v2/hub/ | implemented (preview) | Shared hub plus managed CLI/local workers, explicit team limits/consent, owner-approved local task breakdown and checkpoint retry; managed-team checks in progress, real multi-provider sessions not exercised; plans 0021/0022 |
 | ECC | Explicit role contracts, scoped tools, structured recovery feedback | src/agent_runtime.rs / src/agent.rs | verified in stage 1 | Recovery/read_only/native fixture tests; plan 0012 |
 | ECC | JSON packs, bounded SKILL.md/catalog import, explicit multiple selection | src/skills.rs / src/desktop/skills.rs / src/agent_runtime.rs | verified in stage 2a (CPU) | Catalog/CLI/migration tests + native Windows; plan 0015; full YAML, versioning and resources pending |
 | ECC | Selective install of complete upstream packs | Skills Registry | planned | P06 |
 | ECC | Local selective declarative snapshots, provenance hash, one-version rollback | src/skill_package.rs / Desktop | verified in stage 2b (CPU) | Windows/Linux tests + native CLI/Desktop; plan 0016; no resources or upstream updater |
 | ECC | Rules, commands, language packs | Rules/Commands | planned | P06/P12 |
 | ECC | Hooks | Event Bus | planned | P08 |
-| ECC | MCP | Tools Adapter | planned | P08 |
+| ECC | MCP | src/v2/hub/mcp.rs | server implemented (hub tools); client planned | JSON-RPC stdio tests; real Claude Code client connected (`claude mcp list`); Codex client not exercised; Lyra cannot yet call external MCP servers |
 | ECC | Session memory and checkpoints | Memory | planned | P09 |
 | ECC | Instincts/continuous learning | Learning | planned | P09 |
 | ECC | Token optimization | Context Optimizer | planned | P04/P05 |

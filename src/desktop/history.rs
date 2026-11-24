@@ -81,6 +81,32 @@ impl History {
     }
 }
 
+pub(crate) fn export_conversations(
+    path: &std::path::Path,
+) -> io::Result<Vec<Vec<crate::model_gateway::Message>>> {
+    use crate::model_gateway::{Message, Role};
+    Ok(History::load(path)?
+        .sessions
+        .into_iter()
+        .map(|session| {
+            session
+                .chat
+                .messages
+                .into_iter()
+                .map(|message| Message {
+                    role: if message.user {
+                        Role::User
+                    } else {
+                        Role::Assistant
+                    },
+                    content: message.text,
+                })
+                .collect::<Vec<_>>()
+        })
+        .filter(|messages| !messages.is_empty())
+        .collect())
+}
+
 impl Desktop {
     pub(super) fn capture_session(&mut self) {
         if !self.real_app {

@@ -10,6 +10,8 @@ import shutil
 import subprocess
 import tempfile
 import unittest
+from argparse import Namespace
+from unittest.mock import patch
 import evaluate
 import evaluate_models
 from collections import Counter
@@ -69,6 +71,54 @@ class SuiteIntegrity(unittest.TestCase):
                                        "model_run_attempted": False}])["rust/unit"]
         self.assertEqual(summary["blocked_before_model"], 1)
         self.assertEqual(summary["by_kind"], {})
+
+    def test_v2_preserves_source_and_uses_the_checked_state_for_apply(self):
+        case = evaluate.load_suite(self.root / "suite.json")["cases"][0]
+        args = Namespace(protocol="v2", binary=Path("lyra-v2"), model=Path("code.gguf"),
+                         context=4096, tokens=512, calls=16, timeout=30, threads=2,
+                         gpu_layers=1024, measure_resources=False)
+        check = dict(cleanup_confirmed=True, timed_out=False, cancelled=False)
+        calls = []
+
+        def invoke(argv, timeout, measure_resources=False):
+            calls.append(argv)
+            if argv[1] == "verify":
+                code = case.get("baseline_exit_code", 1) if len(calls) == 1 else 0
+                return dict(exit_code=code, timed_out=False, body=dict(check, exit_code=code))
+            if argv[1] == "task":
+                return dict(exit_code=0, peak_ram_bytes=None, peak_vram_bytes=None,
+                            resource_measurement=None, body={
+                                "state": "ready_to_apply", "verification": {"state": "passed"},
+                                "proposals": [{"path": case["allowed_changes"][0]}]})
+            self.assertEqual(argv[1], "apply")
+            return dict(exit_code=0)
+
+        with patch.object(evaluate, "invoke", side_effect=invoke):
+            result = evaluate.run_case(args, self.root.resolve(), case, 1)
+        self.assertTrue(result["passed"], result)
+        self.assertEqual([c[1] for c in calls], ["verify", "task", "apply", "verify"])
+        self.assertEqual(calls[1][calls[1].index("--state") + 1], calls[2][-1])
+        self.assertEqual(calls[1][calls[1].index("--gpu-layers") + 1], "1024")
+
+    def test_v2_complete_without_proposals_reaches_the_no_change_allowance(self):
+        case = dict(evaluate.load_suite(self.root / "suite.json")["cases"][0])
+        args = Namespace(protocol="v2", binary=Path("lyra-v2"), model=Path("code.gguf"),
+                         context=4096, tokens=512, calls=16, timeout=30, threads=2,
+                         gpu_layers=0, measure_resources=False)
+        check = dict(cleanup_confirmed=True, timed_out=False, cancelled=False)
+
+        def invoke(argv, timeout, measure_resources=False):
+            if argv[1] == "verify":
+                return dict(exit_code=1, timed_out=False, body=dict(check, exit_code=1))
+            self.assertNotIn("--gpu-layers", argv)
+            return dict(exit_code=0, peak_ram_bytes=None, peak_vram_bytes=None,
+                        resource_measurement=None, body={"state": "complete", "proposals": []})
+
+        for allowed, status in ((False, "no_changes"), (True, "verification_failed")):
+            case["allow_no_changes"] = allowed
+            with patch.object(evaluate, "invoke", side_effect=invoke):
+                result = evaluate.run_case(args, self.root.resolve(), case, 1)
+            self.assertEqual(result["status"], status, result)
 
     def test_invoke_measures_the_child_process_and_timeout_reaps_it(self):
         run = evaluate.invoke([sys.executable, "-c", "import time; data=bytearray(32*1024*1024);time.sleep(.5);print('{}')"], 10, True)

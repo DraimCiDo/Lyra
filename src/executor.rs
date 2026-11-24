@@ -98,6 +98,7 @@ impl ExecutionRequest {
                 )
             })?;
         let mut command = Command::new("docker");
+        quiet(&mut command);
         command.args([
             "run",
             "--pull=never",
@@ -164,6 +165,16 @@ fn bounded_read(mut pipe: impl Read, limit: usize) -> io::Result<(String, bool)>
         truncated |= take < count;
     }
     Ok((String::from_utf8_lossy(&kept).into_owned(), truncated))
+}
+
+/// A GUI process must not flash a console window for every helper it starts on Windows.
+pub(crate) fn quiet(command: &mut Command) -> &mut Command {
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        command.creation_flags(0x0800_0000); // CREATE_NO_WINDOW
+    }
+    command
 }
 
 pub(crate) fn capture(
@@ -353,6 +364,7 @@ impl DockerCapabilities {
 
 pub fn preflight(cancel: &AtomicBool) -> io::Result<()> {
     let mut command = Command::new("docker");
+    quiet(&mut command);
     command.args(["info", "--format", "{{json .}}"]);
     let result = capture(command, Duration::from_secs(5), cancel)?;
     if result.cancelled {
@@ -390,6 +402,7 @@ fn image_metadata_bounded(image: &serde_json::Value) -> bool {
 
 pub(crate) fn preflight_image(image: &str, cancel: &AtomicBool) -> io::Result<()> {
     let mut command = Command::new("docker");
+    quiet(&mut command);
     command.args([
         "image",
         "inspect",
@@ -425,14 +438,14 @@ fn snapshot_sources(
     mut workspace: crate::workspace::Workspace,
     proposals: &[crate::workspace::Edit],
     allow_applied: bool,
-) -> io::Result<std::collections::BTreeMap<String, String>> {
+) -> io::Result<std::collections::BTreeMap<String, Vec<u8>>> {
     if proposals.len() > crate::workspace::MAX_PROPOSALS {
         return Err(io::Error::other("Too many proposals for check"));
     }
     let mut sources = std::collections::BTreeMap::new();
     let mut total = 0usize;
     for file in workspace.files.clone() {
-        let content = workspace.read_snapshot(&file)?;
+        let content = workspace.read_snapshot_bytes(&file)?;
         total += content.len();
         if total > crate::workspace::SNAPSHOT_BUDGET {
             return Err(io::Error::other("Check snapshot exceeds 16 MiB"));
@@ -460,14 +473,15 @@ fn snapshot_sources(
                 workspace.propose_new(&edit.path, &edit.replacement)?;
             }
         } else if !sources.get(&edit.path).is_some_and(|current| {
-            current == &edit.original || allow_applied && current == &edit.replacement
+            current == edit.original.as_bytes()
+                || allow_applied && current == edit.replacement.as_bytes()
         }) {
             return Err(io::Error::other("Check proposal conflicts with original"));
         }
-        sources.insert(edit.path.clone(), edit.replacement.clone());
+        sources.insert(edit.path.clone(), edit.replacement.clone().into_bytes());
     }
     if sources.len() > crate::workspace::SNAPSHOT_FILES
-        || sources.values().map(String::len).sum::<usize>() > crate::workspace::SNAPSHOT_BUDGET
+        || sources.values().map(Vec::len).sum::<usize>() > crate::workspace::SNAPSHOT_BUDGET
     {
         return Err(io::Error::other("Final checked snapshot exceeds limits"));
     }
@@ -480,14 +494,15 @@ fn snapshot_sources(
     }
     Ok(sources)
 }
-fn source_hash(sources: &std::collections::BTreeMap<String, String>) -> String {
+/// Text files hash exactly as before binary files were admitted to snapshots.
+fn source_hash(sources: &std::collections::BTreeMap<String, Vec<u8>>) -> String {
     use sha2::{Digest, Sha256};
     let mut hash = Sha256::new();
     for (path, content) in sources {
         hash.update((path.len() as u64).to_le_bytes());
         hash.update(path.as_bytes());
         hash.update((content.len() as u64).to_le_bytes());
-        hash.update(content.as_bytes());
+        hash.update(content);
     }
     hash.finalize().iter().map(|b| format!("{b:02x}")).collect()
 }
@@ -505,7 +520,29 @@ pub(crate) fn checked_source_hash(
     )?))
 }
 
-/// Copies only permitted regular UTF-8 files; no host sockets, links or credentials
+#[cfg(feature = "gateway-http")]
+/// The checked candidate as one snapshot read: every file plus the proposals, and its
+/// hash. Callers that need to compare the exact bytes that were checked use this instead
+/// of reading the project twice.
+pub(crate) fn candidate_sources(
+    repo: &Path,
+    proposals: &[crate::workspace::Edit],
+) -> io::Result<(std::collections::BTreeMap<String, Vec<u8>>, String)> {
+    let workspace = crate::workspace::Workspace::for_snapshot(repo, &[])?;
+    let sources = snapshot_sources(workspace, proposals, true)?;
+    let hash = source_hash(&sources);
+    Ok((sources, hash))
+}
+
+pub(crate) fn candidate_source_hash(
+    repo: &Path,
+    proposals: &[crate::workspace::Edit],
+) -> io::Result<String> {
+    let workspace = crate::workspace::Workspace::for_snapshot(repo, &[])?;
+    Ok(source_hash(&snapshot_sources(workspace, proposals, true)?))
+}
+
+/// Copies only permitted regular files within the snapshot budget; no host sockets, links or credentials
 /// are mounted. Source is read-only; all check output must go to container /tmp.
 /// The caller grants this check explicitly; models cannot select an image or argv.
 pub fn verify(
@@ -574,6 +611,7 @@ pub fn verify_changes(
     let command = request.command(&source_root, &name)?;
     let result = capture(command, Duration::from_secs(request.timeout_secs), cancel);
     let mut cleanup = Command::new("docker");
+    quiet(&mut cleanup);
     cleanup.args(["rm", "--force", "--volumes", &name]);
     let cleaned = capture(cleanup, Duration::from_secs(5), &AtomicBool::new(false));
     let mut result = result?;
@@ -639,6 +677,31 @@ pub fn run(
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn snapshots_admit_binary_files_and_keep_text_hashes_stable() {
+        let repo = tempfile::tempdir().unwrap();
+        std::fs::write(repo.path().join("main.py"), "print('hi')\n").unwrap();
+        let text_only = candidate_source_hash(repo.path(), &[]).unwrap();
+        let mut expected = std::collections::BTreeMap::new();
+        expected.insert("main.py".to_owned(), b"print('hi')\n".to_vec());
+        assert_eq!(text_only, source_hash(&expected));
+        // The same formula as for UTF-8 text: length-prefixed path and content.
+        use sha2::{Digest, Sha256};
+        let mut hash = Sha256::new();
+        hash.update(7u64.to_le_bytes());
+        hash.update(b"main.py");
+        hash.update(12u64.to_le_bytes());
+        hash.update(b"print('hi')\n");
+        let legacy: String = hash.finalize().iter().map(|b| format!("{b:02x}")).collect();
+        assert_eq!(text_only, legacy);
+        std::fs::write(
+            repo.path().join("logo.png"),
+            [0x89, b'P', b'N', b'G', 0, 0xff],
+        )
+        .unwrap();
+        let with_binary = candidate_source_hash(repo.path(), &[]).unwrap();
+        assert_ne!(with_binary, text_only);
+    }
     fn request() -> ExecutionRequest {
         ExecutionRequest {
             image: format!("python@sha256:{}", "a".repeat(64)),

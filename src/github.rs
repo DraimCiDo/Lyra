@@ -4,6 +4,7 @@
 //! logged. Everything fetched from GitHub is untrusted data. Writes happen only through
 //! explicit CLI subcommands; a stale remote file is a conflict, never overwritten.
 use crate::agent::Report;
+use crate::workspace::same_text_ignoring_line_endings;
 use clap::{Args, Subcommand};
 use reqwest::blocking::{Client, RequestBuilder};
 use reqwest::header::{ACCEPT, AUTHORIZATION, USER_AGENT};
@@ -452,6 +453,42 @@ impl GithubClient {
         proposals: &[crate::workspace::Edit],
         draft: bool,
     ) -> io::Result<String> {
+        self.publish_at(repo, branch, base, None, title, body, proposals, draft)
+    }
+
+    /// The commit `base` points to and the git blob id of every file in its tree.
+    pub fn base_tree(&self, repo: &str, base: &str) -> io::Result<RemoteTree> {
+        validate_slug(repo)?;
+        validate_branch(base)?;
+        let reference = self.get(&format!("/repos/{repo}/git/ref/heads/{base}"))?;
+        let commit = reference["object"]["sha"]
+            .as_str()
+            .filter(|sha| sha.len() == 40 && sha.bytes().all(|b| b.is_ascii_hexdigit()))
+            .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, "Missing base sha"))?
+            .to_owned();
+        let tree = self.get(&format!("/repos/{repo}/git/trees/{commit}?recursive=1"))?;
+        if tree["truncated"].as_bool().unwrap_or(true) {
+            return Err(io::Error::other(
+                "The remote tree is too large to compare with the checked snapshot",
+            ));
+        }
+        let (blobs, symlinks) = tree_blobs(&tree);
+        Ok((commit, blobs, symlinks))
+    }
+
+    /// Publish only if `base` still points to `expected_base`, when one is given.
+    #[allow(clippy::too_many_arguments)]
+    pub fn publish_at(
+        &self,
+        repo: &str,
+        branch: &str,
+        base: &str,
+        expected_base: Option<&str>,
+        title: &str,
+        body: &str,
+        proposals: &[crate::workspace::Edit],
+        draft: bool,
+    ) -> io::Result<String> {
         validate_slug(repo)?;
         validate_branch(branch)?;
         validate_branch(base)?;
@@ -464,8 +501,10 @@ impl GithubClient {
         }
         // Verify every precondition before creating anything remotely.
         let mut shas = Vec::new();
+        let mut contents = Vec::new();
         for edit in proposals {
             if edit.create {
+                contents.push(edit.replacement.clone());
                 match self.file(repo, &edit.path, Some(base)) {
                     Err(e) if e.kind() == io::ErrorKind::NotFound => shas.push(None),
                     Ok(_) => {
@@ -478,12 +517,19 @@ impl GithubClient {
                 }
             } else {
                 let (text, sha) = self.file(repo, &edit.path, Some(base))?;
-                if text != edit.original {
+                // A Windows checkout may differ from the remote only in line endings.
+                if text != edit.original && !same_text_ignoring_line_endings(&text, &edit.original)
+                {
                     return Err(io::Error::other(format!(
                         "Conflict: {} on {base} differs from the proposal's original",
                         edit.path
                     )));
                 }
+                contents.push(in_remote_line_endings(
+                    &edit.replacement,
+                    &text,
+                    &edit.original,
+                ));
                 shas.push(Some(sha));
             }
         }
@@ -491,15 +537,20 @@ impl GithubClient {
         let base_sha = reference["object"]["sha"]
             .as_str()
             .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, "Missing base sha"))?;
+        if expected_base.is_some_and(|expected| expected != base_sha) {
+            return Err(io::Error::other(format!(
+                "{base} moved after it was compared with the checked snapshot"
+            )));
+        }
         self.post(
             &format!("/repos/{repo}/git/refs"),
             &json!({"ref":format!("refs/heads/{branch}"),"sha":base_sha}),
             false,
         )?;
-        for (edit, sha) in proposals.iter().zip(shas) {
+        for ((edit, sha), content) in proposals.iter().zip(shas).zip(contents) {
             let mut payload = json!({
                 "message": format!("{} {}", if edit.create { "Add" } else { "Update" }, edit.path),
-                "content": base64_encode(edit.replacement.as_bytes()),
+                "content": base64_encode(content.as_bytes()),
                 "branch": branch,
             });
             if let Some(sha) = sha {
@@ -700,6 +751,108 @@ pub fn run(args: GithubArgs, output: &mut impl Write) -> io::Result<()> {
     }
 }
 
+/// The commit a branch points to, the blob id of every file in its tree, and which of
+/// those paths are symlinks.
+pub type RemoteTree = (
+    String,
+    std::collections::BTreeMap<String, String>,
+    std::collections::BTreeSet<String>,
+);
+
+/// Files of a git tree listing and the paths that are symlinks (mode 120000). A symlink's
+/// blob holds its target text, so a checkout with `core.symlinks=false` (the Windows
+/// default) shows it as a regular file with the same bytes and compares equal; a real
+/// symlink is never indexed locally and is skipped by the caller.
+fn tree_blobs(
+    tree: &Value,
+) -> (
+    std::collections::BTreeMap<String, String>,
+    std::collections::BTreeSet<String>,
+) {
+    let entries = tree["tree"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter(|entry| entry["type"] == "blob");
+    let mut blobs = std::collections::BTreeMap::new();
+    let mut symlinks = std::collections::BTreeSet::new();
+    for entry in entries {
+        let path = field(entry, "path").to_owned();
+        if entry["mode"] == "120000" {
+            symlinks.insert(path.clone());
+        }
+        blobs.insert(path, field(entry, "sha").to_owned());
+    }
+    (blobs, symlinks)
+}
+
+/// Write the proposed text with the remote file's line endings when the local original
+/// only differed from the remote in line endings; otherwise leave it unchanged.
+fn in_remote_line_endings(replacement: &str, remote: &str, original: &str) -> String {
+    if remote == original {
+        return replacement.to_owned();
+    }
+    let lf = replacement.replace("\r\n", "\n");
+    if remote.contains("\r\n") {
+        lf.replace('\n', "\r\n")
+    } else {
+        lf
+    }
+}
+
+/// Git's object id for a blob: SHA-1 over `blob <len>\0<content>`. This compares a
+/// remote tree with local files; it is not used as a security boundary.
+pub fn git_blob_id(content: &[u8]) -> String {
+    let mut message = format!("blob {}\0", content.len()).into_bytes();
+    message.extend_from_slice(content);
+    let bit_len = (message.len() as u64).wrapping_mul(8);
+    message.push(0x80);
+    while message.len() % 64 != 56 {
+        message.push(0);
+    }
+    message.extend_from_slice(&bit_len.to_be_bytes());
+    let mut h: [u32; 5] = [
+        0x6745_2301,
+        0xEFCD_AB89,
+        0x98BA_DCFE,
+        0x1032_5476,
+        0xC3D2_E1F0,
+    ];
+    for block in message.as_chunks::<64>().0 {
+        let mut w = [0u32; 80];
+        for (i, word) in block.as_chunks::<4>().0.iter().enumerate() {
+            w[i] = u32::from_be_bytes(*word);
+        }
+        for i in 16..80 {
+            w[i] = (w[i - 3] ^ w[i - 8] ^ w[i - 14] ^ w[i - 16]).rotate_left(1);
+        }
+        let [mut a, mut b, mut c, mut d, mut e] = h;
+        for (i, word) in w.iter().enumerate() {
+            let (f, k) = match i {
+                0..=19 => ((b & c) | (!b & d), 0x5A82_7999),
+                20..=39 => (b ^ c ^ d, 0x6ED9_EBA1),
+                40..=59 => ((b & c) | (b & d) | (c & d), 0x8F1B_BCDC),
+                _ => (b ^ c ^ d, 0xCA62_C1D6),
+            };
+            let next = a
+                .rotate_left(5)
+                .wrapping_add(f)
+                .wrapping_add(e)
+                .wrapping_add(k)
+                .wrapping_add(*word);
+            e = d;
+            d = c;
+            c = b.rotate_left(30);
+            b = a;
+            a = next;
+        }
+        for (state, value) in h.iter_mut().zip([a, b, c, d, e]) {
+            *state = state.wrapping_add(value);
+        }
+    }
+    h.iter().map(|word| format!("{word:08x}")).collect()
+}
+
 const ALPHABET: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
 
 pub fn base64_encode(bytes: &[u8]) -> String {
@@ -746,6 +899,54 @@ pub fn base64_decode(text: &str) -> io::Result<Vec<u8>> {
 mod tests {
     use super::*;
 
+    #[test]
+    fn remote_symlinks_are_not_compared_with_the_local_snapshot() {
+        let tree = json!({"tree": [
+            {"path": "a.txt", "type": "blob", "mode": "100644", "sha": "1"},
+            {"path": "run.sh", "type": "blob", "mode": "100755", "sha": "2"},
+            {"path": "docs/latest", "type": "blob", "mode": "120000", "sha": "3"},
+            {"path": "vendor/lib", "type": "commit", "mode": "160000", "sha": "4"},
+            {"path": "docs", "type": "tree", "mode": "040000", "sha": "5"},
+        ]});
+        let (blobs, symlinks) = tree_blobs(&tree);
+        assert_eq!(
+            blobs.keys().collect::<Vec<_>>(),
+            ["a.txt", "docs/latest", "run.sh"]
+        );
+        assert_eq!(symlinks.into_iter().collect::<Vec<_>>(), ["docs/latest"]);
+    }
+    #[test]
+    fn crlf_publication_keeps_the_remote_line_endings() {
+        let original = "a\r\nb\r\n";
+        let replacement = "a\r\nc\r\n";
+        assert!(same_text_ignoring_line_endings("a\nb\n", original));
+        assert!(!same_text_ignoring_line_endings("a\nx\n", original));
+        assert_eq!(
+            in_remote_line_endings(replacement, "a\nb\n", original),
+            "a\nc\n"
+        );
+        assert_eq!(
+            in_remote_line_endings(replacement, original, original),
+            replacement
+        );
+        assert_eq!(
+            in_remote_line_endings("a\nc\n", "a\r\nb\r\n", "a\nb\n"),
+            "a\r\nc\r\n"
+        );
+    }
+    #[test]
+    fn git_blob_ids_match_git() {
+        assert_eq!(git_blob_id(b""), "e69de29bb2d1d6434b8b29ae775ad8c2e48c5391");
+        assert_eq!(
+            git_blob_id(b"hello\n"),
+            "ce013625030ba8dba906f756967f9e9ca394464a"
+        );
+        let long = "x".repeat(1000);
+        assert_eq!(
+            git_blob_id(long.as_bytes()),
+            "14c7dfdd4258dec5c0e9d2e919bd249bd674be1f"
+        );
+    }
     #[test]
     fn base64_round_trips_and_ignores_github_line_wraps() {
         for sample in [

@@ -1672,7 +1672,22 @@ pub fn apply(args: ApplyArgs, output: &mut impl Write) -> io::Result<()> {
     {
         return Err(io::Error::other("Неполный отчёт или другой проект."));
     }
-    crate::publication::apply_checked(&args.repo, edits, || {
+    // The evidence hashes the whole checked proposal set; a recovery of a partial apply
+    // (`--index`) has only a subset in its journal and could never match it.
+    let checked = (report.outcome == TaskOutcome::ChangesVerified
+        && edits.len() == report.proposals.len())
+    .then(|| {
+        report
+            .verifications
+            .last()
+            .and_then(|v| v.result.source_sha256.clone())
+    })
+    .flatten()
+    .map(|sha256| crate::publication::CheckedSource {
+        scope: Some(report.verification_scope.clone()),
+        sha256,
+    });
+    crate::publication::apply_checked(&args.repo, edits, checked, || {
         if report.outcome == TaskOutcome::ChangesVerified
             && let Some(expected) = report
                 .verifications
