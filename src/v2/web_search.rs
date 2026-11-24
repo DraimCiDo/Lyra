@@ -167,7 +167,51 @@ async fn fetch(question: &str) -> io::Result<Vec<Source>> {
         }
         body.extend_from_slice(&chunk);
     }
-    parse(&String::from_utf8(body).map_err(io::Error::other)?)
+    let sources = parse(&String::from_utf8(body).map_err(io::Error::other)?)?;
+    Ok(matching_subject(question, sources))
+}
+
+/// Search engines can silently drop an unknown name and return generic results.
+/// Require distinctive names/identifiers from the question in the visible evidence.
+fn matching_subject(question: &str, sources: Vec<Source>) -> Vec<Source> {
+    let anchors: Vec<_> = question
+        .split(|c: char| !c.is_alphanumeric())
+        .filter(|word| word.chars().count() >= 3)
+        .filter(|word| {
+            ![
+                "what",
+                "which",
+                "who",
+                "where",
+                "when",
+                "how",
+                "tell",
+                "the",
+                "что",
+                "как",
+                "кто",
+                "где",
+                "когда",
+                "расскажи",
+                "объясни",
+                "найди",
+            ]
+            .contains(&word.to_lowercase().as_str())
+        })
+        .filter(|word| word.chars().any(char::is_uppercase) || word.chars().any(char::is_numeric))
+        .map(str::to_lowercase)
+        .collect();
+    sources
+        .into_iter()
+        .filter(|source| {
+            let evidence = format!("{} {}", source.title, source.excerpt).to_lowercase();
+            anchors.iter().all(|anchor| {
+                evidence
+                    .split(|c: char| !c.is_alphanumeric())
+                    .any(|word| word == anchor)
+            })
+        })
+        .collect()
 }
 
 fn attribute<'a>(tag: &'a str, wanted: &str) -> Option<&'a str> {
@@ -337,6 +381,36 @@ pub(super) fn answer(question: &str, sources: &[Source], selection: &[u8]) -> An
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn dropped_unknown_names_cannot_be_confirmed_by_generic_search_results() {
+        let generic = Source {
+            title: "Server facts".into(),
+            url: "https://example.org".into(),
+            excerpt: "A server provides services over a network.".into(),
+        };
+        assert!(
+            matching_subject(
+                "Что такое сервер LyraFactCheckZQXJ947193860?",
+                vec![generic]
+            )
+            .is_empty()
+        );
+        let relevant = Source {
+            title: "DraimCiDo project".into(),
+            url: "https://example.org".into(),
+            excerpt: "DraimCiDo is a game server project.".into(),
+        };
+        assert_eq!(
+            matching_subject("Что такое сервер DraimCiDo?", vec![relevant]).len(),
+            1
+        );
+        let partial = Source {
+            title: "DraimCiDoClone".into(),
+            url: "https://example.org".into(),
+            excerpt: "Different project.".into(),
+        };
+        assert!(matching_subject("Что такое сервер DraimCiDo?", vec![partial]).is_empty());
+    }
     #[test]
     fn formatting_followups_reuse_sources_without_searching_the_literal_request() {
         assert!(reuses_evidence("А если своими словами?"));

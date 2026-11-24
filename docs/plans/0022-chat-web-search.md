@@ -20,4 +20,12 @@ new product dependencies.
 Local Linux Docker / Rust 1.99.1: fmt clean; desktop all-targets Clippy clean;
 library tests 191 passed, 4 ignored. Explicit live acceptance passed: DuckDuckGo
 search plus Qwen2.5-Coder 1.5B Q4_K_M selects actual source excerpts with the grammar.
-Native Windows CI and UI acceptance on the updated binary are pending.
+First implementation Windows/Linux and both CUDA CI builds passed. Native RTX 4060
+UI displayed source excerpts and clickable links. UI acceptance exposed two defects:
+formatting follow-ups searched their own words, and the search engine dropped an
+unknown subject while the model selected generic results. Follow-ups now reuse the
+last cited sources; visible evidence must contain distinctive subject names/IDs.
+Regression coverage and desktop Clippy pass; 193 library tests passed, 4 ignored.
+A live negative-query attempt was blocked by DuckDuckGo's challenge page; it did
+not reach inference. Earlier positive search + real 1.5B acceptance passed. New
+Windows/CUDA artifacts and native acceptance of these two fixes remain pending.
