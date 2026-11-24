@@ -1,4 +1,5 @@
 pub(super) mod appearance;
+mod transcript;
 
 use super::migration::ImportBundle;
 use super::{TaskReport, TaskRequest, TaskState, TaskStore, Verification, cli::LocalModel};
@@ -153,6 +154,9 @@ struct Desktop {
     diff_rows: BTreeMap<usize, Vec<(diff::Tag, String)>>,
     messages: Vec<Message>,
     chat_preview: String,
+    activity: Option<transcript::Activity>,
+    chat_activity: BTreeMap<usize, transcript::Activity>,
+    work_activity: Option<transcript::Activity>,
     web_search: super::web_search::Mode,
     web_sources: BTreeMap<usize, Vec<super::web_search::Source>>,
     import_preview: Option<ImportBundle>,
@@ -242,6 +246,9 @@ impl Desktop {
             diff_rows: BTreeMap::new(),
             messages: Vec::new(),
             chat_preview: String::new(),
+            activity: None,
+            chat_activity: BTreeMap::new(),
+            work_activity: None,
             web_search: super::web_search::Mode::default(),
             web_sources: BTreeMap::new(),
             import_preview: None,
@@ -278,6 +285,7 @@ impl Desktop {
         &mut self,
         work: impl FnOnce(&AtomicBool, &mpsc::Sender<Output>) -> io::Result<()> + Send + 'static,
     ) {
+        self.activity = Some(transcript::Activity::new());
         self.status = "Starting…".into();
         self.status_error = false;
         let (send, receive) = mpsc::channel();
@@ -300,21 +308,41 @@ impl Desktop {
             && let Some(worker) = self.worker.take()
             && worker.thread.join().is_err()
         {
+            if let Some(activity) = &mut self.activity {
+                activity.fail("The worker stopped unexpectedly");
+                activity.finish();
+            }
             self.status = "The task worker stopped unexpectedly.".into();
             self.status_error = true;
         }
-        if let Some(receiver) = &self.events {
-            for output in receiver.try_iter() {
+        let outputs: Vec<_> = self
+            .events
+            .as_ref()
+            .map(|receiver| receiver.try_iter().collect())
+            .unwrap_or_default();
+        {
+            for output in outputs {
                 match output {
                     Output::Progress(status) => {
+                        if let Some(activity) = &mut self.activity {
+                            activity.record(&status);
+                        }
                         self.status = status;
                         self.status_error = false;
                     }
                     Output::Error(status) => {
+                        if let Some(activity) = &mut self.activity {
+                            activity.fail(&status);
+                            activity.finish();
+                        }
                         self.status = status;
                         self.status_error = true;
                     }
                     Output::Rejected(draft, reason) => {
+                        if let Some(activity) = &mut self.activity {
+                            activity.fail(&reason);
+                            activity.finish();
+                        }
                         if self
                             .messages
                             .last()
@@ -331,6 +359,7 @@ impl Desktop {
                         self.status.clear();
                     }
                     Output::Web(answer) => {
+                        self.save_chat_activity();
                         self.web_sources.insert(self.messages.len(), answer.sources);
                         self.messages.push(Message {
                             role: Role::Assistant,
@@ -339,6 +368,7 @@ impl Desktop {
                         self.status.clear();
                     }
                     Output::Chat(content) => {
+                        self.save_chat_activity();
                         self.chat_preview.clear();
                         self.messages.push(Message {
                             role: Role::Assistant,
@@ -347,6 +377,31 @@ impl Desktop {
                         self.status.clear();
                     }
                     Output::Task(folder, report) => {
+                        if let Some(mut activity) = self.activity.take() {
+                            match &report.verification {
+                                Verification::Passed { .. } => {
+                                    activity.record("Configured verification passed")
+                                }
+                                Verification::Failed { .. } => {
+                                    activity.fail("Configured verification failed")
+                                }
+                                Verification::Skipped => {
+                                    activity.record("Verification skipped (no configured check)")
+                                }
+                                Verification::Unavailable { message } => activity.fail(message),
+                            }
+                            if report.state == TaskState::Applied {
+                                activity.record(&format!(
+                                    "Applied changes to {} file(s)",
+                                    report.proposals.len()
+                                ));
+                            }
+                            if matches!(report.state, TaskState::Failed | TaskState::Cancelled) {
+                                activity.fail(&report.summary);
+                            }
+                            activity.finish();
+                            self.work_activity = Some(activity);
+                        }
                         self.status.clear();
                         self.status_error = false;
                         self.state_folder = Some(folder);
@@ -355,6 +410,13 @@ impl Desktop {
                     }
                 }
             }
+        }
+    }
+
+    fn save_chat_activity(&mut self) {
+        if let Some(mut activity) = self.activity.take() {
+            activity.finish();
+            self.chat_activity.insert(self.messages.len(), activity);
         }
     }
 
@@ -598,6 +660,8 @@ impl Desktop {
                         if ui.button(title).clicked() {
                             self.messages.clone_from(messages);
                             self.web_sources.clear();
+                            self.chat_activity.clear();
+                            self.activity = None;
                             self.chat_preview.clear();
                             ui.close();
                         }
@@ -702,6 +766,8 @@ impl Desktop {
                 {
                     self.messages.clear();
                     self.web_sources.clear();
+                    self.chat_activity.clear();
+                    self.activity = None;
                     self.chat_preview.clear();
                     self.chat_draft.clear();
                     self.status.clear();
@@ -818,6 +884,9 @@ impl Desktop {
             Screen::Chat if self.messages.is_empty() => self.welcome(ui),
             Screen::Chat => {
                 for (index, message) in self.messages.iter().enumerate() {
+                    if let Some(activity) = self.chat_activity.get(&index) {
+                        activity.show(ui, ("chat_activity", index));
+                    }
                     chat_card(ui, &message.role, &message.content);
                     if let Some(sources) = self.web_sources.get(&index) {
                         ui.horizontal_wrapped(|ui| {
@@ -830,11 +899,17 @@ impl Desktop {
                         });
                     }
                 }
+                if let Some(activity) = &self.activity {
+                    activity.show(ui, "active_chat_activity");
+                }
                 if !self.chat_preview.is_empty() {
                     chat_card(ui, &Role::Assistant, &self.chat_preview);
                 }
             }
             Screen::Work => {
+                if let Some(activity) = self.activity.as_ref().or(self.work_activity.as_ref()) {
+                    activity.show(ui, "work_activity");
+                }
                 if let Some(report) = &self.report {
                     if task_result(ui, report, &mut self.diff_rows, self.worker.is_none()) {
                         self.apply();
@@ -1193,41 +1268,24 @@ fn composer_id(screen: Screen) -> egui::Id {
 }
 
 fn chat_card(ui: &mut egui::Ui, role: &Role, text: &str) {
-    let human = *role == Role::User;
-    appearance::surface().show(ui, |ui| {
-        ui.set_min_width(ui.available_width());
-        ui.label(
-            RichText::new(if human { "You" } else { "Lyra" })
-                .strong()
-                .color(if human { ACCENT } else { SUCCESS }),
-        );
-        if human {
-            ui.add(egui::Label::new(text).selectable(true));
-        } else {
-            for (language, block) in code_blocks(text) {
-                if let Some(language) = language {
-                    egui::Frame::new()
-                        .fill(ui.visuals().extreme_bg_color)
-                        .corner_radius(8)
-                        .inner_margin(10)
-                        .show(ui, |ui| {
-                            ui.set_min_width(ui.available_width());
-                            ui.horizontal_wrapped(|ui| {
-                                appearance::muted(ui, language);
-                                if ui.small_button("Copy code").clicked() {
-                                    ui.ctx().copy_text(block.to_owned());
-                                }
-                            });
-                            ui.add(
-                                egui::Label::new(RichText::new(block).monospace()).selectable(true),
-                            );
-                        });
-                } else {
-                    ui.add(egui::Label::new(block).selectable(true));
-                }
-            }
+    ui.add_space(12.0);
+    if *role == Role::User {
+        egui::Frame::new()
+            .fill(ui.visuals().faint_bg_color)
+            .corner_radius(12)
+            .inner_margin(12)
+            .show(ui, |ui| {
+                appearance::muted(ui, "You");
+                ui.add(egui::Label::new(text).selectable(true));
+            });
+    } else {
+        transcript::markdown(ui, text);
+        ui.add_space(4.0);
+        if ui.small_button("Copy answer").clicked() {
+            ui.ctx().copy_text(text.to_owned());
         }
-    });
+    }
+    ui.add_space(8.0);
 }
 
 fn code_blocks(mut text: &str) -> Vec<(Option<&str>, &str)> {
@@ -1435,7 +1493,24 @@ impl eframe::App for Desktop {
         self.settings(ui.ctx());
         if let Some(rendered) = &self.smoke {
             match self.smoke_step {
-                0 => self.select_screen(Screen::Chat),
+                0 => {
+                    self.messages = vec![Message {
+                        role: Role::User,
+                        content: "UI smoke fixture: show a formatted answer".into(),
+                    }, Message {
+                        role: Role::Assistant,
+                        content: "**Formatted answers** use paragraphs, lists and links. This is a UI fixture; no search or command was executed.\n\n- **Auto** decides whether web evidence is needed.\n- Follow a [source link](https://example.org) to inspect evidence.\n- Copy inline code such as `2 + 3` or the block below.\n\n```rust\nfn main() {\n    println!(\"Hello, Lyra!\");\n}\n```\n\nIf evidence is unavailable, Lyra should say so.".into(),
+                    }];
+                    let mut activity = transcript::Activity::new();
+                    activity.record("Rendered a presentation fixture (no worker was started)");
+                    activity.finish();
+                    self.chat_activity.insert(1, activity);
+                    self.select_screen(Screen::Chat);
+                }
+                1 if self.screen_entered.elapsed() < Duration::from_secs(3) => {
+                    ui.ctx().request_repaint_after(Duration::from_millis(100));
+                    return;
+                }
                 1 => self.select_screen(Screen::Agents),
                 _ => {
                     rendered.store(true, Ordering::Relaxed);
