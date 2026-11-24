@@ -102,6 +102,11 @@ enum HubCommand {
         #[arg(long)]
         state: PathBuf,
     },
+    /// Run an explicitly configured team until stopped or its task limit is reached.
+    Team {
+        #[arg(long)]
+        config: PathBuf,
+    },
     /// Run a local Lyra agent on hub tasks with a GGUF model.
     Work {
         #[arg(long)]
@@ -109,6 +114,9 @@ enum HubCommand {
         /// Work on this task instead of the oldest ready one.
         #[arg(long)]
         task: Option<i64>,
+        /// Run a task already claimed under this agent name (managed team only).
+        #[arg(long, hide = true, requires = "task", conflicts_with = "repeat")]
+        assigned: bool,
         /// Keep taking tasks until none is ready.
         #[arg(long = "loop", conflicts_with = "task")]
         repeat: bool,
@@ -174,10 +182,27 @@ pub fn run(args: HubArgs, output: &mut impl Write) -> io::Result<()> {
                 &worker::commit_applied(&hub, task, &state, &cancel)?,
             )
         }
+        HubCommand::Team { config } => {
+            let config = super::team::Config::load(&config)?;
+            let mut team = super::team::Team::start(root, config, std::env::current_exe()?)?;
+            let cancel = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+            let signal = cancel.clone();
+            ctrlc::set_handler(move || signal.store(true, std::sync::atomic::Ordering::Relaxed)).map_err(io::Error::other)?;
+            let mut last = String::new();
+            while team.running() {
+                if cancel.load(std::sync::atomic::Ordering::Relaxed) { team.stop(); }
+                let events = serde_json::to_string(&team.events()).map_err(io::Error::other)?;
+                if events != last { writeln!(output, "{events}")?; last = events; }
+                std::thread::sleep(std::time::Duration::from_millis(200));
+            }
+            team.join();
+            print(output, &team.events())
+        }
         HubCommand::Work {
             agent,
             task,
             repeat,
+            assigned,
             max_calls,
             model,
         } => {
@@ -190,14 +215,19 @@ pub fn run(args: HubArgs, output: &mut impl Write) -> io::Result<()> {
                 loop {
                     // Each task gets the full `--timeout-secs`, not what earlier tasks left.
                     session.reset_deadline();
-                    let result = worker::run_one(
+                    let result = if assigned {
+                        let id = task.ok_or_else(|| io::Error::other("Assigned worker needs --task"))?;
+                        let claimed = hub.owned_task(id)?;
+                        worker::run_claimed(&hub, claimed, max_calls, session.cancellation(),
+                            &mut |report, save| report.run_local(session, save))
+                    } else { worker::run_one(
                         &mut hub,
                         task,
                         &released,
                         max_calls,
                         session.cancellation(),
                         &mut |report, save| report.run_local(session, save),
-                    );
+                    ) };
                     match result {
                         Ok(value) => {
                             if value["status"] == "open"

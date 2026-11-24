@@ -42,6 +42,18 @@ pub fn run_one(
         ));
     }
     let task = hub.claim_except(task, skip)?;
+    run_claimed(hub, task, max_calls, cancel, drive)
+}
+
+/// Drive a task already assigned by the owner-managed team.
+pub fn run_claimed(
+    hub: &Hub,
+    task: Task,
+    max_calls: u32,
+    cancel: &AtomicBool,
+    drive: &mut dyn FnMut(&mut TaskReport, &mut Checkpoint<'_>) -> io::Result<()>,
+) -> io::Result<Value> {
+    hub.owned_task(task.id)?;
     let worktree = task
         .worktree
         .clone()

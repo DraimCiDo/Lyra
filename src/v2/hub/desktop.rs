@@ -2,7 +2,8 @@
 //! decisions only the owner makes (add, land, reopen, cancel). Hub operations run on a
 //! background thread so a slow Git or database wait never freezes the window; the view
 //! refreshes after each operation and on demand, never on a timer.
-use super::{Hub, OWNER, Status, Task};
+use super::{Hub, OWNER, Status, Task, team, plan};
+use crate::inference;
 use crate::executor;
 use crate::v2::desktop::appearance::{self, ACCENT, ERROR, SUCCESS, WARNING};
 use eframe::egui::{self, RichText};
@@ -10,7 +11,8 @@ use serde_json::Value;
 use std::{
     io,
     path::{Path, PathBuf},
-    sync::mpsc,
+    sync::{mpsc, Arc, atomic::{AtomicBool, Ordering}},
+    time::{Duration, Instant},
 };
 
 /// What a finished background operation produced.
@@ -25,6 +27,7 @@ enum Outcome {
     },
     Inbox(Vec<Value>),
     Created(PathBuf),
+    Plan(String),
 }
 
 struct Finished {
@@ -47,16 +50,31 @@ pub struct HubView {
     pending: Option<mpsc::Receiver<Finished>>,
     /// Whether the running (or last) operation was a plain refresh.
     last_was_refresh: bool,
+    team_config: team::Config,
+    team: Option<team::Team>,
+    team_events: Vec<team::Event>,
+    next_refresh: Option<Instant>,
+    plan_text: String,
+    planning: bool,
+    plan_cancel: Arc<AtomicBool>,
 }
 
 impl HubView {
     /// Whether an operation is running (the window should keep repainting).
     pub fn busy(&self) -> bool {
-        self.pending.is_some()
+        self.pending.is_some() || self.team.as_ref().is_some_and(team::Team::running)
     }
 
     /// Apply the result of a finished operation, if any. Call once per frame.
     pub fn poll(&mut self) {
+        if let Some(team) = &self.team {
+            self.team_events = team.events();
+            if team.running() && self.pending.is_none()
+                && self.next_refresh.is_none_or(|at| Instant::now() >= at) {
+                self.next_refresh = Some(Instant::now() + Duration::from_secs(1));
+                self.refresh();
+            }
+        }
         let Some(receiver) = &self.pending else {
             return;
         };
@@ -73,11 +91,17 @@ impl HubView {
             return;
         }
         match finished.outcome {
+            Ok(Outcome::Plan(text)) => {
+                self.plan_text = text;
+                self.planning = false;
+                self.notice = "Review and edit the proposed tasks before approving.".into();
+            }
             Ok(Outcome::Loaded(status, tasks)) => {
                 self.status = Some(status);
                 self.tasks = tasks;
             }
             Ok(Outcome::Done(message)) => {
+                if message.starts_with("Approved ") { self.plan_text.clear(); }
                 self.notice = message;
                 self.refresh();
             }
@@ -93,6 +117,7 @@ impl HubView {
                 self.notice = "Hub created".into();
             }
             Err(error) => {
+                self.planning = false;
                 self.notice = error;
                 // The hub may have changed under a failed action; show what is true now.
                 // A failed refresh is not retried here: that would loop on every frame.
@@ -128,6 +153,13 @@ impl HubView {
 
     /// Open or create a hub: forget everything that belonged to the previous one first.
     fn switch(&mut self, folder: PathBuf) {
+        if let Some(team) = &self.team { team.stop(); }
+        self.team = None;
+        self.team_events.clear();
+        self.plan_cancel.store(true, Ordering::Relaxed);
+        self.plan_cancel = Arc::new(AtomicBool::new(false));
+        self.planning = false;
+        self.plan_text.clear();
         self.folder = Some(folder);
         self.generation += 1;
         self.pending = None;
@@ -136,6 +168,14 @@ impl HubView {
         self.inbox.clear();
         self.diff = None;
         self.notice.clear();
+        let config_path = self.folder.as_ref().map(|p| p.join("team.json"));
+        self.team_config = team::Config::default();
+        if let Some(path) = config_path.filter(|p| p.exists()) {
+            match team::Config::load(&path) {
+                Ok(config) => self.team_config = config,
+                Err(error) => self.notice = format!("Team configuration: {error}"),
+            }
+        }
         self.refresh();
     }
 
@@ -216,6 +256,125 @@ impl HubView {
         });
     }
 
+    fn team_controls(&mut self, ui: &mut egui::Ui, goal: &str, model: Option<inference::GenerateArgs>) {
+        let running = self.team.as_ref().is_some_and(team::Team::running);
+        let idle = self.pending.is_none() && !running;
+        appearance::surface().show(ui, |ui| {
+            ui.strong("Managed team");
+            ui.label("Lyra assigns worktrees, runs workers and checks, and sends results to review. You land changes.");
+            ui.add_enabled_ui(idle, |ui| {
+                egui::CollapsingHeader::new("Workers and limits").default_open(true).show(ui, |ui| {
+                    let mut remove = None;
+                    for (index, member) in self.team_config.members.iter_mut().enumerate() {
+                        ui.push_id(index, |ui| {
+                            ui.horizontal_wrapped(|ui| {
+                                ui.label(format!("{:?}", member.provider));
+                                ui.add(egui::TextEdit::singleline(&mut member.name).desired_width(95.0).hint_text("Name"));
+                                ui.add(egui::TextEdit::singleline(&mut member.model).desired_width(180.0).hint_text("Explicit model / GGUF path"));
+                                ui.add(egui::TextEdit::singleline(&mut member.reasoning).desired_width(90.0).hint_text("Effort"));
+                                if ui.small_button("Remove").clicked() { remove = Some(index); }
+                            });
+                            if member.provider != team::Provider::Local {
+                                ui.horizontal(|ui| {
+                                    ui.label("CLI executable");
+                                    let mut executable = member.executable.to_string_lossy().into_owned();
+                                    if ui.text_edit_singleline(&mut executable).changed() { member.executable = executable.into(); }
+                                });
+                            }
+                        });
+                    }
+                    if let Some(index) = remove { self.team_config.members.remove(index); }
+                    ui.horizontal_wrapped(|ui| {
+                        for (label, provider, executable) in [("Add Codex", team::Provider::Codex, "codex"), ("Add Claude", team::Provider::Claude, "claude")] {
+                            if ui.add_enabled(self.team_config.members.len() < 8, egui::Button::new(label)).clicked() {
+                                let name = format!("{}-{}", executable, self.team_config.members.len() + 1);
+                                self.team_config.members.push(team::Member { name, provider, executable: executable.into(), model: String::new(), reasoning: String::new() });
+                            }
+                        }
+                        if ui.add_enabled(self.team_config.members.len() < 8 && model.is_some(), egui::Button::new("Add selected local model")).clicked()
+                            && let Some(model) = &model {
+                            self.team_config.context = model.context;
+                            self.team_config.gpu_layers = model.gpu_layers;
+                            self.team_config.members.push(team::Member { name: format!("lyra-{}", self.team_config.members.len() + 1),
+                                provider: team::Provider::Local, executable: "lyra-v2".into(), model: model.model.to_string_lossy().into_owned(), reasoning: String::new() });
+                        }
+                    });
+                    ui.horizontal_wrapped(|ui| {
+                        ui.label("Seconds per worker task");
+                        ui.add(egui::DragValue::new(&mut self.team_config.timeout_secs).range(1..=3600));
+                        ui.label("Tasks per run");
+                        ui.add(egui::DragValue::new(&mut self.team_config.max_tasks).range(1..=64));
+                        ui.label("Local calls / Claude turns");
+                        ui.add(egui::DragValue::new(&mut self.team_config.max_calls).range(1..=64));
+                        ui.label("Local context");
+                        ui.add(egui::DragValue::new(&mut self.team_config.context).range(512..=32768));
+                        ui.label("GPU layers");
+                        ui.add(egui::DragValue::new(&mut self.team_config.gpu_layers).range(0..=1024));
+                    });
+                    ui.checkbox(&mut self.team_config.allow_external, "Enable external agents: allow their CLI to send project context and use my account quota");
+                    appearance::muted(ui, "Codex is bounded by time and task count; its CLI has no per-task turn limit. Each local worker loads its own model. CLI authentication stays with the installed provider.");
+                });
+            });
+            ui.horizontal_wrapped(|ui| {
+                if ui.add_enabled(idle, appearance::primary("Start team")).clicked() {
+                    let result = (|| {
+                        let folder = self.folder.clone().ok_or_else(|| io::Error::other("Open a hub first"))?;
+                        self.team_config.validate()?;
+                        let lyra = team::cli_executable()?;
+                        let team = team::Team::start(folder.clone(), self.team_config.clone(), lyra)?;
+                        // Save only on an explicit start. No tokens or conversations are stored.
+                        let bytes = serde_json::to_vec_pretty(&self.team_config).map_err(io::Error::other)?;
+                        let mut file = tempfile::NamedTempFile::new_in(&folder)?;
+                        use std::io::Write;
+                        file.write_all(&bytes)?;
+                        file.persist(folder.join("team.json")).map_err(|e| e.error)?;
+                        Ok(team)
+                    })();
+                    match result {
+                        Ok(team) => { self.team = Some(team); self.next_refresh = None; self.notice = "Team started".into(); }
+                        Err(error) => self.notice = format!("Cannot start team: {error}"),
+                    }
+                }
+                if ui.add_enabled(running, egui::Button::new("Stop team")).clicked() {
+                    if let Some(team) = &self.team { team.stop(); }
+                    self.notice = "Stopping workers; worktrees will be preserved".into();
+                }
+                if ui.add_enabled(idle && model.is_some() && !goal.trim().is_empty(), egui::Button::new("Propose task breakdown")).clicked()
+                    && let Some(model) = model {
+                    let goal = goal.to_owned();
+                    self.plan_cancel = Arc::new(AtomicBool::new(false));
+                    let cancel = self.plan_cancel.clone();
+                    self.spawn(move |_| {
+                        let plan = plan::propose(&goal, &model, &cancel)?;
+                        Ok(Outcome::Plan(serde_json::to_string_pretty(&plan).map_err(io::Error::other)?))
+                    });
+                    self.planning = true;
+                    self.notice = "Local model is proposing tasks from the composer goal".into();
+                }
+                if self.planning && ui.button("Cancel planning").clicked() { self.plan_cancel.store(true, Ordering::Relaxed); }
+            });
+            if !self.plan_text.is_empty() {
+                ui.label("Proposed tasks — editable JSON. Dependencies are one-based positions of earlier tasks. Approving adds tasks; Start team runs them.");
+                ui.add_enabled(idle, egui::TextEdit::multiline(&mut self.plan_text).code_editor().desired_rows(8).desired_width(f32::INFINITY));
+                if ui.add_enabled(idle, egui::Button::new("Approve and enqueue plan")).clicked() {
+                    let text = self.plan_text.clone();
+                    self.spawn(move |hub| {
+                        let ids = plan::Plan::parse(&text)?.enqueue(hub)?;
+                        Ok(Outcome::Done(format!("Approved {} tasks", ids.len())))
+                    });
+                }
+            }
+            if !self.team_events.is_empty() {
+                egui::CollapsingHeader::new("Team activity").default_open(true).show(ui, |ui| {
+                    for event in self.team_events.iter().rev().take(30) {
+                        ui.label(format!("{} · {}{} · {}", event.agent, event.state,
+                            event.task.map_or(String::new(), |id| format!(" · #{id}")), event.detail));
+                    }
+                });
+            }
+        });
+    }
+
     /// The composer adds a task: the first line is the title, the rest the description.
     pub fn composer(&mut self, ui: &mut egui::Ui, input: &mut String) {
         if !self.notice.is_empty() {
@@ -227,7 +386,7 @@ impl HubView {
                 .desired_rows(3)
                 .hint_text("New task: first line is the title, then the description"),
         );
-        let ready = self.status.is_some() && !self.busy() && !input.trim().is_empty();
+        let ready = self.status.is_some() && self.pending.is_none() && !input.trim().is_empty();
         if ui
             .add_enabled(ready, appearance::primary("Add task"))
             .clicked()
@@ -244,7 +403,8 @@ impl HubView {
         }
     }
 
-    pub fn body(&mut self, ui: &mut egui::Ui, note: &str) {
+    pub fn body(&mut self, ui: &mut egui::Ui, note: &str, model: Option<inference::GenerateArgs>) {
+        if self.status.is_some() { self.team_controls(ui, note, model); }
         let Some(status) = &self.status else {
             appearance::surface().show(ui, |ui| {
                 ui.set_min_width(ui.available_width());
@@ -458,6 +618,10 @@ impl HubView {
             }
         }
     }
+}
+
+impl Drop for HubView {
+    fn drop(&mut self) { self.plan_cancel.store(true, Ordering::Relaxed); }
 }
 
 #[cfg(test)]

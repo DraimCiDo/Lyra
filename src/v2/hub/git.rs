@@ -42,7 +42,7 @@ fn drain(stream: Option<impl Read + Send + 'static>) -> mpsc::Receiver<(String, 
 }
 
 /// Terminate git and every process it started (hooks, credential helpers, filters).
-fn kill_tree(child: &mut Child) {
+pub(super) fn kill_tree(child: &mut Child) {
     #[cfg(unix)]
     {
         // The child leads its own process group (see `run`).

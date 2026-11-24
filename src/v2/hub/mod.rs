@@ -12,6 +12,8 @@ pub mod desktop;
 mod git;
 pub mod mcp;
 pub mod worker;
+pub mod team;
+pub mod plan;
 
 use crate::executor::{self, ExecutionRequest};
 use rusqlite::{Connection, OptionalExtension, Transaction, TransactionBehavior, params};

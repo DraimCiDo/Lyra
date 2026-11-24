@@ -924,7 +924,10 @@ impl Desktop {
                     });
                 }
             }
-            Screen::Agents => self.hub.body(ui, &self.hub_draft),
+            Screen::Agents => {
+                let model = self.model_args();
+                self.hub.body(ui, &self.hub_draft, model);
+            }
         }
     }
 

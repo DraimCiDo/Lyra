@@ -133,3 +133,86 @@ worktree and the owner gets a message with the saved state folder; after fixing 
 `lyra-v2 hub --hub <hub> commit --agent lyra-1 --task N --state <folder>`.
 `--loop` does not claim again a task it released in the same run. Several workers can run at once; each
 loads its own model.
+
+## Managed teams (preview)
+
+Lyra can launch and supervise installed Codex / Claude Code CLIs and local workers.
+In Desktop **Agents**, open a hub, expand **Workers and limits**, choose each worker's
+explicit model (and optionally effort), and select **Start team**. The default roster
+is two Codex slots and one Claude slot; **Add selected local model** adds the GGUF
+selected in Desktop, including its context and GPU settings. Install and authenticate
+external CLIs separately. External workers require the explicit upload/account-quota
+checkbox. No provider or model fallback is performed.
+
+Lyra claims a task before launching each worker in that task's worktree, injects its
+named hub MCP configuration without editing global client settings, and passes the
+bounded task on stdin. External agents edit; Lyra commits their work and runs the
+owner's configured check before handing off to review. Local agents reuse the v2
+runtime and its checked publication. Nothing lands automatically. If the base moved,
+update the task branch and repeat the owner's check before landing as described above.
+File leases remain advisory; choose disjoint task scopes or dependencies.
+
+**Propose task breakdown** uses the selected local model with only the composer's
+goal, without repository context or network access. Review/edit the proposed JSON,
+then **Approve and enqueue plan**. Dependencies are one-based indices of earlier
+proposed tasks, not hub task IDs. Validation and insertion of the entire proposal
+are atomic. You can also continue adding individual tasks while a team runs.
+
+The team refreshes the board once per second only while explicitly running. Activity
+shows assignments, selected models, completion and process errors; raw CLI output is
+not kept in Lyra's activity or saved as logs. **Stop team** and closing Desktop stop
+managed processes and their descendants. Unfinished worktrees remain. An explicit
+new Start retries retained claimed work for the same agent name before taking new
+tasks. A failed task is never automatically retried in the same run. Do not rename
+a slot until you have handled its retained tasks. CLI authentication, model access,
+unsupported CLI flags and Git signing failures are reported as worker failures.
+
+Limits: 1-8 workers, 1-64 task attempts per run, 1-3600 seconds per worker process,
+and 8 MiB per output stream. Local model calls and Claude turns are additionally
+bounded by **Local calls / Claude turns**; Codex has no equivalent turn limit here.
+The separate owner-configured Docker check has its own timeout. Each local process
+loads a separate GGUF model, so choose the roster to fit available RAM/VRAM.
+
+Starting through Desktop saves the explicit configuration to `<hub>/team.json`
+(version 1; no credentials, task output or chat history). The portable package must
+contain `lyra-v2` next to `lyra-v2-desktop`. CLI users can run the same configuration:
+
+```powershell
+lyra-v2 hub --hub C:\work\app-hub team --config C:\work\app-hub\team.json
+```
+
+Press Ctrl+C to stop. The command prints bounded activity snapshots as JSON. A
+`team.lock` directory prevents two managed teams owning the same hub. After a crash,
+confirm all old workers have stopped before manually removing that directory; Lyra
+does not guess whether a previous process is dead or discard its changes.
+
+Example configuration (replace model identifiers and the GGUF path with your choices):
+
+```json
+{
+  "version": 1,
+  "allow_external": true,
+  "timeout_secs": 1800,
+  "max_tasks": 16,
+  "max_calls": 32,
+  "context": 8192,
+  "gpu_layers": 0,
+  "members": [
+    {"name":"codex-1","provider":"codex","executable":"codex","model":"YOUR_CODEX_MODEL","reasoning":"high"},
+    {"name":"codex-2","provider":"codex","executable":"codex","model":"YOUR_CODEX_MODEL","reasoning":"high"},
+    {"name":"claude-1","provider":"claude","executable":"claude","model":"YOUR_CLAUDE_MODEL","reasoning":"high"},
+    {"name":"lyra-1","provider":"local","executable":"lyra-v2","model":"C:\\models\\coder.gguf","reasoning":""}
+  ]
+}
+```
+
+External adapters use `codex exec --json --sandbox workspace-write` and
+`claude --print --permission-mode acceptEdits` with explicit model/effort and generated
+MCP configuration. They do not use approval/sandbox bypass flags. Claude's built-in
+tool set is limited to reading/searching/editing files; checks run through Lyra.
+Installed CLIs remain trusted programs under the owner's OS account, as with the
+existing manual MCP setup; a worktree is not an OS security sandbox.
+
+Managed-team regression tests use fake executables and temporary Git projects.
+Real simultaneous Codex + Claude + GGUF sessions and native Windows managed-team
+acceptance are not yet verified.
