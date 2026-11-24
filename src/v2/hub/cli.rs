@@ -184,11 +184,11 @@ pub fn run(args: HubArgs, output: &mut impl Write) -> io::Result<()> {
         }
         HubCommand::Team { config } => {
             let config = super::team::Config::load(&config)?;
-            let mut team = super::team::Team::start(root, config, std::env::current_exe()?)?;
             let cancel = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
             let signal = cancel.clone();
             ctrlc::set_handler(move || signal.store(true, std::sync::atomic::Ordering::Relaxed))
                 .map_err(io::Error::other)?;
+            let mut team = super::team::Team::start(root, config, std::env::current_exe()?)?;
             let mut last = String::new();
             while team.running() {
                 if cancel.load(std::sync::atomic::Ordering::Relaxed) {

@@ -72,8 +72,12 @@ impl HubView {
     /// Apply the result of a finished operation, if any. Call once per frame.
     pub fn poll(&mut self) {
         if let Some(team) = &self.team {
-            self.team_events = team.events();
-            if team.running()
+            let events = team.events();
+            let finished = !team.running() && events.len() != self.team_events.len();
+            self.team_events = events;
+            if finished && self.pending.is_none() {
+                self.refresh();
+            } else if team.running()
                 && self.pending.is_none()
                 && self.next_refresh.is_none_or(|at| Instant::now() >= at)
             {
@@ -336,14 +340,13 @@ impl HubView {
                         let folder = self.folder.clone().ok_or_else(|| io::Error::other("Open a hub first"))?;
                         self.team_config.validate()?;
                         let lyra = team::cli_executable()?;
-                        let team = team::Team::start(folder.clone(), self.team_config.clone(), lyra)?;
                         // Save only on an explicit start. No tokens or conversations are stored.
                         let bytes = serde_json::to_vec_pretty(&self.team_config).map_err(io::Error::other)?;
                         let mut file = tempfile::NamedTempFile::new_in(&folder)?;
                         use std::io::Write;
                         file.write_all(&bytes)?;
                         file.persist(folder.join("team.json")).map_err(|e| e.error)?;
-                        Ok(team)
+                        team::Team::start(folder, self.team_config.clone(), lyra)
                     })();
                     match result {
                         Ok(team) => { self.team = Some(team); self.next_refresh = None; self.notice = "Team started".into(); }

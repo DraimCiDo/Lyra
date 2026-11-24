@@ -505,6 +505,8 @@ fn execute(
             &member.model,
             "--context",
             &config.context.to_string(),
+            "--max-tokens",
+            &(config.context / 4).min(8192).to_string(),
             "--gpu-layers",
             &config.gpu_layers.to_string(),
             "--max-calls",
@@ -552,7 +554,33 @@ fn execute(
     }
     // Only changes in this isolated task checkout are committed. The base is untouched.
     if !git::ok(worktree, &["status", "--porcelain"])?.is_empty() {
-        git::ok(worktree, &["add", "--all", "--", "."])?;
+        let tracked = git::ok(worktree, &["diff", "--name-only", "-z", "HEAD"])?;
+        let untracked = git::ok(
+            worktree,
+            &["ls-files", "--others", "--exclude-standard", "-z"],
+        )?;
+        let paths: std::collections::BTreeSet<_> = tracked
+            .split('\0')
+            .chain(untracked.split('\0'))
+            .filter(|p| !p.is_empty())
+            .collect();
+        if paths.len() > crate::workspace::MAX_PROPOSALS
+            || paths.iter().any(|path| !crate::workspace::permitted(path))
+        {
+            return Err(io::Error::other(
+                "Worker edits exceed the managed publication scope (32 files; secrets, hidden and service paths excluded); worktree preserved for inspection",
+            ));
+        }
+        if paths.iter().any(|path| {
+            fs::symlink_metadata(worktree.join(path)).is_ok_and(|m| m.file_type().is_symlink())
+        }) {
+            return Err(io::Error::other(
+                "Managed publication refuses symlink edits; worktree preserved",
+            ));
+        }
+        let mut args = vec!["add", "--all", "--"];
+        args.extend(paths);
+        git::ok(worktree, &args)?;
         git::ok(
             worktree,
             &["commit", "-m", &format!("Implement hub task {}", task.id)],

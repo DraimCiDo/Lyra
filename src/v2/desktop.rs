@@ -750,7 +750,7 @@ impl Desktop {
                 if self.screen != Screen::Chat && choose_path(ui, "Project", self.repo.as_deref()) {
                     self.choose_project();
                 }
-                if self.screen != Screen::Agents && choose_path(ui, "Model", self.model.as_deref())
+                if choose_path(ui, "Model", self.model.as_deref())
                 {
                     self.choose_model();
                 }

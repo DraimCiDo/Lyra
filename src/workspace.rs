@@ -64,7 +64,7 @@ fn error(message: &str) -> io::Error {
     io::Error::other(message)
 }
 
-fn permitted(path: &str) -> bool {
+pub(crate) fn permitted(path: &str) -> bool {
     !path.is_empty()
         && path.len() <= 1024
         && !path.chars().any(char::is_control)
